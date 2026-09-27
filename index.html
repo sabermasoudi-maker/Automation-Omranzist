@@ -125,7 +125,8 @@ async function boot(){
   route();refreshCount();
 }
 const NAV=[['cartable','کارتابل من'],['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['requests','درخواست‌های مالی'],['request-new','درخواست جدید'],['reports','گزارش‌ها','r'],['admin','مدیریت سامانه','a'],['help','راهنما']];
-function drawNav(cur){$('#nav').innerHTML=NAV.filter(n=>!n[2]||(n[2]=='a'?M.me.role=='admin':['admin','manager','secretariat','finance'].includes(M.me.role))).map(n=>`<a href="#/${n[0]}" class="${cur==n[0]?'on':''}">${n[1]}${n[0]=='cartable'?'<span class="badge" id="cnt" style="display:none"></span>':''}</a>`).join('')}
+const isTop=()=>['admin','manager'].includes(M.me.role); // مدیر سیستم و هیات مدیره: بالاترین سطح
+function drawNav(cur){$('#nav').innerHTML=NAV.filter(n=>!n[2]||(n[2]=='a'?isTop():['admin','manager','secretariat','finance'].includes(M.me.role))).map(n=>`<a href="#/${n[0]}" class="${cur==n[0]?'on':''}">${n[1]}${n[0]=='cartable'?'<span class="badge" id="cnt" style="display:none"></span>':''}</a>`).join('')}
 async function refreshCount(){try{const r=await api('GET','/api/counts');const b=$('#cnt');if(b){b.textContent=fa(r.n);b.style.display=r.n?'inline':'none'}document.title=(r.n?'('+fa(r.n)+') ':'')+'اتوماسیون — '+M.company}catch(e){}}
 setInterval(()=>{if(M)refreshCount()},60000);
 window.addEventListener('hashchange',route);
@@ -178,8 +179,8 @@ const docLink=r=>`#/${r.doc_type}/${r.doc_id}`;
 async function cartable(){
   const d=await api('GET','/api/cartable');M.today=d.today;
   const sec=[['in','ارجاع‌شده به من',d.inbox.length],['ap','منتظر تأیید من',d.approvals.length],['sent','پیگیری ارجاع‌های من',d.sent.length],['mine','درخواست‌های مالی من',d.mine.length]];
-  if(M.me.role=='finance'||M.me.role=='admin')sec.push(['pay','مالی: پرداخت و سند سپیدار',d.pay.length]);
-  if(M.me.role=='secretariat'||M.me.role=='admin')sec.push(['desk','دبیرخانه: نامه‌های بدون ارجاع',d.desk.length]);
+  if(M.me.role=='finance'||isTop())sec.push(['pay','مالی: پرداخت و سند سپیدار',d.pay.length]);
+  if(M.me.role=='secretariat'||isTop())sec.push(['desk','دبیرخانه: نامه‌های بدون ارجاع',d.desk.length]);
   let h=`<h1>کارتابل ${esc(M.me.full_name)}</h1><div class="tabs">${sec.map((s,i)=>`<a data-t="${s[0]}" class="${i?'':'on'}">${s[1]} (${fa(s[2])})</a>`).join('')}</div>`;
   const tbl=(head,body,empty)=>body.length?`<table><tr>${head.map(x=>`<th>${x}</th>`).join('')}</tr>${body.join('')}</table>`:`<div class="card mut">${empty}</div>`;
   h+=`<div data-p="in">${tbl(['سند','از','اقدام','دستور','تاریخ ارجاع','مهلت','وضعیت'],d.inbox.map(r=>`<tr class="cl ${late(r)?'late':''}" onclick="location='${docLink(r)}'"><td>${r.doc_type=='request'?'<span class="tag">مالی</span> ':''}${r.priority&&r.priority!='normal'?tag(PRI,r.priority)+' ':''}${esc(fa(r.doc_label))}</td><td>${esc(r.from_name)}</td><td>${esc(r.action)}</td><td>${esc(r.instruction)}</td><td class="mut">${jd(r.created_at,1)}</td><td>${jd(r.due_date)}${late(r)?' <span class="tag bad">گذشته</span>':''}</td><td>${tag(REF_ST,r.status)}</td></tr>`),'کاری در کارتابل شما نیست.')}</div>`;
@@ -191,7 +192,7 @@ async function cartable(){
   $('#view').innerHTML=h;bindTabs()}
 
 // ---------------------------------------------------------------- نامه‌ها
-const canNewProj=()=>['admin','manager','secretariat','finance'].includes(M.me.role);
+const canNewProj=()=>isTop()||M.me.role=='secretariat';
 const projOpts=(sel,allowNew)=>'<option value="">—</option>'+(allowNew&&canNewProj()?'<option value="__new" style="color:var(--pri);font-weight:bold">+ تعریف پروژه / کارگاه جدید…</option>':'')+opts(M.projects.map(p=>[p.id,p.name]),sel);
 function newProj(sel){if(sel.value!='__new')return;sel.value='';
   const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card"><h2>تعریف پروژه / کارگاه جدید</h2><div class="grid">
@@ -244,7 +245,7 @@ async function letterView(id){
   const d=await api('GET','/api/letters/'+id);const L=d.doc;const canArc=['admin','secretariat','manager'].includes(M.me.role);
   let h=`<div class="print-only"><h2>${esc(M.company)} — برگه گردش نامه</h2></div>
   <div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">نامه ${M.letter_kinds[L.kind]} <span>${fa(L.number)}</span></h1>
-  <div class="row">${['admin','secretariat'].includes(M.me.role)||L.created_by==M.me.id?`<a class="btn l" href="#/letter-edit/${L.id}">ویرایش مشخصات</a>`:''}<button class="btn l" onclick="print()">چاپ برگه گردش</button></div></div>
+  <div class="row">${isTop()||M.me.role=='secretariat'||L.created_by==M.me.id?`<a class="btn l" href="#/letter-edit/${L.id}">ویرایش مشخصات</a>`:''}<button class="btn l" onclick="print()">چاپ برگه گردش</button></div></div>
   <div class="card"><div class="kv">
    <div>موضوع</div><div><b>${esc(L.subject)}</b> ${tag(PRI,L.priority)} ${L.confidential?'<span class="tag bad">محرمانه</span>':''}</div>
    <div>شماره ثبت</div><div><span>${fa(L.number)}</span></div><div>تاریخ ثبت</div><div>${jd(L.created_at,1)} — ${esc(L.creator)}</div>
@@ -302,8 +303,8 @@ async function requestView(id){
   if(myStep)h+=`<div class="card noprint" style="border-color:var(--warn)"><h2>تصمیم شما — ${esc(myStep.label)}</h2><label>توضیح (برای رد یا برگشت الزامی است)</label><textarea id="apN"></textarea><div class="row" style="margin-top:8px">
    <button class="btn ok" onclick="act(${R.id},'approve')">تأیید</button><button class="btn l" onclick="act(${R.id},'return')">برگشت برای اصلاح</button><button class="btn bad" onclick="act(${R.id},'reject')">رد</button></div></div>`;
   if(R.requester_id==M.me.id&&['returned','pending'].includes(R.status))h+=`<div class="card noprint"><details ${R.status=='returned'?'open':''}><summary style="cursor:pointer;font-weight:bold">${R.status=='returned'?'اصلاح و ارسال مجدد':'اصلاح درخواست (مسیر تأیید از نو شروع می‌شود)'}</summary><div style="margin-top:10px">${reqFormHtml(R)}<div class="row" style="margin-top:8px"><button class="btn" onclick="resub(${R.id})">ارسال مجدد</button><button class="btn bad" onclick="cancelReq(${R.id})">لغو درخواست</button></div></div></details></div>`;
-  if(['finance','admin'].includes(M.me.role)&&R.status=='approved')h+=`<div class="card noprint" style="border-color:var(--pri)"><h2>ثبت پرداخت</h2><div class="grid"><div><label>مبلغ پرداختی (ریال)</label><input id="pA" class="num" value="${money(R.amount)}"></div><div><label>تاریخ پرداخت</label><input id="pD" value="${todayJ()}"></div><div><label>شماره سند سپیدار</label><input id="pS"></div><div><label>توضیح (چک/حواله/…)</label><input id="pN"></div></div><button class="btn" style="margin-top:8px" onclick="pay(${R.id})">ثبت پرداخت</button></div>`;
-  if(['finance','admin'].includes(M.me.role)&&R.status=='paid')h+=`<div class="card noprint"><h2>ثبت شماره سند سپیدار</h2><div class="row"><div><input id="pS"></div><button class="btn" onclick="pay(${R.id})">ثبت</button></div></div>`;
+  if((M.me.role=='finance'||isTop())&&R.status=='approved')h+=`<div class="card noprint" style="border-color:var(--pri)"><h2>ثبت پرداخت</h2><div class="grid"><div><label>مبلغ پرداختی (ریال)</label><input id="pA" class="num" value="${money(R.amount)}"></div><div><label>تاریخ پرداخت</label><input id="pD" value="${todayJ()}"></div><div><label>شماره سند سپیدار</label><input id="pS"></div><div><label>توضیح (چک/حواله/…)</label><input id="pN"></div></div><button class="btn" style="margin-top:8px" onclick="pay(${R.id})">ثبت پرداخت</button></div>`;
+  if((M.me.role=='finance'||isTop())&&R.status=='paid')h+=`<div class="card noprint"><h2>ثبت شماره سند سپیدار</h2><div class="row"><div><input id="pS"></div><button class="btn" onclick="pay(${R.id})">ثبت</button></div></div>`;
   h+=flowBlock('request',R.id,d.referrals)+attachBlock('request',R.id,d.attachments)+logBlock(d.log);
   $('#view').innerHTML=h;bindTabs()}
 const act=(id,dec)=>run(async()=>{await api('POST',`/api/requests/${id}/act`,{decision:dec,note:val('apN')});flash('ثبت شد');route()});

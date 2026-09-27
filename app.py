@@ -205,8 +205,11 @@ def need(cond, msg='دسترسی مجاز نیست', code=403):
         raise ApiError(msg, code)
 
 
+TOP_ROLES = ('admin', 'manager')  # بالاترین سطح دسترسی: مدیر سیستم و هیات مدیره
+
+
 def is_mgr(u):
-    return u['role'] in ('admin', 'manager')
+    return u['role'] in TOP_ROLES
 
 
 def sees_all(u):
@@ -391,13 +394,13 @@ def api_cartable(h, c, u, b, q):
         "SELECT q.*, p.name project FROM requests q LEFT JOIN projects p ON p.id=q.project_id "
         "WHERE q.requester_id=? AND q.status IN ('pending','returned','approved') ORDER BY q.id DESC", (u['id'],)))
     pay = []
-    if u['role'] in ('finance', 'admin'):
+    if u['role'] == 'finance' or is_mgr(u):
         pay = rows(c.execute(
             "SELECT q.*, p.name project, ru.full_name requester FROM requests q LEFT JOIN projects p ON p.id=q.project_id "
             "LEFT JOIN users ru ON ru.id=q.requester_id WHERE q.status='approved' OR (q.status='paid' AND q.sepidar_no='') "
             "ORDER BY q.id"))
     desk = []
-    if u['role'] in ('secretariat', 'admin'):
+    if u['role'] == 'secretariat' or is_mgr(u):
         desk = rows(c.execute(
             "SELECT l.* FROM letters l WHERE l.status='open' AND NOT EXISTS (SELECT 1 FROM referrals r WHERE "
             "r.doc_type='letter' AND r.doc_id=l.id AND r.status IN %s) ORDER BY l.id DESC LIMIT 200" % str(OPEN)))
@@ -522,7 +525,7 @@ def api_letter_get(h, c, u, b, q, lid):
 @route('POST', r'/api/letters/(\d+)/update')
 def api_letter_update(h, c, u, b, q, lid):
     L = get_doc(c, u, 'letter', int(lid))
-    need(u['role'] in ('admin', 'secretariat') or L['created_by'] == u['id'])
+    need(is_mgr(u) or u['role'] == 'secretariat' or L['created_by'] == u['id'])
     f = letter_fields(dict(b, kind=L['kind']))
     c.execute('UPDATE letters SET subject=?,counterpart=?,their_number=?,their_date=?,letter_date=?,project_id=?,priority=?,'
               'confidential=?,summary=?,source=? WHERE id=?', (f['subject'], f['counterpart'], f['their_number'],
@@ -736,7 +739,7 @@ def api_request_resubmit(h, c, u, b, q, rid):
 @route('POST', r'/api/requests/(\d+)/cancel')
 def api_request_cancel(h, c, u, b, q, rid):
     R = get_doc(c, u, 'request', int(rid))
-    need((R['requester_id'] == u['id'] or u['role'] == 'admin') and R['status'] in ('pending', 'returned'),
+    need((R['requester_id'] == u['id'] or is_mgr(u)) and R['status'] in ('pending', 'returned'),
          'لغو فقط پیش از تأیید نهایی و توسط درخواست‌کننده ممکن است')
     c.execute("UPDATE requests SET status='cancelled', closed_at=? WHERE id=?", (now(), R['id']))
     c.execute("UPDATE steps SET status='skipped' WHERE request_id=? AND status IN ('waiting','pending')", (R['id'],))
@@ -747,7 +750,7 @@ def api_request_cancel(h, c, u, b, q, rid):
 @route('POST', r'/api/requests/(\d+)/pay')
 def api_request_pay(h, c, u, b, q, rid):
     R = get_doc(c, u, 'request', int(rid))
-    need(u['role'] in ('finance', 'admin'), 'ثبت پرداخت فقط توسط مالی')
+    need(u['role'] == 'finance' or is_mgr(u), 'ثبت پرداخت فقط توسط مالی یا هیات مدیره')
     if R['status'] == 'approved':
         try:
             amt = int(str(b.get('paid_amount') or R['amount']).replace(',', ''))
@@ -800,7 +803,7 @@ def api_reports(h, c, u, b, q):
 
 @route('POST', '/api/projects')
 def api_project_new(h, c, u, b, q):
-    need(u['role'] in ('admin', 'manager', 'secretariat', 'finance'), 'تعریف پروژه برای مدیران، دبیرخانه و مالی است')
+    need(is_mgr(u) or u['role'] == 'secretariat', 'تعریف پروژه فقط توسط هیات مدیره و دبیرخانه انجام می‌شود')
     name = (b.get('name') or '').strip(); need(name, 'نام پروژه الزامی است', 400)
     need(not c.execute('SELECT 1 FROM projects WHERE name=? AND active=1', (name,)).fetchone(), 'این پروژه قبلاً تعریف شده', 400)
     mid = int(b['manager_id']) if b.get('manager_id') else None
@@ -811,7 +814,7 @@ def api_project_new(h, c, u, b, q):
 # ---------- مدیریت
 @route('GET', '/api/admin')
 def api_admin(h, c, u, b, q):
-    need(u['role'] == 'admin')
+    need(is_mgr(u))
     return {'users': rows(c.execute('SELECT id,username,full_name,title,role,active,must_change FROM users ORDER BY id')),
             'projects': rows(c.execute('SELECT * FROM projects ORDER BY id')), 'settings': settings(c),
             'backups': sorted(os.listdir(BACK))[-10:]}
@@ -819,7 +822,7 @@ def api_admin(h, c, u, b, q):
 
 @route('POST', '/api/admin/user')
 def api_admin_user(h, c, u, b, q):
-    need(u['role'] == 'admin')
+    need(is_mgr(u))
     need(b.get('role') in ROLES and (b.get('full_name') or '').strip() and (b.get('username') or '').strip(),
          'نام، نام کاربری و نقش الزامی است', 400)
     if b.get('id'):
@@ -838,7 +841,7 @@ def api_admin_user(h, c, u, b, q):
 
 @route('POST', '/api/admin/reset')
 def api_admin_reset(h, c, u, b, q):
-    need(u['role'] == 'admin')
+    need(is_mgr(u))
     hh, s = hash_pw('1234')
     c.execute('UPDATE users SET pw_hash=?, salt=?, must_change=1 WHERE id=?', (hh, s, int(b['id'])))
     c.execute('DELETE FROM sessions WHERE user_id=?', (int(b['id']),))
@@ -847,7 +850,7 @@ def api_admin_reset(h, c, u, b, q):
 
 @route('POST', '/api/admin/project')
 def api_admin_project(h, c, u, b, q):
-    need(u['role'] == 'admin')
+    need(is_mgr(u))
     need((b.get('name') or '').strip(), 'نام پروژه الزامی است', 400)
     mid = int(b['manager_id']) if b.get('manager_id') else None
     if b.get('id'):
@@ -860,7 +863,7 @@ def api_admin_project(h, c, u, b, q):
 
 @route('POST', '/api/admin/settings')
 def api_admin_settings(h, c, u, b, q):
-    need(u['role'] == 'admin')
+    need(is_mgr(u))
     for k in DEFAULT_SETTINGS:
         if k in b:
             c.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', (k, str(b[k]).replace(',', '')
