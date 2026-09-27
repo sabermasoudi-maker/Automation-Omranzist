@@ -192,7 +192,7 @@ async function cartable(){
 
 // ---------------------------------------------------------------- نامه‌ها
 const canNewProj=()=>['admin','manager','secretariat','finance'].includes(M.me.role);
-const projOpts=(sel,allowNew)=>opts(M.projects.map(p=>[p.id,p.name]),sel,'—')+(allowNew&&canNewProj()?'<option value="__new">+ تعریف پروژه جدید…</option>':'');
+const projOpts=(sel,allowNew)=>'<option value="">—</option>'+(allowNew&&canNewProj()?'<option value="__new" style="color:var(--pri);font-weight:bold">+ تعریف پروژه / کارگاه جدید…</option>':'')+opts(M.projects.map(p=>[p.id,p.name]),sel);
 function newProj(sel){if(sel.value!='__new')return;sel.value='';
   const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card"><h2>تعریف پروژه / کارگاه جدید</h2><div class="grid">
   <div class="full"><label>نام پروژه *</label><input id="npN"></div><div><label>کد (اختیاری)</label><input id="npC"></div>
