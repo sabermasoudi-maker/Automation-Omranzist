@@ -183,6 +183,11 @@ async function boot(){
   $('#login').style.display='none';$('#app').style.display='block';
   $('#coName').textContent=M.company+' — اتوماسیون اداری';$('#meName').textContent=M.me.full_name+' ('+M.roles[M.me.role]+')';
   document.title='اتوماسیون — '+M.company;
+  if(!M.my_roles||!M.p_stages){$('#nav').innerHTML='';$('#view').innerHTML=`<div class="card" style="border-color:var(--bad)"><h1>سرور هنوز نسخه قدیمی (${esc(M.version||'?')}) را اجرا می‌کند</h1>
+   <div style="line-height:2.1">فایل صفحه (index.html) نسخه جدید است، ولی برنامه سرور (app.py) هنوز نسخه قبلی است و باید دوباره راه‌اندازی شود.<br>
+   ۱. مطمئن شوید app.py جدید در همان پوشه‌ای است که index.html جدید را گذاشتید.<br>
+   ۲. روی کامپیوتر سرور فایل <b>4-restart.bat</b> را با «Run as administrator» اجرا کنید (یا کامپیوتر سرور را یک بار ری‌استارت کنید).<br>
+   ۳. این صفحه را با Ctrl+F5 دوباره باز کنید.</div></div>`;return}
   if(M.me.must_change)pwModal(true);
   route();refreshCount();
 }
@@ -207,7 +212,7 @@ setInterval(()=>{if(M)refreshCount()},60000);
 window.addEventListener('hashchange',route);
 async function route(){
   if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
-  toggleNav(0);drawNav(p=='project'?'project/'+id:(HQ_OF[p]||[p])[0]);refreshCount();
+  toggleNav(0);try{drawNav(p=='project'?'project/'+id:(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
   const V={cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('hq_purchase','درخواست‌های خرید منتظر اقدام پشتیبانی دفتر مرکزی'),'hq-finance':()=>hqStage('finance_pay','خریدهای انجام‌شده منتظر پرداخت'),'hq-office':()=>hqStage('archive','درخواست‌های خرید منتظر بایگانی',1),
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};

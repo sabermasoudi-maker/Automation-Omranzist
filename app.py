@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.3'
+VERSION = '1.3.1'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 OPEN = ('new', 'seen', 'doing')
@@ -1352,6 +1352,19 @@ class H(BaseHTTPRequestHandler):
             c.close()
 
 
+def running_version(port):
+    """اگر همین سامانه از قبل روی پورت اجرا شده باشد، نام نسخه‌اش را برمی‌گرداند."""
+    import http.client
+    try:
+        cn = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
+        cn.request('GET', '/api/counts')
+        sv = cn.getresponse().getheader('Server') or ''
+        cn.close()
+        return sv.split()[0] if sv.startswith('OmranZistOA') else ''
+    except OSError:
+        return ''
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -1363,6 +1376,11 @@ def main():
         c = db(); hh, ss = hash_pw('1234')
         c.execute("UPDATE users SET pw_hash=?, salt=?, must_change=1, active=1 WHERE username='admin'", (hh, ss))
         c.commit(); c.close(); print('رمز admin به 1234 برگشت.'); return
+    other = running_version(PORT)
+    if other:
+        print('سامانه از قبل روی پورت %d در حال اجراست (%s).' % (PORT, other))
+        print('برای اجرای نسخه جدید، اول آن را متوقف کنید: فایل 4-restart.bat را با Run as administrator اجرا کنید.')
+        return
     threading.Thread(target=backup_loop, daemon=True).start()
     srv, port = None, None
     for p in [PORT] + [x for x in CANDIDATE_PORTS if x != PORT]:
