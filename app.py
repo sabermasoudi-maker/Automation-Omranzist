@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.4'
+VERSION = '1.5'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 OPEN = ('new', 'seen', 'doing')
@@ -45,8 +45,13 @@ WAREHOUSE_KINDS = ('خرید کالا و مصالح', 'خرید تجهیزات')
 PROJECT_ROLES = [('pm', 'مدیر پروژه'), ('supervisor', 'سرپرست کارگاه'), ('exec', 'معاون اجرایی'),
                  ('tech', 'معاون فنی'), ('support', 'پشتیبانی'), ('warehouse', 'انبار')]
 UNITS = [('tech', 'فنی'), ('exec', 'اجرایی'), ('support', 'پشتیبانی'), ('warehouse', 'انبار')]
+# کارکنان زیرمجموعه (چند نفر در هر سمت): (کلید، عنوان، سمتِ بالادست)
+TEAM_ROLES = [('exec_eng', 'مهندس اجرایی', 'exec'), ('tech_eng', 'مهندس دفتر فنی', 'tech')]
 ROLE_UNIT = {'pm': 'exec', 'supervisor': 'exec', 'exec': 'exec', 'tech': 'tech', 'support': 'support',
-             'warehouse': 'warehouse'}
+             'warehouse': 'warehouse', 'exec_eng': 'exec', 'tech_eng': 'tech'}
+# بالادستِ مستقیم هر سمت در کارگاه (تأیید درخواست و مکاتبات به سمت بالا)
+SUPERIOR = {'exec_eng': 'exec', 'tech_eng': 'tech', 'support': 'supervisor', 'warehouse': 'supervisor',
+            'exec': 'supervisor', 'tech': 'supervisor', 'supervisor': 'pm'}
 HQ_ROLES = {'support_manager': 'مدیر پشتیبانی دفتر مرکزی', 'finance_manager': 'مدیر مالی دفتر مرکزی',
             'archive_user': 'منشی (بایگانی)'}
 
@@ -88,6 +93,16 @@ P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلا
             'closed': 'خریداری، پرداخت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
 SEED_PROJECTS = ['موادکاران', 'پروژه بدون نام ۱', 'پروژه بدون نام ۲']
 # حساب‌های سمت‌های پروژه موادکاران (موقت؛ مدیر سیستم بعداً نام، شخص یا حساب را عوض می‌کند)
+# چارت سازمانی کارگاه موادکاران (۱۴۰۵/۰۷): (نام کاربری، نام، سمت، کلید سمت)
+MK_CHART = [('mk-sarparast', 'هادی شمیعی', 'سرپرست کارگاه موادکاران', 'supervisor'),
+            ('mk-ejraei', 'بهروز بحرینی', 'معاون اجرایی موادکاران', 'exec'),
+            ('mk-zali', 'ارسلان زالی', 'مهندس اجرایی موادکاران', 'exec_eng'),
+            ('mk-fanni', 'سعید حاج ابراهیمی', 'معاون فنی موادکاران', 'tech'),
+            ('mk-bajelani', 'خانم مهندس باجلانی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
+            ('mk-masoudi', 'علیرضا مسعودی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
+            ('mk-hosseini', 'خانم مهندس حسینی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
+            ('mk-poshtibani', 'جمشید رستمیان', 'پشتیبانی کارگاه موادکاران', 'support'),
+            ('mk-anbar', 'حسن علی‌اصغری', 'انباردار موادکاران', 'warehouse')]
 SEED_MK_POSTS = [('supervisor', 'mk-sarparast', 'سرپرست کارگاه موادکاران'),
                  ('exec', 'mk-ejraei', 'معاون اجرایی موادکاران'),
                  ('tech', 'mk-fanni', 'معاون فنی موادکاران'),
@@ -130,6 +145,8 @@ CREATE TABLE IF NOT EXISTS purchase_items(id INTEGER PRIMARY KEY, purchase_id IN
   qty TEXT DEFAULT '', unit TEXT DEFAULT '', spec TEXT DEFAULT '', note TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS purchase_flow(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, stage TEXT, action TEXT,
   label TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
+CREATE TABLE IF NOT EXISTS project_team(project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_key TEXT NOT NULL,
+  PRIMARY KEY(project_id, user_id));
 CREATE TABLE IF NOT EXISTS purchase_versions(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, version INTEGER,
   data TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
 CREATE INDEX IF NOT EXISTS ix_pur_ver ON purchase_versions(purchase_id);
@@ -233,6 +250,7 @@ def init_db():
     add_columns(c)
     migrate(c)
     migrate_v13(c)
+    migrate_v15(c)
     c.commit()
     c.close()
 
@@ -287,6 +305,30 @@ def migrate_v13(c):
                                 (un, fn, fn, 'staff', hh, ss)).lastrowid
             c.execute('INSERT INTO project_members(project_id,role_key,user_id) VALUES(?,?,?)', (pr[0], key, uid))
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v13','1')")
+
+
+def migrate_v15(c):
+    """چارت سازمانی موادکاران: نام واقعی افراد روی حساب‌های سمتی و افزودن مهندسان اجرایی و دفتر فنی."""
+    if settings(c).get('seed_v15'):
+        return
+    pr = c.execute("SELECT id FROM projects WHERE name='موادکاران'").fetchone()
+    if pr:
+        placeholders = {un: fn for _, un, fn in SEED_MK_POSTS}
+        for un, fn, title, key in MK_CHART:
+            r = one(c.execute('SELECT id, full_name FROM users WHERE username=?', (un,)))
+            if r:
+                uid = r['id']
+                if r['full_name'] == placeholders.get(un):  # فقط اگر مدیر سیستم هنوز نامش را عوض نکرده
+                    c.execute('UPDATE users SET full_name=?, title=? WHERE id=?', (fn, title, uid))
+            else:
+                hh, ss = hash_pw('1234')
+                uid = c.execute('INSERT INTO users(username,full_name,title,role,pw_hash,salt) VALUES(?,?,?,?,?,?)',
+                                (un, fn, title, 'staff', hh, ss)).lastrowid
+            if key in dict((k, 1) for k, _, _ in TEAM_ROLES):
+                c.execute('INSERT OR IGNORE INTO project_team(project_id,user_id,role_key) VALUES(?,?,?)', (pr[0], uid, key))
+            elif not c.execute('SELECT 1 FROM project_members WHERE project_id=? AND role_key=?', (pr[0], key)).fetchone():
+                c.execute('INSERT INTO project_members(project_id,role_key,user_id) VALUES(?,?,?)', (pr[0], key, uid))
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v15','1')")
 
 
 def sync_pm(c, pid, uid):
@@ -367,7 +409,37 @@ def is_site_only(c, u):
     S = settings(c)
     if str(u['id']) in {S.get(k) for k in HQ_SETTING_USERS}:
         return False
-    return c.execute('SELECT 1 FROM project_members WHERE user_id=? LIMIT 1', (u['id'],)).fetchone() is not None
+    return bool(user_project_roles(c, u['id']))
+
+
+def user_project_roles(c, uid, pid=None):
+    """سمت‌های کاربر در پروژه‌ها: [(project_id, role_key)] از ارکان و کارکنان زیرمجموعه."""
+    q = ('SELECT project_id, role_key FROM project_members WHERE user_id=? UNION '
+         'SELECT project_id, role_key FROM project_team WHERE user_id=?')
+    rs = [(r[0], r[1]) for r in c.execute(q, (uid, uid))]
+    return [r for r in rs if pid is None or r[0] == pid]
+
+
+def superiors_of(c, uid):
+    """بالادست‌های مستقیم کاربر در پروژه‌هایش."""
+    out = []
+    for pid, key in user_project_roles(c, uid):
+        sup = SUPERIOR.get(key)
+        r = sup and c.execute('SELECT user_id FROM project_members WHERE project_id=? AND role_key=?', (pid, sup)).fetchone()
+        if r and r[0] != uid and r[0] not in out:
+            out.append(r[0])
+    return out
+
+
+def colleagues_of(c, uid):
+    """همکاران پروژه‌های کاربر (ارکان و کارکنان)، برای مکاتبات داخلی کارگاه."""
+    pids = {p for p, _ in user_project_roles(c, uid)}
+    ids = set()
+    for pid in pids:
+        ids |= {r[0] for r in c.execute('SELECT user_id FROM project_members WHERE project_id=? UNION '
+                                        'SELECT user_id FROM project_team WHERE project_id=?', (pid, pid))}
+    ids.discard(uid)
+    return sorted(ids)
 
 
 def no_site(c, u):
@@ -375,6 +447,11 @@ def no_site(c, u):
 
 
 def is_member(c, u, pid):
+    return bool(user_project_roles(c, u['id'], pid))
+
+
+def is_lead(c, u, pid):
+    """ارکان اصلی پروژه (نه کارکنان زیرمجموعه) که همه درخواست‌های پروژه را می‌بینند."""
     return c.execute('SELECT 1 FROM project_members WHERE project_id=? AND user_id=?', (pid, u['id'])).fetchone() is not None
 
 
@@ -400,8 +477,10 @@ def can_view_request(c, u, R):
 
 
 def can_view_purchase(c, u, P):
-    if is_broad(c, u) or u['id'] in (P['requester_id'], P['holder_id']) or is_member(c, u, P['project_id']):
+    if is_broad(c, u) or u['id'] in (P['requester_id'], P['holder_id']) or is_lead(c, u, P['project_id']):
         return True
+    if any(ROLE_UNIT.get(k) == P['unit'] for _, k in user_project_roles(c, u['id'], P['project_id'])):
+        return True  # مهندسان فقط درخواست‌های واحد خودشان را می‌بینند
     if c.execute('SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=?', (P['id'], u['id'])).fetchone():
         return True
     return participant(c, u, 'purchase', P['id'])
@@ -437,6 +516,9 @@ def doc_extras(c, dt, did):
 def make_referrals(c, u, dt, did, to_ids, action, instruction, due, parent_id=None):
     to_ids = [int(x) for x in (to_ids or []) if str(x).strip()]
     need(to_ids, 'گیرنده ارجاع انتخاب نشده', 400)
+    if is_site_only(c, u):  # کارکنان کارگاه فقط با همکاران پروژه (از جمله مدیر پروژه) مکاتبه می‌کنند
+        allowed = set(colleagues_of(c, u['id']))
+        need(all(t in allowed for t in to_ids), 'کارکنان کارگاه فقط به همکاران پروژه خود ارجاع می‌دهند', 400)
     need(action in ACTIONS, 'نوع اقدام نامعتبر', 400)
     names = []
     for t in to_ids:
@@ -546,7 +628,8 @@ def api_meta(h, c, u, b, q):
             'p_status': P_STATUS, 'hq_roles': HQ_ROLES, 'broad': is_broad(c, u), 'site_only': is_site_only(c, u),
             'categories': CATEGORIES, 'urgencies': URGENCIES, 'att_kinds': ATT_KINDS,
             'cancel_reasons': cancel_reasons(c),
-            'my_roles': rows(c.execute('SELECT project_id, role_key FROM project_members WHERE user_id=?', (u['id'],)))}
+            'my_roles': [{'project_id': p_, 'role_key': k} for p_, k in user_project_roles(c, u['id'])],
+            'team_roles': TEAM_ROLES, 'superiors': superiors_of(c, u['id']), 'colleagues': colleagues_of(c, u['id'])}
 
 
 PUR_SEL = ("SELECT x.*, pr.name project, pr.code project_code, ru.full_name requester, hu.full_name holder, "
@@ -645,7 +728,6 @@ def letter_filter(u, q):
 
 @route('GET', '/api/letters')
 def api_letters(h, c, u, b, q):
-    no_site(c, u)
     w, p = letter_filter(u, q)
     return rows(c.execute(
         'SELECT l.*, pr.name project, cu.full_name creator, %s holders FROM letters l '
@@ -678,7 +760,6 @@ def letter_fields(b):
 
 @route('POST', '/api/letters')
 def api_letter_new(h, c, u, b, q):
-    no_site(c, u)
     f = letter_fields(b)
     if f['kind'] in ('in', 'out'):
         need(u['role'] in ('admin', 'secretariat', 'manager'), 'ثبت نامه وارده/صادره فقط توسط دبیرخانه انجام می‌شود')
@@ -978,7 +1059,9 @@ def api_project_get(h, c, u, b, q, pid):
     need(pr, 'پروژه پیدا نشد', 404)
     mem = rows(c.execute('SELECT m.role_key, m.user_id, us.full_name FROM project_members m LEFT JOIN users us '
                          'ON us.id=m.user_id WHERE m.project_id=?', (pr['id'],)))
-    return {'project': pr, 'members': mem}
+    team = rows(c.execute('SELECT t.role_key, t.user_id, us.full_name FROM project_team t LEFT JOIN users us '
+                          'ON us.id=t.user_id WHERE t.project_id=? ORDER BY us.full_name', (pr['id'],)))
+    return {'project': pr, 'members': mem, 'team': team}
 
 
 @route('POST', r'/api/projects/(\d+)/update')
@@ -1001,6 +1084,13 @@ def api_project_update(h, c, u, b, q, pid):
             c.execute('INSERT OR REPLACE INTO project_members(project_id,role_key,user_id) VALUES(?,?,?)', (pr['id'], key, v))
         else:
             c.execute('DELETE FROM project_members WHERE project_id=? AND role_key=?', (pr['id'], key))
+    if 'team' in b:
+        c.execute('DELETE FROM project_team WHERE project_id=?', (pr['id'],))
+        for key, label, _ in TEAM_ROLES:
+            for v in (b['team'] or {}).get(key) or []:
+                v = int(v)
+                need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (v,)).fetchone(), 'کاربر «%s» نامعتبر است' % label, 400)
+                c.execute('INSERT OR REPLACE INTO project_team(project_id,user_id,role_key) VALUES(?,?,?)', (pr['id'], v, key))
     log(c, 'project', pr['id'], u['id'], 'ویرایش پروژه و ارکان', name)
     return {'ok': True}
 
@@ -1020,7 +1110,9 @@ def stage_holder(c, P, stage):
         return P['requester_id']
     labels = dict(PROJECT_ROLES)
     if stage == 'unit_approval':
-        kind, key = 'member', UNIT_HEAD[P['unit']]
+        # تأیید بالادست مستقیم درخواست‌کننده (مهندس ← معاونش، پشتیبانی و انبار ← سرپرست کارگاه)؛ وگرنه رئیس واحد
+        own = [k for _, k in user_project_roles(c, P['requester_id'], P['project_id']) if k in SUPERIOR]
+        kind, key = 'member', (SUPERIOR[own[0]] if own else UNIT_HEAD[P['unit']])
     else:
         kind, key = STAGE_HOLDER[stage]
     if kind == 'member':
@@ -1122,9 +1214,10 @@ def start_stage(c, u, f):
 
 
 def cc_exec(c, u, pid, f):
-    """درخواستی که معاون فنی صادر می‌کند، رونوشت به معاون اجرایی می‌رود."""
+    """درخواستی که معاون فنی صادر یا تأیید می‌کند (از جمله درخواست مهندسان دفتر فنی)، رونوشت به معاون اجرایی می‌رود."""
     mem = pmembers(c, f['project_id'])
-    if mem.get('tech') == u['id'] and mem.get('exec') and mem.get('exec') != u['id']:
+    if mem.get('tech') == u['id'] and mem.get('exec') and mem.get('exec') != u['id'] and not c.execute(
+            "SELECT 1 FROM referrals WHERE doc_type='purchase' AND doc_id=? AND to_id=?", (pid, mem['exec'])).fetchone():
         c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
                   ('purchase', pid, u['id'], mem['exec'], 'جهت اطلاع', 'رونوشت درخواست کالای معاون فنی', now()))
 
@@ -1133,8 +1226,10 @@ def pur_filter(c, u, q):
     w, p = ['1=1'], []
     if not is_broad(c, u):
         w.append('(x.requester_id=? OR x.holder_id=? OR x.project_id IN (SELECT project_id FROM project_members '
-                 'WHERE user_id=?) OR EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id AND f.user_id=?))')
-        p += [u['id']] * 4
+                 'WHERE user_id=?) OR EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id AND f.user_id=?) '
+                 "OR EXISTS(SELECT 1 FROM project_team t WHERE t.project_id=x.project_id AND t.user_id=? AND "
+                 "x.unit=CASE t.role_key WHEN 'exec_eng' THEN 'exec' ELSE 'tech' END))")
+        p += [u['id']] * 5
     for k in ('project_id', 'holder_id'):
         if q.get(k):
             w.append('x.%s=?' % k); p.append(int(q[k]))
@@ -1289,6 +1384,8 @@ def api_purchase_act(h, c, u, b, q, pid):
     c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
               (st, stage, holder, now() if stage == 'done' else None, P['id']))
     pflow(c, P['id'], u, P['stage'], a, label, '؛ '.join([note] + notes if note else notes))
+    if P['stage'] == 'unit_approval' and a == 'approve':
+        cc_exec(c, u, P['id'], P)
     return {'ok': True}
 
 

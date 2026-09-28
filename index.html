@@ -67,6 +67,9 @@ nav a.sub{padding:5px 32px 5px 18px;font-size:13.5px}
 nav a.main{font-weight:bold;color:#17344d;border-top:1px solid var(--line);margin-top:6px;padding-top:10px}
 nav a.act{color:var(--pri);cursor:pointer}
 nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
+.org>div{display:flex;gap:10px;align-items:baseline;padding:3px 0;border-bottom:1px dashed var(--line)}
+.org span{color:var(--mut);min-width:120px;font-size:13px}.org .o1{padding-right:22px}.org .o2{padding-right:44px}.org .o3{padding-right:66px}
+.org .o3 span::before{content:'└ ';color:var(--mut)}
 .crumb{color:var(--mut);font-size:12.5px;margin-bottom:4px}
 /* فرم درخواست کالا — مطابق فرم کاغذی */
 .sheet{background:#fff;color:#111;margin-bottom:14px}
@@ -200,7 +203,7 @@ const HQ_OF={};HQ.forEach(g=>g[3].forEach(t=>HQ_OF[t[0]]=g));Object.assign(HQ_OF
 const navProjects=()=>M.projects.filter(p=>p.code!='HQ'&&(M.broad||M.my_roles.some(r=>r.project_id==p.id)));
 function drawNav(cur){
   const a=(k,t,cls,extra)=>`<a href="#/${k}" class="${cls||''} ${cur==k?'on':''}">${t}${extra||''}</a>`;
-  let h=M.site_only?'':'<div class="grp">دفتر مرکزی</div>'+HQ.map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
+  let h=M.site_only?'<div class="grp">مکاتبات</div>'+a('letters','نامه‌های من','sub')+a('letter-new','نامه داخلی جدید','sub'):'<div class="grp">دفتر مرکزی</div>'+HQ.map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
   h+='<div class="grp">پروژه‌ها</div>'+navProjects().map(p=>a('project/'+p.id,esc(p.name),'sub')).join('')+(isTop()?'<a class="sub act" onclick="projModal(p=>location=\'#/project/\'+p.id)">+ تعریف پروژه جدید</a>':'');
   h+=a('cartable','کارتابل من','main','<span class="badge" id="cnt" style="display:none"></span>')+'<hr>';
   h+=a('purchase-new','درخواست کالا')+(['admin','manager','secretariat','finance'].includes(M.me.role)?a('reports','گزارش‌ها'):'')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
@@ -212,12 +215,13 @@ setInterval(()=>{if(M)refreshCount()},60000);
 window.addEventListener('hashchange',route);
 async function route(){
   if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
-  toggleNav(0);try{drawNav(p=='project'?'project/'+id:(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
+  toggleNav(0);try{drawNav(p=='project'?'project/'+id:M.site_only?({letter:'letters','letter-edit':'letters'}[p]||p):(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
   const V={cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('hq_purchase','درخواست‌های کالا منتظر خرید توسط پشتیبانی دفتر مرکزی'),'hq-finance':()=>hqStage('finance_pay','خریدهای انجام‌شده منتظر پرداخت'),'hq-office':()=>hqStage('archive','درخواست‌های کالا منتظر بایگانی',1),
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
-  if(M.site_only&&(HQ_OF[p]||['reports','admin'].includes(p))){location.hash='#/cartable';return}
-  $('#view').innerHTML=subBar(p)+'<div id="pg"><div class="mut">در حال بارگذاری…</div></div>';
+  const SITE_OK=['letters','letter-new','letter','letter-edit'];
+  if(M.site_only&&((HQ_OF[p]&&!SITE_OK.includes(p))||['reports','admin'].includes(p))){location.hash='#/cartable';return}
+  $('#view').innerHTML=(M.site_only?'':subBar(p))+'<div id="pg"><div class="mut">در حال بارگذاری…</div></div>';
   await run(async()=>{await (V[p]||cartable)()});window.scrollTo(0,0)}
 function pwModal(force){
   const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card"><h2>${force?'برای شروع، رمز عبور پیش‌فرض را تغییر دهید':'تغییر رمز عبور'}</h2>
@@ -228,7 +232,8 @@ function pwModal(force){
   if(!force)d.querySelector('#pwC').onclick=()=>d.remove()}
 
 // ---------------------------------------------------------------- اجزای مشترک
-function userPicker(id,exclude){return `<div class="users" id="${id}">${M.users.filter(u=>u.id!=exclude).map(u=>`<label><input type="checkbox" value="${u.id}"> ${esc(u.full_name)} <span class="mut">${esc(u.title)}</span></label>`).join('')}</div>`}
+function userPicker(id,exclude){const pre=id=='lrTo'&&M.site_only?M.superiors:[];const list=M.site_only?M.users.filter(u=>M.colleagues.includes(u.id)):M.users;
+  return `<div class="users" id="${id}">${list.filter(u=>u.id!=exclude).map(u=>`<label><input type="checkbox" value="${u.id}" ${pre.includes(u.id)?'checked':''}> ${esc(u.full_name)} <span class="mut">${esc(u.title)}</span>${pre.includes(u.id)?' <span class="tag pri">بالادست</span>':''}</label>`).join('')}</div>`}
 const picked=id=>[...document.querySelectorAll('#'+id+' input:checked')].map(x=>+x.value);
 function referForm(pfx,title){return `<div class="grid"><div class="full"><label>${title||'ارجاع به'}</label>${userPicker(pfx+'To',M.me.id)}</div>
   <div><label>نوع اقدام</label><select id="${pfx}Act">${opts(M.actions.map(a=>[a,a]),'اقدام')}</select></div>
@@ -300,7 +305,7 @@ async function lettersList(){
    <div><label>از تاریخ</label><input id="fF" value="${esc(f.fromJ||'')}" placeholder="۱۴۰۵/۰۱/۰۱"></div>
    <div><label>تا تاریخ</label><input id="fT" value="${esc(f.toJ||'')}"></div>
    <div><label><input type="checkbox" id="fO" style="width:auto" ${f.overdue?'checked':''}> فقط مهلت‌گذشته</label></div>
-   <button class="btn" onclick="letFilter()">نمایش</button><button class="btn l" onclick="letCsv()">خروجی اکسل</button></div></div><div id="lres"></div>`;
+   <button class="btn" onclick="letFilter()">نمایش</button>${M.site_only?'':'<button class="btn l" onclick="letCsv()">خروجی اکسل</button>'}</div></div><div id="lres"></div>`;
   const qs=new URLSearchParams(Object.entries({q:f.q,kind:f.kind,status:f.status,project_id:f.project_id,holder:f.holder,from:f.from,to:f.to,overdue:f.overdue?1:''}).filter(x=>x[1]));
   lettersList.qs=qs.toString();
   const rs=await api('GET','/api/letters?'+qs);
@@ -429,11 +434,19 @@ async function projectPage(id,sub){
   const my=M.my_roles.find(r=>r.project_id==P.id);sub=M.units.some(u=>u[0]==sub)?sub:(my?M.role_unit[my.role_key]:'tech');
   const canReq=isTop()||!!my;
   let h=`<div class="crumb">پروژه‌ها</div><div class="row" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">پروژه ${esc(P.name)}${P.code?' <span class="mut">(کد <span class="num">'+esc(P.code)+'</span>)</span>':''}</h1>${canReq?`<a class="btn" href="#/purchase-new/${P.id}">+ درخواست کالا</a>`:''}</div>`;
-  h+=`<div class="card"><h2>ارکان پروژه</h2>`;
-  if(isTop())h+=`<div class="grid"><div><label>نام پروژه</label><input id="pjN" value="${esc(P.name)}"></div><div><label>کد پروژه</label><input id="pjC" value="${esc(P.code)}"></div>
-    ${M.project_roles.map(([k,t])=>`<div><label>${t}</label><select id="pjR_${k}">${opts(M.users.map(u=>[u.id,u.full_name]),(mem[k]||{}).user_id,'— تعیین نشده —')}</select></div>`).join('')}</div>
-    <button class="btn" style="margin-top:8px" onclick="saveProject(${P.id})">ذخیره ارکان</button>`;
-  else h+=`<div class="kv">${M.project_roles.map(([k,t])=>`<div>${t}</div><div>${mem[k]?esc(mem[k].full_name):'<span class="mut">تعیین نشده</span>'}</div>`).join('')}</div>`;
+  const team=k=>d.team.filter(t=>t.role_key==k);const nm=k=>mem[k]?esc(mem[k].full_name):'<span class="mut">تعیین نشده</span>';
+  const tl=k=>team(k).length?team(k).map(t=>esc(t.full_name)).join('، '):'<span class="mut">—</span>';
+  h+=`<div class="card"><h2>چارت سازمانی و ارکان پروژه</h2><div class="org">
+   <div class="o0"><span>مدیر پروژه</span><b>${nm('pm')}</b></div>
+   <div class="o1"><span>سرپرست کارگاه</span><b>${nm('supervisor')}</b></div>
+   <div class="o2"><span>معاون اجرایی</span><b>${nm('exec')}</b></div><div class="o3"><span>مهندس اجرایی</span><b>${tl('exec_eng')}</b></div>
+   <div class="o2"><span>معاون فنی</span><b>${nm('tech')}</b></div><div class="o3"><span>مهندس دفتر فنی</span><b>${tl('tech_eng')}</b></div>
+   <div class="o2"><span>پشتیبانی</span><b>${nm('support')}</b></div><div class="o2"><span>انبار</span><b>${nm('warehouse')}</b></div></div>
+   <div class="mut" style="margin-top:6px">تأیید درخواست کالا و مکاتبات هر نفر به بالادست مستقیمش در این چارت می‌رود.</div>`;
+  if(isTop())h+=`<details style="margin-top:10px"><summary style="cursor:pointer;font-weight:bold">ویرایش پروژه و ارکان</summary><div class="grid" style="margin-top:8px"><div><label>نام پروژه</label><input id="pjN" value="${esc(P.name)}"></div><div><label>کد پروژه</label><input id="pjC" value="${esc(P.code)}"></div>
+    ${M.project_roles.map(([k,t])=>`<div><label>${t}</label><select id="pjR_${k}">${opts(M.users.map(u=>[u.id,u.full_name]),(mem[k]||{}).user_id,'— تعیین نشده —')}</select></div>`).join('')}
+    ${M.team_roles.map(([k,t,up])=>`<div class="full"><label>${t} (زیر نظر ${M.project_roles.find(r=>r[0]==up)[1]})</label><div class="users" id="pjT_${k}">${M.users.map(u=>`<label><input type="checkbox" value="${u.id}" ${team(k).some(x=>x.user_id==u.id)?'checked':''}> ${esc(u.full_name)} <span class="mut">${esc(u.title)}</span></label>`).join('')}</div></div>`).join('')}</div>
+    <button class="btn" style="margin-top:8px" onclick="saveProject(${P.id})">ذخیره ارکان</button></details>`;
   const miss=M.project_roles.filter(([k])=>['supervisor','warehouse','pm','tech','exec'].includes(k)&&!mem[k]).map(r=>r[1]);
   if(miss.length)h+=`<div class="tag warn" style="margin-top:8px">تا ${miss.join('، ')} تعیین نشود، درخواست کالای این پروژه به گردش نمی‌افتد.</div>`;
   h+=`</div><div class="tabs">${M.units.map(([k,t])=>`<a href="#/project/${P.id}/${k}" class="${k==sub?'on':''}">${t}</a>`).join('')}</div><div id="ptab"><div class="mut">در حال بارگذاری…</div></div>`;
@@ -444,7 +457,7 @@ async function projectPage(id,sub){
     t+=`<div class="card"><h2>استعلام‌های منتظر پاسخ انبار (${fa(inq.length)})</h2>${purTable(inq)}</div><div class="card"><h2>تحویل‌شده از موجودی انبار</h2>${purTable(dl)}</div>`}
   t+=`<div class="card"><div class="row" style="justify-content:space-between"><h2>درخواست‌های کالای واحد ${unitName(sub)} (${fa(rs.length)})</h2><a class="btn l sm" href="/api/purchases.csv?project_id=${P.id}&unit=${sub}">خروجی CSV</a></div>${purTable(rs)}</div>`;
   $('#ptab').innerHTML=t}
-const saveProject=id=>run(async()=>{const m={};M.project_roles.forEach(([k])=>m[k]=val('pjR_'+k));await api('POST',`/api/projects/${id}/update`,{name:val('pjN'),code:val('pjC'),members:m});await reloadMeta();flash('ذخیره شد');route()});
+const saveProject=id=>run(async()=>{const m={},t={};M.project_roles.forEach(([k])=>m[k]=val('pjR_'+k));M.team_roles.forEach(([k])=>t[k]=picked('pjT_'+k));await api('POST',`/api/projects/${id}/update`,{name:val('pjN'),code:val('pjC'),members:m,team:t});await reloadMeta();flash('ذخیره شد');route()});
 
 // ---------- فرم درخواست کالا (مطابق فرم کاغذی شرکت)
 const PUR_UNITS=['عدد','کیلوگرم','تن','متر','مترمربع','مترمکعب','شاخه','کیسه','لیتر','دستگاه','بسته','رول','سری','حلقه','جفت'];
@@ -595,6 +608,7 @@ function help(){$('#pg').innerHTML=`<h1>راهنمای کوتاه</h1><div class
 <b>هر کاربر:</b> روزی دو بار «کارتابل من» را ببیند. روی هر کار: «در حال اقدام»، «انجام شد» (با شرح)، «برگشت» (با علت) یا «ارجاع به دیگری». ردیف‌های قرمز مهلتشان گذشته است.<br>
 <b>ارجاع‌دهنده:</b> در زبانه «پیگیری ارجاع‌های من» می‌بیند کار دست چه کسی مانده؛ دیگر نیازی به پیگیری تلفنی نیست.<br>
 <b>درخواست کالا:</b> یکی از ارکان پروژه فرم را پر و ارسال می‌کند ← تأیید رئیس واحد (معاون فنی، معاون اجرایی یا سرپرست کارگاه؛ اگر خود یکی از این‌ها ثبت کند، همان ثبت تأیید است) ← استعلام انبار کارگاه (اگر موجود بود، حواله خروج و پایان) ← معاون فنی (فقط مصالح اصلی) ← سرپرست کارگاه ← مدیر پروژه ← پشتیبانی دفتر مرکزی (خرید) ← مالی (پرداخت) ← منشی (بایگانی). درخواستی که معاون فنی ثبت کند، رونوشتش به معاون اجرایی می‌رود. تا پیش از رسیدن به مدیر پروژه، کسی که درخواست در کارتابل اوست می‌تواند ویرایش (با ثبت نسخه جدید) یا با ذکر علت لغو کند؛ درخواست لغوشده در بایگانی می‌ماند. پیش‌فاکتور، فاکتور و مشخصات فنی در هر مرحله با انتخاب نوع پیوست می‌شوند.<br>
+<b>چارت کارگاه:</b> مهندسان اجرایی زیر نظر معاون اجرایی و مهندسان دفتر فنی زیر نظر معاون فنی هستند؛ پشتیبانی و انبار زیر نظر سرپرست کارگاه، معاونان زیر نظر سرپرست کارگاه و او زیر نظر مدیر پروژه. درخواست کالای هر نفر را بالادست مستقیمش تأیید می‌کند. مهندسان فقط درخواست‌های واحد خودشان را می‌بینند. کارکنان کارگاه نامه داخلی را فقط برای همکاران پروژه می‌فرستند و بالادستشان به‌طور پیش‌فرض گیرنده است.<br>
 <b>ارکان پروژه:</b> هیات مدیره و مدیر سیستم در صفحه هر پروژه (بخش پروژه‌ها) مدیر پروژه، سرپرست کارگاه، معاونان، پشتیبانی و انبار را تعیین می‌کنند.<br>
 <b>درخواست مالی (تنخواه، پرداخت):</b> «دفتر مرکزی › مالی › درخواست پرداخت / تنخواه جدید» ← پیش‌فاکتور را پیوست کنید ← مسیر تأیید خودکار ساخته می‌شود. تأییدکننده‌ها در «منتظر تأیید من» تأیید/رد/برگشت می‌زنند. مالی پس از پرداخت، شماره سند سپیدار را ثبت می‌کند.<br>
 <b>بایگانی:</b> پس از انجام کار، دبیرخانه نامه را با کد محل بایگانی فیزیکی (کلاسور/قفسه) بایگانی می‌کند. جستجو با هر بخشی از موضوع، شماره یا کد بایگانی ممکن است.<br>
