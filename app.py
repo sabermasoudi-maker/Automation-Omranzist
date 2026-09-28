@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.5'
+VERSION = '1.6'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 OPEN = ('new', 'seen', 'doing')
@@ -56,7 +56,7 @@ HQ_ROLES = {'support_manager': 'مدیر پشتیبانی دفتر مرکزی', 
             'archive_user': 'منشی (بایگانی)'}
 
 # گردش درخواست کالا: مرحله ← {اقدام: (مرحله بعد، شرح)}
-P_STAGES = {'draft': 'ثبت درخواست', 'unit_approval': 'تأیید رئیس واحد',
+P_STAGES = {'draft': 'پیش‌نویس درخواست‌کننده', 'unit_approval': 'تأیید رئیس واحد',
             'supervisor_review': 'بررسی سرپرست کارگاه',  # فقط برای درخواست‌های نسخه‌های قبل
             'warehouse_check': 'استعلام موجودی از انبار کارگاه', 'tech_review': 'بررسی معاون فنی',
             'supervisor_approve': 'تأیید سرپرست کارگاه', 'pm_approve': 'بررسی مدیر پروژه',
@@ -74,7 +74,9 @@ P_FLOW = {
     'hq_purchase': {'purchased': ('finance_pay', 'خرید انجام شد — ارسال به مالی')},
     'finance_pay': {'paid': ('archive', 'پرداخت شد — ارسال به دبیرخانه برای بایگانی')},
     'archive': {'archived': ('done', 'بایگانی شد')},
+    'draft': {'submit': (None, '')},  # مرحله بعد از روی سمت درخواست‌کننده تعیین می‌شود
 }
+PUR_DIR = 'درخواست کالا'  # پوشه پیوست‌های درخواست کالا در data\files؛ هر درخواست یک زیرپوشه به شماره خودش
 STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check': ('member', 'warehouse'),
                 'tech_review': ('member', 'tech'), 'supervisor_approve': ('member', 'supervisor'),
                 'pm_approve': ('member', 'pm'),
@@ -83,8 +85,10 @@ STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check'
 UNIT_HEAD = {'tech': 'tech', 'exec': 'exec', 'support': 'supervisor', 'warehouse': 'supervisor'}  # رئیس هر واحد
 HEAD_ROLES = ('tech', 'exec', 'supervisor')  # درخواست این افراد، خودش تأیید رئیس واحد است
 # تا پیش از رسیدن به مدیر پروژه ویرایش و لغو ممکن است؛ مدیر پروژه فقط لغو (ابطال) می‌کند
-EDIT_STAGES = ('unit_approval', 'supervisor_review', 'warehouse_check', 'tech_review', 'supervisor_approve', 'returned')
-CANCEL_STAGES = EDIT_STAGES + ('pm_approve',)
+# هر کس فقط تا وقتی درخواست در کارتابل خودش است ویرایش می‌کند؛ تا مدیر پروژه (خودش هم)
+EDIT_STAGES = ('draft', 'unit_approval', 'supervisor_review', 'warehouse_check', 'tech_review', 'supervisor_approve',
+               'pm_approve', 'returned')
+CANCEL_STAGES = EDIT_STAGES
 CATEGORIES = [('main', 'مصالح اصلی'), ('general', 'عمومی و مصرفی')]
 URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
 ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
@@ -251,6 +255,7 @@ def init_db():
     migrate(c)
     migrate_v13(c)
     migrate_v15(c)
+    migrate_v16(c)
     c.commit()
     c.close()
 
@@ -260,7 +265,8 @@ def add_columns(c):
     want = {'purchases': [('category', "TEXT DEFAULT 'general'"), ('urgency', "TEXT DEFAULT 'normal'"),
                           ('need_date', "TEXT DEFAULT ''"), ('version', 'INTEGER DEFAULT 1'),
                           ('cancel_reason', "TEXT DEFAULT ''"), ('cancel_note', "TEXT DEFAULT ''")],
-            'attachments': [('kind', "TEXT DEFAULT ''")]}
+            'attachments': [('kind', "TEXT DEFAULT ''"), ('deleted_at', 'TEXT'), ('deleted_by', 'INTEGER'),
+                            ('flow_id', 'INTEGER')]}
     for t, cols in want.items():
         have = {r[1] for r in c.execute('PRAGMA table_info(%s)' % t)}
         for name, decl in cols:
@@ -329,6 +335,24 @@ def migrate_v15(c):
             elif not c.execute('SELECT 1 FROM project_members WHERE project_id=? AND role_key=?', (pr[0], key)).fetchone():
                 c.execute('INSERT INTO project_members(project_id,role_key,user_id) VALUES(?,?,?)', (pr[0], key, uid))
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v15','1')")
+
+
+def migrate_v16(c):
+    """پیوست‌های درخواست‌های کالای قبلی به پوشه جداگانه هر درخواست منتقل می‌شوند."""
+    if settings(c).get('seed_v16'):
+        return
+    for a in rows(c.execute("SELECT a.id, a.path, p.number FROM attachments a JOIN purchases p ON p.id=a.doc_id "
+                            "WHERE a.doc_type='purchase'")):
+        sub = pur_folder(a)
+        if os.path.dirname(a['path']) == sub:
+            continue
+        src = os.path.join(FILES, a['path'])
+        dst_rel = os.path.join(sub, os.path.basename(a['path']))
+        if os.path.exists(src):
+            os.makedirs(os.path.join(FILES, sub), exist_ok=True)
+            shutil.move(src, os.path.join(FILES, dst_rel))
+            c.execute('UPDATE attachments SET path=? WHERE id=?', (dst_rel, a['id']))
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v16','1')")
 
 
 def sync_pm(c, pid, uid):
@@ -503,7 +527,7 @@ def get_doc(c, u, dt, did):
 
 def doc_extras(c, dt, did):
     att = rows(c.execute('SELECT a.*, u.full_name uploader FROM attachments a LEFT JOIN users u ON u.id=a.uploaded_by '
-                         'WHERE doc_type=? AND doc_id=? ORDER BY a.id', (dt, did)))
+                         'WHERE doc_type=? AND doc_id=? AND a.deleted_at IS NULL ORDER BY a.id', (dt, did)))
     refs = rows(c.execute(
         'SELECT r.*, f.full_name from_name, t.full_name to_name FROM referrals r LEFT JOIN users f ON f.id=r.from_id '
         'LEFT JOIN users t ON t.id=r.to_id WHERE doc_type=? AND doc_id=? ORDER BY r.id', (dt, did)))
@@ -876,28 +900,63 @@ def api_ref_status(h, c, u, b, q, rid):
 
 
 # ---------- پیوست‌ها
+def pur_folder(P):
+    """پوشه پیوست‌های یک درخواست کالا، مثل data\\files\\درخواست کالا\\ک-1405-0012"""
+    return os.path.join(PUR_DIR, re.sub(r'[\\/:*?"<>|\s]+', '-', P['number']).strip('-'))
+
+
+def handover_id(c, P):
+    """شماره آخرین رویداد گردش که درخواست را به کارتابل دارنده فعلی رساند."""
+    r = c.execute("SELECT MAX(id) FROM purchase_flow WHERE purchase_id=? AND action NOT IN ('attach','edit','delatt')",
+                  (P['id'],)).fetchone()
+    return r[0] or 0
+
+
+def can_del_att(c, u, P, a):
+    """پیوست را فقط خودِ بارگذارنده حذف می‌کند، آن هم فقط در همان نوبتی که درخواست در کارتابلش است."""
+    return (a['uploaded_by'] == u['id'] and P['holder_id'] == u['id'] and P['status'] in ('open', 'returned')
+            and (a.get('flow_id') or 0) > handover_id(c, P))
+
+
+@route('POST', r'/api/attachments/(\d+)/delete')
+def api_att_delete(h, c, u, b, q, aid):
+    a = one(c.execute('SELECT * FROM attachments WHERE id=? AND deleted_at IS NULL', (int(aid),)))
+    need(a and a['doc_type'] == 'purchase', 'پیوست پیدا نشد', 404)
+    P = get_doc(c, u, 'purchase', a['doc_id'])
+    need(can_del_att(c, u, P, a),
+         'فقط پیوستی را که خودتان در همین نوبت گذاشته‌اید و تا وقتی درخواست در کارتابل شماست می‌توانید حذف کنید')
+    c.execute('UPDATE attachments SET deleted_at=?, deleted_by=? WHERE id=?', (now(), u['id'], a['id']))
+    c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
+              (P['id'], P['stage'], 'delatt', 'حذف پیوست ' + (a['kind'] or ''), u['id'], a['name'], now()))
+    log(c, 'purchase', P['id'], u['id'], 'حذف پیوست', a['name'])
+    return {'ok': True}
+
+
 @route('POST', '/api/attach')
 def api_attach(h, c, u, b, q):
     dt, did = q.get('doc_type'), int(q.get('doc_id') or 0)
-    get_doc(c, u, dt, did)
+    D = get_doc(c, u, dt, did)
+    if dt == 'purchase':
+        need(D['holder_id'] == u['id'] and D['status'] in ('open', 'returned'),
+             'پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد')
     name = urllib.parse.unquote(h.headers.get('X-Filename') or 'file')
     name = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(name))[:150] or 'file'
     raw = h.raw_body
     need(raw, 'فایل خالی است', 400)
-    sub = datetime.date.today().strftime('%Y-%m')
+    sub = pur_folder(D) if dt == 'purchase' else datetime.date.today().strftime('%Y-%m')
     os.makedirs(os.path.join(FILES, sub), exist_ok=True)
     rel = os.path.join(sub, '%s_%s' % (secrets.token_hex(6), name))
     with open(os.path.join(FILES, rel), 'wb') as f:
         f.write(raw)
     kind = urllib.parse.unquote(h.headers.get('X-Kind') or '')
     kind = kind if kind in ATT_KINDS else ''
-    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind) VALUES(?,?,?,?,?,?,?,?)',
-              (dt, did, name, rel, len(raw), u['id'], now(), kind))
-    log(c, dt, did, u['id'], 'پیوست' + (' — ' + kind if kind else ''), name)
+    fid = None
     if dt == 'purchase':
-        c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
-                  (did, (one(c.execute('SELECT stage FROM purchases WHERE id=?', (did,))) or {}).get('stage'), 'attach',
-                   'پیوست ' + (kind or 'فایل'), u['id'], name, now()))
+        fid = c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
+                        (did, D['stage'], 'attach', 'پیوست ' + (kind or 'فایل'), u['id'], name, now())).lastrowid
+    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id) '
+              'VALUES(?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid))
+    log(c, dt, did, u['id'], 'پیوست' + (' — ' + kind if kind else ''), name)
     return {'ok': True}
 
 
@@ -1223,7 +1282,7 @@ def cc_exec(c, u, pid, f):
 
 
 def pur_filter(c, u, q):
-    w, p = ['1=1'], []
+    w, p = ["(x.stage!='draft' OR x.requester_id=?)"], [u['id']]  # پیش‌نویس فقط برای خود درخواست‌کننده
     if not is_broad(c, u):
         w.append('(x.requester_id=? OR x.holder_id=? OR x.project_id IN (SELECT project_id FROM project_members '
                  'WHERE user_id=?) OR EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id AND f.user_id=?) '
@@ -1292,27 +1351,24 @@ def api_purchase_csv(h, c, u, b, q, pid):
 @route('POST', '/api/purchases')
 def api_purchase_new(h, c, u, b, q):
     f, items = pur_fields(c, u, b)
-    stage, label = start_stage(c, u, f)
-    holder = stage_holder(c, f, stage)
     y = jyear()
     seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchases WHERE year=?', (y,)).fetchone()[0]
     number = 'ک %d/%04d' % (y, seq)
     cur = c.execute('INSERT INTO purchases(year,seq,number,project_id,unit,warehouse,category,urgency,need_date,purpose,'
                     'requester_id,req_date,stage,status,holder_id,version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)',
                     (y, seq, number, f['project_id'], f['unit'], f['warehouse'], f['category'], f['urgency'],
-                     f['need_date'], f['purpose'], u['id'], jstr(today()), stage, 'open', holder, now()))
+                     f['need_date'], f['purpose'], u['id'], jstr(today()), 'draft', 'open', u['id'], now()))
     pid = cur.lastrowid
     save_items(c, pid, items)
     save_version(c, pid, u, 'نسخه اصلی')
-    pflow(c, pid, u, 'draft', 'submit', label, number)
-    cc_exec(c, u, pid, f)
+    pflow(c, pid, u, 'new', 'create', 'ایجاد پیش‌نویس', number)
     return {'id': pid, 'number': number}
 
 
 def can_edit(u, P):
     if P['status'] not in ('open', 'returned') or P['stage'] not in EDIT_STAGES:
         return False
-    return P['holder_id'] == u['id'] or (P['requester_id'] == u['id'] and P['stage'] in ('unit_approval', 'returned'))
+    return P['holder_id'] == u['id']  # فقط کسی که درخواست اکنون در کارتابل اوست
 
 
 def can_cancel(u, P):
@@ -1334,6 +1390,8 @@ def api_purchase_get(h, c, u, b, q, pid):
     for v in vers:
         v['data'] = json.loads(v['data'] or '{}')
     att, refs, _ = doc_extras(c, 'purchase', P['id'])
+    for a in att:
+        a['can_delete'] = can_del_att(c, u, P, a)
     for r in refs:  # رونوشت «جهت اطلاع» با دیدن بسته می‌شود
         if r['to_id'] == u['id'] and r['status'] == 'new':
             ns = 'done' if r['action'] == 'جهت اطلاع' else 'seen'
@@ -1343,8 +1401,7 @@ def api_purchase_get(h, c, u, b, q, pid):
     acts = list(P_FLOW.get(P['stage'], {})) if P['holder_id'] == u['id'] and P['status'] == 'open' else []
     return {'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
             'actions': acts, 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
-            'can_attach': P['status'] in ('open', 'returned') or P['holder_id'] == u['id'] or is_broad(c, u)
-            or P['requester_id'] == u['id']}
+            'can_attach': P['status'] in ('open', 'returned') and P['holder_id'] == u['id']}
 
 
 @route('POST', r'/api/purchases/(\d+)/act')
@@ -1359,6 +1416,8 @@ def api_purchase_act(h, c, u, b, q, pid):
     notes = []
     if a == 'return':
         need(note, 'علت برگشت را بنویسید', 400)
+    if a == 'submit':
+        nxt, label = start_stage(c, u, P)
     if a == 'not_in_stock':
         nxt = 'tech_review' if P['category'] == 'main' else 'supervisor_approve'
     if nxt in ('tech_review', 'supervisor_approve', 'pm_approve'):
@@ -1384,7 +1443,7 @@ def api_purchase_act(h, c, u, b, q, pid):
     c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
               (st, stage, holder, now() if stage == 'done' else None, P['id']))
     pflow(c, P['id'], u, P['stage'], a, label, '؛ '.join([note] + notes if note else notes))
-    if P['stage'] == 'unit_approval' and a == 'approve':
+    if (P['stage'] == 'unit_approval' and a == 'approve') or a == 'submit':
         cc_exec(c, u, P['id'], P)
     return {'ok': True}
 
@@ -1392,11 +1451,15 @@ def api_purchase_act(h, c, u, b, q, pid):
 @route('POST', r'/api/purchases/(\d+)/edit')
 def api_purchase_edit(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
-    need(can_edit(u, P), 'ویرایش فقط تا پیش از رسیدن درخواست به مدیر پروژه و توسط کسی که درخواست در کارتابل اوست ممکن است')
+    need(can_edit(u, P), 'ویرایش فقط وقتی ممکن است که درخواست در کارتابل شما باشد، و فقط تا مرحله مدیر پروژه')
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'])
     write_fields(c, P['id'], f, items)
-    c.execute('UPDATE purchases SET version=version+1 WHERE id=?', (P['id'],))
     note = (b.get('note') or '').strip()
+    if P['stage'] == 'draft':  # پیش‌نویس هنوز ارسال نشده؛ نسخه جدید لازم نیست
+        c.execute('DELETE FROM purchase_versions WHERE purchase_id=?', (P['id'],))
+        save_version(c, P['id'], u, 'نسخه اصلی')
+        return {'ok': True}
+    c.execute('UPDATE purchases SET version=version+1 WHERE id=?', (P['id'],))
     save_version(c, P['id'], u, note)
     pflow(c, P['id'], u, P['stage'], 'edit', 'ویرایش — نسخه %d' % (P['version'] + 1), note)
     return {'ok': True}
