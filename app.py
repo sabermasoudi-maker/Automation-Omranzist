@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.6'
+VERSION = '1.7'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 OPEN = ('new', 'seen', 'doing')
@@ -418,9 +418,15 @@ def sees_all(u):
     return u['role'] in ('admin', 'manager', 'secretariat')
 
 
+def can_report(c, u):
+    """گزارش‌ها و همه درخواست‌ها و مکاتبات: هیات مدیره، مدیر سیستم، مدیر پشتیبانی و مدیر مالی دفتر مرکزی."""
+    S = settings(c)
+    return is_mgr(u) or str(u['id']) in (S.get('support_manager'), S.get('finance_manager'))
+
+
 def is_broad(c, u):
-    """کسانی که همه درخواست‌های خرید همه پروژه‌ها را می‌بینند."""
-    return is_mgr(u) or u['role'] in ('finance', 'secretariat') or str(u['id']) == settings(c).get('support_manager')
+    """کسانی که همه درخواست‌های کالای همه پروژه‌ها را می‌بینند."""
+    return can_report(c, u) or u['role'] in ('finance', 'secretariat')
 
 
 HQ_SETTING_USERS = ('support_manager', 'finance_manager', 'archive_user', 'ceo_user', 'office_approver', 'warehouse_user')
@@ -487,13 +493,15 @@ def participant(c, u, dt, did):
 
 def can_view_letter(c, u, L):
     part = L['created_by'] == u['id'] or participant(c, u, 'letter', L['id'])
+    if can_report(c, u):
+        return True
     if L['confidential'] and not is_mgr(u):
         return part
     return sees_all(u) or part
 
 
 def can_view_request(c, u, R):
-    if u['role'] in ('admin', 'manager', 'finance') or R['requester_id'] == u['id']:
+    if u['role'] in ('admin', 'manager', 'finance') or R['requester_id'] == u['id'] or can_report(c, u):
         return True
     if c.execute('SELECT 1 FROM steps WHERE request_id=? AND approver_id=?', (R['id'], u['id'])).fetchone():
         return True
@@ -649,7 +657,7 @@ def api_meta(h, c, u, b, q):
             'request_kinds': REQUEST_KINDS, 'default_due_days': int(S.get('default_due_days') or 3),
             'ceo_threshold': int(S.get('ceo_threshold') or 0),
             'project_roles': PROJECT_ROLES, 'units': UNITS, 'role_unit': ROLE_UNIT, 'p_stages': P_STAGES,
-            'p_status': P_STATUS, 'hq_roles': HQ_ROLES, 'broad': is_broad(c, u), 'site_only': is_site_only(c, u),
+            'p_status': P_STATUS, 'hq_roles': HQ_ROLES, 'broad': is_broad(c, u), 'site_only': is_site_only(c, u), 'can_report': can_report(c, u),
             'categories': CATEGORIES, 'urgencies': URGENCIES, 'att_kinds': ATT_KINDS,
             'cancel_reasons': cancel_reasons(c),
             'my_roles': [{'project_id': p_, 'role_key': k} for p_, k in user_project_roles(c, u['id'])],
@@ -720,11 +728,13 @@ HOLDERS_SQL = ("(SELECT group_concat(u2.full_name, '، ') FROM referrals r2 JOIN
                "WHERE r2.doc_type='%s' AND r2.doc_id=%s.id AND r2.status IN ('new','seen','doing'))")
 
 
-def letter_filter(u, q):
+def letter_filter(u, q, see_all=False):
     w, p = ['1=1'], []
     part = ("(l.created_by=? OR EXISTS(SELECT 1 FROM referrals r WHERE r.doc_type='letter' AND r.doc_id=l.id "
             "AND (r.to_id=? OR r.from_id=?)))")
-    if not sees_all(u):
+    if see_all:  # گزارش‌گیران: همه مکاتبات
+        pass
+    elif not sees_all(u):
         w.append(part); p += [u['id']] * 3
     elif not is_mgr(u):
         w.append('(l.confidential=0 OR ' + part + ')'); p += [u['id']] * 3
@@ -752,7 +762,7 @@ def letter_filter(u, q):
 
 @route('GET', '/api/letters')
 def api_letters(h, c, u, b, q):
-    w, p = letter_filter(u, q)
+    w, p = letter_filter(u, q, can_report(c, u))
     return rows(c.execute(
         'SELECT l.*, pr.name project, cu.full_name creator, %s holders FROM letters l '
         'LEFT JOIN projects pr ON pr.id=l.project_id LEFT JOIN users cu ON cu.id=l.created_by WHERE %s '
@@ -961,9 +971,9 @@ def api_attach(h, c, u, b, q):
 
 
 # ---------- درخواست‌های مالی
-def req_filter(u, q):
+def req_filter(u, q, see_all=False):
     w, p = ['1=1'], []
-    if u['role'] not in ('admin', 'manager', 'finance'):
+    if not see_all and u['role'] not in ('admin', 'manager', 'finance'):
         w.append("(q.requester_id=? OR EXISTS(SELECT 1 FROM steps s WHERE s.request_id=q.id AND s.approver_id=?) OR "
                  "EXISTS(SELECT 1 FROM referrals r WHERE r.doc_type='request' AND r.doc_id=q.id AND (r.to_id=? OR r.from_id=?)))")
         p += [u['id']] * 4
@@ -985,7 +995,7 @@ def req_filter(u, q):
 @route('GET', '/api/requests')
 def api_requests(h, c, u, b, q):
     no_site(c, u)
-    w, p = req_filter(u, q)
+    w, p = req_filter(u, q, can_report(c, u))
     return rows(c.execute(
         "SELECT q.*, pr.name project, ru.full_name requester, (SELECT au.full_name FROM steps s JOIN users au ON "
         "au.id=s.approver_id WHERE s.request_id=q.id AND s.status='pending') waiting_for FROM requests q "
@@ -1498,7 +1508,7 @@ def api_purchase_cancel(h, c, u, b, q, pid):
 # ---------- گزارش‌ها
 @route('GET', '/api/reports')
 def api_reports(h, c, u, b, q):
-    need(u['role'] in ('admin', 'manager', 'secretariat', 'finance'), 'گزارش‌ها برای مدیران، دبیرخانه و مالی است')
+    need(can_report(c, u), 'گزارش‌ها برای هیات مدیره، مدیر سیستم، مدیر پشتیبانی و مدیر مالی است')
     t = today()
     people = rows(c.execute(
         "SELECT u.id, u.full_name, u.title,"

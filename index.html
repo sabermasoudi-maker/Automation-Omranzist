@@ -22,6 +22,7 @@ label{display:block;font-size:12.5px;color:var(--mut);margin-bottom:2px}
 #app{display:none;min-height:100vh}
 header{background:#17344d;color:#fff;display:flex;align-items:center;gap:16px;padding:8px 18px}
 header b{font-size:15px}header .sp{flex:1}header a{color:#cfe3f3;cursor:pointer}
+header .ver{font-weight:normal;font-size:12px;background:rgba(255,255,255,.14);color:#dbe9f5;border-radius:10px;padding:1px 8px;margin-right:6px;white-space:nowrap}
 .wrap{display:flex}
 nav{width:200px;background:#fff;border-left:1px solid var(--line);min-height:calc(100vh - 44px);padding:10px 0}
 nav a{display:flex;justify-content:space-between;padding:8px 18px;color:var(--ink)}
@@ -184,7 +185,7 @@ async function logout(){await api('POST','/api/logout',{});showLogin()}
 async function boot(){
   try{M=await api('GET','/api/meta')}catch(e){return}
   $('#login').style.display='none';$('#app').style.display='block';
-  $('#coName').textContent=M.company+' — اتوماسیون اداری';$('#meName').textContent=M.me.full_name+' ('+M.roles[M.me.role]+')';
+  $('#coName').innerHTML=esc(M.company)+' — اتوماسیون اداری <span class="ver">نسخه '+fa(M.version)+'</span>';$('#meName').textContent=M.me.full_name+' ('+M.roles[M.me.role]+')';
   document.title='اتوماسیون — '+M.company;
   if(!M.my_roles||!M.p_stages){$('#nav').innerHTML='';$('#view').innerHTML=`<div class="card" style="border-color:var(--bad)"><h1>سرور هنوز نسخه قدیمی (${esc(M.version||'?')}) را اجرا می‌کند</h1>
    <div style="line-height:2.1">فایل صفحه (index.html) نسخه جدید است، ولی برنامه سرور (app.py) هنوز نسخه قبلی است و باید دوباره راه‌اندازی شود.<br>
@@ -198,15 +199,17 @@ const isTop=()=>['admin','manager'].includes(M.me.role); // مدیر سیستم 
 // تب‌های دفتر مرکزی: [کلید، عنوان، مسیر پیش‌فرض، زیرتب‌ها]
 const HQ=[['hq-support','پشتیبانی','hq-support',[['hq-support','منتظر خرید'],['purchases','همه درخواست‌های کالا']]],
   ['hq-finance','مالی','hq-finance',[['hq-finance','پرداخت خریدها'],['requests','درخواست‌های مالی'],['request-new','درخواست پرداخت / تنخواه جدید']]],
-  ['hq-office','اداری','letters',[['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['hq-office','بایگانی درخواست‌های کالا']]]];
+  ['hq-office','اداری','letters',[['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['hq-office','بایگانی درخواست‌های کالا']]],
+  ['hq-reports','گزارش‌ها','reports',[['reports','خلاصه و عملکرد'],['report-purchases','همه درخواست‌های کالا'],['report-requests','همه درخواست‌های مالی'],['report-letters','همه مکاتبات']]]];
+const REPORT_PAGES=HQ[3][3].map(t=>t[0]); // فقط هیات مدیره، مدیر سیستم، مدیر پشتیبانی و مدیر مالی
 const HQ_OF={};HQ.forEach(g=>g[3].forEach(t=>HQ_OF[t[0]]=g));Object.assign(HQ_OF,{letter:HQ[2],'letter-edit':HQ[2],request:HQ[1]});
 const navProjects=()=>M.projects.filter(p=>p.code!='HQ'&&(M.broad||M.my_roles.some(r=>r.project_id==p.id)));
 function drawNav(cur){
   const a=(k,t,cls,extra)=>`<a href="#/${k}" class="${cls||''} ${cur==k?'on':''}">${t}${extra||''}</a>`;
-  let h=M.site_only?'<div class="grp">مکاتبات</div>'+a('letters','نامه‌های من','sub')+a('letter-new','نامه داخلی جدید','sub'):'<div class="grp">دفتر مرکزی</div>'+HQ.map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
+  let h=M.site_only?'<div class="grp">مکاتبات</div>'+a('letters','نامه‌های من','sub')+a('letter-new','نامه داخلی جدید','sub'):'<div class="grp">دفتر مرکزی</div>'+HQ.filter(g=>g[0]!='hq-reports'||M.can_report).map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
   h+='<div class="grp">پروژه‌ها</div>'+navProjects().map(p=>a('project/'+p.id,esc(p.name),'sub')).join('')+(isTop()?'<a class="sub act" onclick="projModal(p=>location=\'#/project/\'+p.id)">+ تعریف پروژه جدید</a>':'');
   h+=a('cartable','کارتابل من','main','<span class="badge" id="cnt" style="display:none"></span>')+'<hr>';
-  h+=a('purchase-new','درخواست کالا')+(['admin','manager','secretariat','finance'].includes(M.me.role)?a('reports','گزارش‌ها'):'')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
+  h+=a('purchase-new','درخواست کالا')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
   $('#nav').innerHTML=h}
 function toggleNav(on){document.body.classList.toggle('navopen',on===undefined?!document.body.classList.contains('navopen'):!!on)}
 function subBar(p){const g=HQ_OF[p];if(!g)return'';return `<div class="crumb">دفتر مرکزی › ${g[1]}</div><div class="tabs noprint">${g[3].map(t=>`<a href="#/${t[0]}" class="${t[0]==p?'on':''}">${t[1]}</a>`).join('')}</div>`}
@@ -218,9 +221,11 @@ async function route(){
   toggleNav(0);try{drawNav(p=='project'?'project/'+id:M.site_only?({letter:'letters','letter-edit':'letters'}[p]||p):(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
   const V={cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('hq_purchase','درخواست‌های کالا منتظر خرید توسط پشتیبانی دفتر مرکزی'),'hq-finance':()=>hqStage('finance_pay','خریدهای انجام‌شده منتظر پرداخت'),'hq-office':()=>hqStage('archive','درخواست‌های کالا منتظر بایگانی',1),
+    'report-purchases':()=>purchasesPage(),'report-requests':requestsList,'report-letters':lettersList,
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
   const SITE_OK=['letters','letter-new','letter','letter-edit'];
   if(M.site_only&&((HQ_OF[p]&&!SITE_OK.includes(p))||['reports','admin'].includes(p))){location.hash='#/cartable';return}
+  if(REPORT_PAGES.includes(p)&&!M.can_report){location.hash='#/cartable';return}
   $('#view').innerHTML=(M.site_only?'':subBar(p))+'<div id="pg"><div class="mut">در حال بارگذاری…</div></div>';
   await run(async()=>{await (V[p]||cartable)()});window.scrollTo(0,0)}
 function pwModal(force){
