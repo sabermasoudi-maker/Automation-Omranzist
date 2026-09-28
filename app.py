@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.7'
+VERSION = '1.7.1'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 OPEN = ('new', 'seen', 'doing')
@@ -102,9 +102,9 @@ MK_CHART = [('mk-sarparast', 'هادی شمیعی', 'سرپرست کارگاه �
             ('mk-ejraei', 'بهروز بحرینی', 'معاون اجرایی موادکاران', 'exec'),
             ('mk-zali', 'ارسلان زالی', 'مهندس اجرایی موادکاران', 'exec_eng'),
             ('mk-fanni', 'سعید حاج ابراهیمی', 'معاون فنی موادکاران', 'tech'),
-            ('mk-bajelani', 'خانم مهندس باجلانی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
+            ('mk-bajelani', 'دینا باجلانی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
             ('mk-masoudi', 'علیرضا مسعودی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
-            ('mk-hosseini', 'خانم مهندس حسینی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
+            ('mk-hosseini', 'سارینا حسینی', 'مهندس دفتر فنی موادکاران', 'tech_eng'),
             ('mk-poshtibani', 'جمشید رستمیان', 'پشتیبانی کارگاه موادکاران', 'support'),
             ('mk-anbar', 'حسن علی‌اصغری', 'انباردار موادکاران', 'warehouse')]
 SEED_MK_POSTS = [('supervisor', 'mk-sarparast', 'سرپرست کارگاه موادکاران'),
@@ -256,6 +256,10 @@ def init_db():
     migrate_v13(c)
     migrate_v15(c)
     migrate_v16(c)
+    # نام کامل دو مهندس دفتر فنی موادکاران (فقط اگر هنوز نام قبلی ثبت است)
+    for un, old, new in (('mk-bajelani', 'خانم مهندس باجلانی', 'دینا باجلانی'),
+                         ('mk-hosseini', 'خانم مهندس حسینی', 'سارینا حسینی')):
+        c.execute('UPDATE users SET full_name=? WHERE username=? AND full_name=?', (new, un, old))
     c.commit()
     c.close()
 
@@ -618,10 +622,18 @@ def route(method, pattern):
     return deco
 
 
+def pw_ok(pw, r):
+    """رمز درست است اگر همان‌طور، یا با Caps Lock روشن (حروف برعکس)، یا با حرف اول بزرگ‌شده خودکار گوشی تایپ شده باشد."""
+    tries = {pw, pw.swapcase(), pw[:1].swapcase() + pw[1:]}
+    return any(hash_pw(t, r['salt'])[0] == r['pw_hash'] for t in tries)
+
+
 @route('POST', '/api/login')
 def api_login(h, c, u, b, q):
-    r = one(c.execute('SELECT * FROM users WHERE username=? AND active=1', ((b.get('username') or '').strip(),)))
-    if not r or hash_pw(b.get('password') or '', r['salt'])[0] != r['pw_hash']:
+    # نام کاربری به حروف کوچک و بزرگ حساس نیست
+    r = one(c.execute('SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1',
+                      ((b.get('username') or '').strip(),)))
+    if not r or not pw_ok(b.get('password') or '', r):
         raise ApiError('نام کاربری یا رمز عبور نادرست است', 401)
     tok = secrets.token_hex(24)
     c.execute('INSERT INTO sessions VALUES(?,?,?)', (tok, r['id'], now()))
@@ -1575,6 +1587,8 @@ def api_admin_user(h, c, u, b, q):
     need(is_mgr(u))
     need(b.get('role') in ROLES and (b.get('full_name') or '').strip() and (b.get('username') or '').strip(),
          'نام، نام کاربری و نقش الزامی است', 400)
+    need(not c.execute('SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND id!=?',
+                       (b['username'].strip(), int(b.get('id') or 0))).fetchone(), 'این نام کاربری تکراری است', 400)
     if b.get('id'):
         c.execute('UPDATE users SET username=?,full_name=?,title=?,role=?,active=? WHERE id=?',
                   (b['username'].strip(), b['full_name'].strip(), b.get('title') or '', b['role'],
