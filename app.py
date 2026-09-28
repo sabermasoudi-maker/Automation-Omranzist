@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.2'
+VERSION = '1.3'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 OPEN = ('new', 'seen', 'doing')
@@ -75,6 +75,12 @@ STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check'
 P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل از انبار',
             'closed': 'خریداری، پرداخت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد'}
 SEED_PROJECTS = ['موادکاران', 'پروژه بدون نام ۱', 'پروژه بدون نام ۲']
+# حساب‌های سمت‌های پروژه موادکاران (موقت؛ مدیر سیستم بعداً نام، شخص یا حساب را عوض می‌کند)
+SEED_MK_POSTS = [('supervisor', 'mk-sarparast', 'سرپرست کارگاه موادکاران'),
+                 ('exec', 'mk-ejraei', 'معاون اجرایی موادکاران'),
+                 ('tech', 'mk-fanni', 'معاون فنی موادکاران'),
+                 ('support', 'mk-poshtibani', 'پشتیبانی کارگاه موادکاران'),
+                 ('warehouse', 'mk-anbar', 'انباردار موادکاران')]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, full_name TEXT NOT NULL,
@@ -209,6 +215,7 @@ def init_db():
         c.execute("UPDATE settings SET value=? WHERE key='warehouse_user'", (str(ids['aliasghari']),))
         c.execute("INSERT INTO projects(name,code,manager_id) VALUES('دفتر مرکزی','HQ',NULL)")
     migrate(c)
+    migrate_v13(c)
     c.commit()
     c.close()
 
@@ -230,6 +237,26 @@ def migrate(c):
         pid = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (name, '', mid)).lastrowid
         sync_pm(c, pid, mid)
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v12','1')")
+
+
+def migrate_v13(c):
+    """سمت‌های خالی پروژه موادکاران با حساب‌های سمتی پر می‌شود (رمز اولیه 1234)."""
+    if settings(c).get('seed_v13'):
+        return
+    pr = c.execute("SELECT id FROM projects WHERE name='موادکاران'").fetchone()
+    if pr:
+        for key, un, fn in SEED_MK_POSTS:
+            if c.execute('SELECT 1 FROM project_members WHERE project_id=? AND role_key=?', (pr[0], key)).fetchone():
+                continue
+            r = c.execute('SELECT id FROM users WHERE username=?', (un,)).fetchone()
+            if r:
+                uid = r[0]
+            else:
+                hh, ss = hash_pw('1234')
+                uid = c.execute('INSERT INTO users(username,full_name,title,role,pw_hash,salt) VALUES(?,?,?,?,?,?)',
+                                (un, fn, fn, 'staff', hh, ss)).lastrowid
+            c.execute('INSERT INTO project_members(project_id,role_key,user_id) VALUES(?,?,?)', (pr[0], key, uid))
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v13','1')")
 
 
 def sync_pm(c, pid, uid):

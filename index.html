@@ -86,7 +86,45 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 .sheet .sg{font-size:13px;margin-top:4px}
 @media print{header,nav,.noprint,.btn{display:none!important}main{padding:0}.card{border:none;padding:0}.print-only{display:block}body{background:#fff}
  @page{size:A4;margin:12mm}.sheet td,.sheet th{-webkit-print-color-adjust:exact;print-color-adjust:exact}.sheet input,.sheet select,.sheet textarea{border:none}}
-@media (max-width:760px){nav{display:none}.wrap{display:block}main{padding:12px}}
+#menuBtn,#navbg{display:none}
+/* موبایل: منو به‌صورت کشو، جدول‌ها با اسکرول افقی، فرم خرید ستونی */
+@media screen and (max-width:760px){
+ body{font-size:15px}
+ header{position:sticky;top:0;z-index:7;gap:10px;padding:8px 10px;flex-wrap:wrap}
+ header b{font-size:13.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}header .sp{display:none}
+ #meName{font-size:12px;width:100%;order:9;color:#cfe3f3}
+ #menuBtn{display:inline-flex;align-items:center;gap:4px;background:none;border:1px solid #4b6a85;color:#fff;border-radius:6px;font-size:20px;padding:2px 10px;cursor:pointer}
+ .wrap{display:block}
+ nav{position:fixed;top:0;right:0;bottom:0;width:270px;max-width:82vw;z-index:9;overflow-y:auto;transform:translateX(105%);transition:transform .2s;box-shadow:-4px 0 18px rgba(0,0,0,.2);min-height:0}
+ body.navopen nav{transform:none}
+ body.navopen #navbg{display:block;position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:8}
+ nav a{padding:11px 18px}nav a.sub{padding:10px 32px 10px 18px}
+ main{padding:10px}
+ h1{font-size:16.5px}
+ .card{padding:12px}
+ input,select,textarea{font-size:16px}
+ .btn{padding:9px 14px}.btn.sm{padding:5px 12px}
+ table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
+ td{white-space:normal;min-width:70px}
+ .kv{grid-template-columns:110px 1fr}
+ .row>div{min-width:0;flex:1 1 140px}
+ .chain .st{min-width:0}
+ .modal .card{width:96vw}
+ #msg{left:10px;right:10px;bottom:10px;max-width:none}
+ .sheet table{display:table;white-space:normal;margin-top:6px;border-width:1.5px}
+ .sheet td,.sheet th{display:block;width:auto!important;border:none;border-bottom:1px solid #ccd}
+ .sheet .hd{min-height:0}.sheet .logo{height:48px}.sheet .co{font-size:16px}.sheet .ttl{font-size:15px;margin-top:4px}
+ .sheet .meta div{margin:2px 0}
+ .sheet .items thead{display:none}
+ .sheet .items tr{display:grid;grid-template-columns:1fr 1fr;border-bottom:2px solid #222;padding:4px 0}
+ .sheet .items td{height:auto;border:none;padding:3px 8px}
+ .sheet .items td.c{grid-column:1/-1;text-align:right;font-weight:bold;background:#f3f5f8}
+ .sheet .items td.c::before{content:'ردیف '}
+ .sheet .items td[data-l]::before{content:attr(data-l);display:block;font-size:12px;color:#666}
+ .sheet .items td[data-k=title],.sheet .items td[data-k=spec],.sheet .items td[data-k=note]{grid-column:1/-1}
+ .sheet .items input{border:1px dashed #b9c0c8;background:#fbfcfd}
+ .sheet .sign td{height:auto;min-height:60px}
+}
 </style>
 </head>
 <body>
@@ -97,9 +135,9 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
   <button class="btn" onclick="doLogin()" style="width:100%">ورود</button>
 </div>
 <div id="app">
-  <header><b id="coName">اتوماسیون اداری</b><span class="sp"></span><span id="meName"></span>
+  <header><button id="menuBtn" onclick="toggleNav()" aria-label="منو">☰<span class="badge" id="cnt2" style="display:none"></span></button><b id="coName">اتوماسیون اداری</b><span class="sp"></span><span id="meName"></span>
     <a onclick="pwModal()">تغییر رمز</a><a onclick="logout()">خروج</a></header>
-  <div class="wrap"><nav id="nav"></nav><main id="view"></main></div>
+  <div class="wrap"><nav id="nav"></nav><div id="navbg" onclick="toggleNav(0)"></div><main id="view"></main></div>
 </div>
 <div id="msg"></div>
 <script>
@@ -162,13 +200,14 @@ function drawNav(cur){
   h+=a('cartable','کارتابل من','main','<span class="badge" id="cnt" style="display:none"></span>')+'<hr>';
   h+=a('purchase-new','درخواست خرید')+(['admin','manager','secretariat','finance'].includes(M.me.role)?a('reports','گزارش‌ها'):'')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
   $('#nav').innerHTML=h}
+function toggleNav(on){document.body.classList.toggle('navopen',on===undefined?!document.body.classList.contains('navopen'):!!on)}
 function subBar(p){const g=HQ_OF[p];if(!g)return'';return `<div class="crumb">دفتر مرکزی › ${g[1]}</div><div class="tabs noprint">${g[3].map(t=>`<a href="#/${t[0]}" class="${t[0]==p?'on':''}">${t[1]}</a>`).join('')}</div>`}
-async function refreshCount(){try{const r=await api('GET','/api/counts');const b=$('#cnt');if(b){b.textContent=fa(r.n);b.style.display=r.n?'inline':'none'}document.title=(r.n?'('+fa(r.n)+') ':'')+'اتوماسیون — '+M.company}catch(e){}}
+async function refreshCount(){try{const r=await api('GET','/api/counts');['#cnt','#cnt2'].forEach(k=>{const b=$(k);if(b){b.textContent=fa(r.n);b.style.display=r.n?'inline':'none'}});document.title=(r.n?'('+fa(r.n)+') ':'')+'اتوماسیون — '+M.company}catch(e){}}
 setInterval(()=>{if(M)refreshCount()},60000);
 window.addEventListener('hashchange',route);
 async function route(){
   if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
-  drawNav(p=='project'?'project/'+id:(HQ_OF[p]||[p])[0]);refreshCount();
+  toggleNav(0);drawNav(p=='project'?'project/'+id:(HQ_OF[p]||[p])[0]);refreshCount();
   const V={cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('hq_purchase','درخواست‌های خرید منتظر اقدام پشتیبانی دفتر مرکزی'),'hq-finance':()=>hqStage('finance_pay','خریدهای انجام‌شده منتظر پرداخت'),'hq-office':()=>hqStage('archive','درخواست‌های خرید منتظر بایگانی',1),
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
@@ -403,8 +442,9 @@ const saveProject=id=>run(async()=>{const m={};M.project_roles.forEach(([k])=>m[
 
 // ---------- فرم درخواست خرید کالا (مطابق فرم کاغذی شرکت)
 const PUR_UNITS=['عدد','کیلوگرم','تن','متر','مترمربع','مترمکعب','شاخه','کیسه','لیتر','دستگاه','بسته','رول','سری','حلقه','جفت'];
-function purRow(i,it,edit){it=it||{};const e=v=>esc(v||'');return edit?`<tr><td class="c">${fa(i)}</td><td><input data-k="title" value="${e(it.title)}"></td><td><input data-k="qty" value="${e(it.qty)}"></td><td><input data-k="unit" value="${e(it.unit)}" list="purUnits"></td><td><input data-k="spec" value="${e(it.spec)}"></td><td><input data-k="note" value="${e(it.note)}"></td></tr>`
-  :`<tr><td class="c">${fa(i)}</td><td>${e(it.title)}</td><td>${e(fa(it.qty))}</td><td>${e(it.unit)}</td><td>${e(it.spec)}</td><td>${e(it.note)}</td></tr>`}
+function purRow(i,it,edit){it=it||{};const e=v=>esc(v||'');const L={title:'شرح کالا',qty:'مقدار',unit:'واحد',spec:'مشخصات فنی',note:'توضیحات'};
+  const cell=k=>`<td data-k="${k}" data-l="${L[k]}">${edit?`<input data-k="${k}" value="${e(it[k])}"${k=='unit'?' list="purUnits"':''}>`:e(k=='qty'?fa(it[k]):it[k])}</td>`;
+  return `<tr><td class="c">${fa(i)}</td>${['title','qty','unit','spec','note'].map(cell).join('')}</tr>`}
 function purSheet(P,items,edit,flow){
   flow=flow||[];const e=v=>esc(v||'');
   const projs=M.projects.filter(p=>p.code!='HQ'&&(isTop()||M.my_roles.some(r=>r.project_id==p.id)));
@@ -419,7 +459,7 @@ function purSheet(P,items,edit,flow){
    <tr><td><label>واحد درخواست کننده:</label>${edit?`<select id="puN">${opts(M.units,P.unit,'—')}</select>`:e(unitName(P.unit))}</td>
    <td><label>انبار محل درخواست:</label>${edit?`<input id="puW" value="${e(P.warehouse)}">`:e(P.warehouse)}</td></tr></table>
   <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا</th><th style="width:90px">مقدار</th><th style="width:105px">واحد</th><th>مشخصات فنی</th><th>توضیحات</th></tr></thead>
-   <tbody id="puItems">${Array.from({length:Math.max(7,items.length)},(_,i)=>purRow(i+1,items[i],edit)).join('')}</tbody></table>
+   <tbody id="puItems">${Array.from({length:Math.max(edit&&matchMedia('(max-width:760px)').matches?2:7,items.length)},(_,i)=>purRow(i+1,items[i],edit)).join('')}</tbody></table>
   ${edit?`<div class="noprint" style="margin-top:6px"><button class="btn l sm" onclick="addPurRow()">+ ردیف</button></div><datalist id="purUnits">${PUR_UNITS.map(u=>`<option value="${u}">`).join('')}</datalist>`:''}
   <table class="sign"><tr><td><label>درخواست کننده:</label>${e(P.requester||M.me.full_name)}${sig('draft')||sig('returned')}</td><td><label>مدیریت پروژه / سرپرست کارگاه:</label>${pmSig}</td></tr></table></div>`}
 function addPurRow(){const b=$('#puItems');b.insertAdjacentHTML('beforeend',purRow(b.rows.length+1,{},1))}
