@@ -61,7 +61,31 @@ tr.late td{background:var(--badb)}
 .modal .card{width:min(520px,94vw);max-height:90vh;overflow:auto}
 .num{direction:ltr;unicode-bidi:isolate;display:inline-block}
 .print-only{display:none}
-@media print{header,nav,.noprint,.btn{display:none!important}main{padding:0}.card{border:none;padding:0}.print-only{display:block}body{background:#fff}}
+nav .grp{padding:10px 18px 2px;font-weight:bold;color:#17344d;font-size:13px;border-top:1px solid var(--line);margin-top:6px}
+nav .grp:first-child{border-top:none;margin-top:0}
+nav a.sub{padding:5px 32px 5px 18px;font-size:13.5px}
+nav a.main{font-weight:bold;color:#17344d;border-top:1px solid var(--line);margin-top:6px;padding-top:10px}
+nav a.act{color:var(--pri);cursor:pointer}
+nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
+.crumb{color:var(--mut);font-size:12.5px;margin-bottom:4px}
+/* فرم درخواست خرید کالا — مطابق فرم کاغذی */
+.sheet{background:#fff;color:#111;margin-bottom:14px}
+.sheet table{width:100%;border-collapse:collapse;border:2px solid #222;background:#fff;margin-top:-2px}
+.sheet td,.sheet th{border:1.5px solid #333;padding:6px 8px;vertical-align:top;text-align:right;background:#fff;color:#111}
+.sheet th{font-size:13.5px;text-align:center}
+.sheet label{display:inline;color:#111;font-weight:bold;font-size:13.5px;margin:0 0 0 6px}
+.sheet .hd{display:flex;align-items:center;gap:14px;min-height:80px}
+.sheet .logo{height:72px}
+.sheet .co{font-size:19px;font-weight:bold}.sheet .ttl{font-size:17px;font-weight:bold;margin-top:8px}
+.sheet .meta{width:27%}.sheet .meta div{margin:8px 0}
+.sheet .w35{width:35%}
+.sheet .items td{height:34px}.sheet .c{text-align:center;width:44px}
+.sheet .sign{margin-top:12px}.sheet .sign td{height:86px;width:50%}
+.sheet input,.sheet select,.sheet textarea{border:1px dashed #b9c0c8;background:#fbfcfd;padding:3px 6px}
+.sheet .items input{border-color:transparent;background:transparent}.sheet .items input:focus{border-color:#b9c0c8;background:#fff}
+.sheet .sg{font-size:13px;margin-top:4px}
+@media print{header,nav,.noprint,.btn{display:none!important}main{padding:0}.card{border:none;padding:0}.print-only{display:block}body{background:#fff}
+ @page{size:A4;margin:12mm}.sheet td,.sheet th{-webkit-print-color-adjust:exact;print-color-adjust:exact}.sheet input,.sheet select,.sheet textarea{border:none}}
 @media (max-width:760px){nav{display:none}.wrap{display:block}main{padding:12px}}
 </style>
 </head>
@@ -124,16 +148,31 @@ async function boot(){
   if(M.me.must_change)pwModal(true);
   route();refreshCount();
 }
-const NAV=[['cartable','کارتابل من'],['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['requests','درخواست‌های مالی'],['request-new','درخواست جدید'],['reports','گزارش‌ها','r'],['admin','مدیریت سامانه','a'],['help','راهنما']];
 const isTop=()=>['admin','manager'].includes(M.me.role); // مدیر سیستم و هیات مدیره: بالاترین سطح
-function drawNav(cur){$('#nav').innerHTML=NAV.filter(n=>!n[2]||(n[2]=='a'?isTop():['admin','manager','secretariat','finance'].includes(M.me.role))).map(n=>`<a href="#/${n[0]}" class="${cur==n[0]?'on':''}">${n[1]}${n[0]=='cartable'?'<span class="badge" id="cnt" style="display:none"></span>':''}</a>`).join('')}
+// تب‌های دفتر مرکزی: [کلید، عنوان، مسیر پیش‌فرض، زیرتب‌ها]
+const HQ=[['hq-support','پشتیبانی','hq-support',[['hq-support','منتظر خرید'],['purchases','همه درخواست‌های خرید']]],
+  ['hq-finance','مالی','hq-finance',[['hq-finance','پرداخت خریدها'],['requests','درخواست‌های مالی'],['request-new','درخواست پرداخت / تنخواه جدید']]],
+  ['hq-office','اداری','letters',[['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['hq-office','بایگانی درخواست‌های خرید']]]];
+const HQ_OF={};HQ.forEach(g=>g[3].forEach(t=>HQ_OF[t[0]]=g));Object.assign(HQ_OF,{letter:HQ[2],'letter-edit':HQ[2],request:HQ[1]});
+const navProjects=()=>M.projects.filter(p=>p.code!='HQ'&&(M.broad||M.my_roles.some(r=>r.project_id==p.id)));
+function drawNav(cur){
+  const a=(k,t,cls,extra)=>`<a href="#/${k}" class="${cls||''} ${cur==k?'on':''}">${t}${extra||''}</a>`;
+  let h='<div class="grp">دفتر مرکزی</div>'+HQ.map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
+  h+='<div class="grp">پروژه‌ها</div>'+navProjects().map(p=>a('project/'+p.id,esc(p.name),'sub')).join('')+(isTop()?'<a class="sub act" onclick="projModal(p=>location=\'#/project/\'+p.id)">+ تعریف پروژه جدید</a>':'');
+  h+=a('cartable','کارتابل من','main','<span class="badge" id="cnt" style="display:none"></span>')+'<hr>';
+  h+=a('purchase-new','درخواست خرید')+(['admin','manager','secretariat','finance'].includes(M.me.role)?a('reports','گزارش‌ها'):'')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
+  $('#nav').innerHTML=h}
+function subBar(p){const g=HQ_OF[p];if(!g)return'';return `<div class="crumb">دفتر مرکزی › ${g[1]}</div><div class="tabs noprint">${g[3].map(t=>`<a href="#/${t[0]}" class="${t[0]==p?'on':''}">${t[1]}</a>`).join('')}</div>`}
 async function refreshCount(){try{const r=await api('GET','/api/counts');const b=$('#cnt');if(b){b.textContent=fa(r.n);b.style.display=r.n?'inline':'none'}document.title=(r.n?'('+fa(r.n)+') ':'')+'اتوماسیون — '+M.company}catch(e){}}
 setInterval(()=>{if(M)refreshCount()},60000);
 window.addEventListener('hashchange',route);
 async function route(){
-  if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id]=h.split('/');
-  drawNav(p);refreshCount();const V={cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help};
-  $('#view').innerHTML='<div class="mut">در حال بارگذاری…</div>';
+  if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
+  drawNav(p=='project'?'project/'+id:(HQ_OF[p]||[p])[0]);refreshCount();
+  const V={cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
+    'hq-support':()=>hqStage('hq_purchase','درخواست‌های خرید منتظر اقدام پشتیبانی دفتر مرکزی'),'hq-finance':()=>hqStage('finance_pay','خریدهای انجام‌شده منتظر پرداخت'),'hq-office':()=>hqStage('archive','درخواست‌های خرید منتظر بایگانی',1),
+    purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
+  $('#view').innerHTML=subBar(p)+'<div id="pg"><div class="mut">در حال بارگذاری…</div></div>';
   await run(async()=>{await (V[p]||cartable)()});window.scrollTo(0,0)}
 function pwModal(force){
   const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card"><h2>${force?'برای شروع، رمز عبور پیش‌فرض را تغییر دهید':'تغییر رمز عبور'}</h2>
@@ -178,32 +217,36 @@ const docLink=r=>`#/${r.doc_type}/${r.doc_id}`;
 // ---------------------------------------------------------------- کارتابل
 async function cartable(){
   const d=await api('GET','/api/cartable');M.today=d.today;
-  const sec=[['in','ارجاع‌شده به من',d.inbox.length],['ap','منتظر تأیید من',d.approvals.length],['sent','پیگیری ارجاع‌های من',d.sent.length],['mine','درخواست‌های مالی من',d.mine.length]];
+  const sec=[['in','ارجاع‌شده به من',d.inbox.length],['pur','درخواست‌های خرید در کارتابل من',d.pur_held.length],['ap','منتظر تأیید من',d.approvals.length],['sent','پیگیری ارجاع‌های من',d.sent.length],['mine','درخواست‌های من',d.mine.length+d.pur_mine.length]];
   if(M.me.role=='finance'||isTop())sec.push(['pay','مالی: پرداخت و سند سپیدار',d.pay.length]);
   if(M.me.role=='secretariat'||isTop())sec.push(['desk','دبیرخانه: نامه‌های بدون ارجاع',d.desk.length]);
   let h=`<h1>کارتابل ${esc(M.me.full_name)}</h1><div class="tabs">${sec.map((s,i)=>`<a data-t="${s[0]}" class="${i?'':'on'}">${s[1]} (${fa(s[2])})</a>`).join('')}</div>`;
   const tbl=(head,body,empty)=>body.length?`<table><tr>${head.map(x=>`<th>${x}</th>`).join('')}</tr>${body.join('')}</table>`:`<div class="card mut">${empty}</div>`;
-  h+=`<div data-p="in">${tbl(['سند','از','اقدام','دستور','تاریخ ارجاع','مهلت','وضعیت'],d.inbox.map(r=>`<tr class="cl ${late(r)?'late':''}" onclick="location='${docLink(r)}'"><td>${r.doc_type=='request'?'<span class="tag">مالی</span> ':''}${r.priority&&r.priority!='normal'?tag(PRI,r.priority)+' ':''}${esc(fa(r.doc_label))}</td><td>${esc(r.from_name)}</td><td>${esc(r.action)}</td><td>${esc(r.instruction)}</td><td class="mut">${jd(r.created_at,1)}</td><td>${jd(r.due_date)}${late(r)?' <span class="tag bad">گذشته</span>':''}</td><td>${tag(REF_ST,r.status)}</td></tr>`),'کاری در کارتابل شما نیست.')}</div>`;
+  h+=`<div data-p="in">${tbl(['سند','از','اقدام','دستور','تاریخ ارجاع','مهلت','وضعیت'],d.inbox.map(r=>`<tr class="cl ${late(r)?'late':''}" onclick="location='${docLink(r)}'"><td>${r.doc_type=='request'?'<span class="tag">مالی</span> ':r.doc_type=='purchase'?'<span class="tag">خرید</span> ':''}${r.priority&&r.priority!='normal'?tag(PRI,r.priority)+' ':''}${esc(fa(r.doc_label))}</td><td>${esc(r.from_name)}</td><td>${esc(r.action)}</td><td>${esc(r.instruction)}</td><td class="mut">${jd(r.created_at,1)}</td><td>${jd(r.due_date)}${late(r)?' <span class="tag bad">گذشته</span>':''}</td><td>${tag(REF_ST,r.status)}</td></tr>`),'کاری در کارتابل شما نیست.')}</div>`;
+  h+=`<div data-p="pur" style="display:none">${d.pur_held.length?purTable(d.pur_held,1):'<div class="card mut">درخواست خریدی در کارتابل شما نیست.</div>'}</div>`;
   h+=`<div data-p="ap" style="display:none">${tbl(['شماره','عنوان','نوع','پروژه','درخواست‌کننده','مبلغ (ریال)','مرحله'],d.approvals.map(r=>`<tr class="cl" onclick="location='#/request/${r.request_id}'"><td>${fa(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.kind)}</td><td>${esc(r.project||'')}</td><td>${esc(r.requester)}</td><td>${money(r.amount)}</td><td>${esc(r.label)}</td></tr>`),'درخواستی منتظر تأیید شما نیست.')}</div>`;
   h+=`<div data-p="sent" style="display:none">${tbl(['سند','به','اقدام','تاریخ ارجاع','مهلت','وضعیت'],d.sent.map(r=>`<tr class="cl ${late(r)?'late':''}" onclick="location='${docLink(r)}'"><td>${esc(fa(r.doc_label))}</td><td>${esc(r.to_name)}</td><td>${esc(r.action)}</td><td class="mut">${jd(r.created_at,1)}</td><td>${jd(r.due_date)}</td><td>${tag(REF_ST,r.status)}</td></tr>`),'ارجاع باز ندارید.')}</div>`;
-  h+=`<div data-p="mine" style="display:none">${tbl(['شماره','عنوان','پروژه','مبلغ (ریال)','وضعیت'],d.mine.map(r=>`<tr class="cl" onclick="location='#/request/${r.id}'"><td>${fa(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.project||'')}</td><td>${money(r.amount)}</td><td>${tag(R_ST,r.status)}</td></tr>`),'درخواست باز ندارید.')}</div>`;
+  h+=`<div data-p="mine" style="display:none">${d.pur_mine.length?'<h2>درخواست‌های خرید من</h2>'+purTable(d.pur_mine,1):''}${d.mine.length||!d.pur_mine.length?'<h2>درخواست‌های مالی من</h2>':''}${tbl(['شماره','عنوان','پروژه','مبلغ (ریال)','وضعیت'],d.mine.map(r=>`<tr class="cl" onclick="location='#/request/${r.id}'"><td>${fa(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.project||'')}</td><td>${money(r.amount)}</td><td>${tag(R_ST,r.status)}</td></tr>`),'درخواست مالی باز ندارید.')}</div>`;
   h+=`<div data-p="pay" style="display:none">${tbl(['شماره','عنوان','ذینفع','پروژه','مبلغ تأییدشده (ریال)','وضعیت'],d.pay.map(r=>`<tr class="cl" onclick="location='#/request/${r.id}'"><td>${fa(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.payee)}</td><td>${esc(r.project||'')}</td><td>${money(r.amount)}</td><td>${tag(R_ST,r.status)}</td></tr>`),'موردی برای پرداخت نیست.')}</div>`;
   h+=`<div data-p="desk" style="display:none">${tbl(['شماره','موضوع','طرف مکاتبه','تاریخ ثبت'],d.desk.map(r=>`<tr class="cl" onclick="location='#/letter/${r.id}'"><td>${fa(r.number)}</td><td>${esc(r.subject)}</td><td>${esc(r.counterpart)}</td><td class="mut">${jd(r.created_at,1)}</td></tr>`),'همه نامه‌های جاری ارجاع شده‌اند.')}</div>`;
-  $('#view').innerHTML=h;bindTabs()}
+  $('#pg').innerHTML=h;bindTabs()}
 
 // ---------------------------------------------------------------- نامه‌ها
-const canNewProj=()=>isTop()||M.me.role=='secretariat';
+const canNewProj=isTop;
 const projOpts=(sel,allowNew)=>'<option value="">—</option>'+(allowNew&&canNewProj()?'<option value="__new" style="color:var(--pri);font-weight:bold">+ تعریف پروژه / کارگاه جدید…</option>':'')+opts(M.projects.map(p=>[p.id,p.name]),sel);
-function newProj(sel){if(sel.value!='__new')return;sel.value='';
+function newProj(sel){if(sel.value!='__new')return;sel.value='';projModal(p=>{sel.innerHTML=projOpts(p.id,true)})}
+function projModal(done){
   const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card"><h2>تعریف پروژه / کارگاه جدید</h2><div class="grid">
-  <div class="full"><label>نام پروژه *</label><input id="npN"></div><div><label>کد (اختیاری)</label><input id="npC"></div>
-  <div><label>مدیر پروژه (تأییدکننده اول درخواست‌های مالی)</label><select id="npM">${opts(M.users.filter(u=>u.role=='manager').map(u=>[u.id,u.full_name]),'','— (مدیر اجرایی)')}</select></div></div>
+  <div class="full"><label>نام پروژه *</label><input id="npN"></div><div><label>کد پروژه (اختیاری)</label><input id="npC"></div>
+  <div><label>مدیر پروژه</label><select id="npM">${opts(M.users.map(u=>[u.id,u.full_name]),'','—')}</select></div></div>
+  <div class="mut" style="margin-top:6px">سایر ارکان (سرپرست کارگاه، معاونان، پشتیبانی، انبار) پس از ثبت در صفحه پروژه تعیین می‌شوند.</div>
   <div class="row" style="margin-top:12px"><button class="btn" id="npS">ثبت پروژه</button><button class="btn l" id="npX">انصراف</button></div></div>`;
   document.body.appendChild(d);d.querySelector('#npN').focus();d.querySelector('#npX').onclick=()=>d.remove();
-  d.querySelector('#npS').onclick=()=>run(async()=>{const p=await api('POST','/api/projects',{name:val('npN'),code:val('npC'),manager_id:val('npM')});M.projects.push(p);sel.innerHTML=projOpts(p.id,true);d.remove();flash('پروژه «'+p.name+'» تعریف شد')})}
+  d.querySelector('#npS').onclick=()=>run(async()=>{const p=await api('POST','/api/projects',{name:val('npN'),code:val('npC'),manager_id:val('npM')});await reloadMeta();d.remove();flash('پروژه «'+p.name+'» تعریف شد');done(p)})}
+async function reloadMeta(){M=Object.assign(M,await api('GET','/api/meta'))}
 async function lettersList(){
   const f=lettersList.f||{};
-  $('#view').innerHTML=`<h1>نامه‌ها و بایگانی</h1><div class="card noprint"><div class="row">
+  $('#pg').innerHTML=`<h1>نامه‌ها و بایگانی</h1><div class="card noprint"><div class="row">
    <div style="flex:2"><label>جستجو (موضوع، شماره، طرف مکاتبه، کد بایگانی)</label><input id="fQ" value="${esc(f.q||'')}"></div>
    <div><label>نوع</label><select id="fK">${opts(Object.entries(M.letter_kinds),f.kind,'همه')}</select></div>
    <div><label>وضعیت</label><select id="fS">${opts([['open','جاری'],['archived','بایگانی']],f.status,'همه')}</select></div>
@@ -234,12 +277,12 @@ function letterFormHtml(L){L=L||{kind:M.me.role=='secretariat'?'in':'internal',l
   <div class="full"><label>خلاصه / توضیح</label><textarea id="lSum">${esc(L.summary||'')}</textarea></div></div>`}
 const letterVals=()=>({kind:val('lK'),subject:val('lSub'),counterpart:val('lCp'),their_number:val('lTn'),their_date:val('lTd'),letter_date:val('lLd'),project_id:val('lP'),source:val('lSrc'),priority:val('lPr'),confidential:$('#lConf').checked,summary:val('lSum')});
 function letterForm(){
-  $('#view').innerHTML=`<h1>ثبت نامه</h1><div class="card"><h2>مشخصات نامه</h2>${letterFormHtml()}</div>
+  $('#pg').innerHTML=`<h1>ثبت نامه</h1><div class="card"><h2>مشخصات نامه</h2>${letterFormHtml()}</div>
   <div class="card"><h2>اسکن نامه و پیوست‌ها</h2><input type="file" id="lFiles" multiple accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.doc,.docx,.xls,.xlsx,.zip"><div class="mut">اسکن را ترجیحاً PDF بگیرید. چند فایل را می‌توانید با هم انتخاب کنید.</div></div>
   <div class="card"><h2>ارجاع اولیه (اختیاری)</h2>${referForm('lr')}</div>
   <button class="btn" id="lSave">ثبت و دریافت شماره</button>`;
   $('#lSave').onclick=()=>run(async()=>{$('#lSave').disabled=true;try{const b=letterVals();const r=referVals('lr');if(r.to_ids.length)Object.assign(b,r);const res=await api('POST','/api/letters',b);await uploadFiles('letter',res.id,'lFiles');flash('ثبت شد — شماره '+fa(res.number));location='#/letter/'+res.id}finally{const s=$('#lSave');if(s)s.disabled=false}})}
-async function letterEdit(id){const d=await api('GET','/api/letters/'+id);$('#view').innerHTML=`<h1>ویرایش مشخصات نامه ${fa(d.doc.number)}</h1><div class="card">${letterFormHtml(d.doc)}</div><button class="btn" id="lSave">ذخیره</button> <a href="#/letter/${id}">انصراف</a>`;
+async function letterEdit(id){const d=await api('GET','/api/letters/'+id);$('#pg').innerHTML=`<h1>ویرایش مشخصات نامه ${fa(d.doc.number)}</h1><div class="card">${letterFormHtml(d.doc)}</div><button class="btn" id="lSave">ذخیره</button> <a href="#/letter/${id}">انصراف</a>`;
   $('#lSave').onclick=()=>run(async()=>{await api('POST',`/api/letters/${id}/update`,letterVals());location='#/letter/'+id})}
 async function letterView(id){
   const d=await api('GET','/api/letters/'+id);const L=d.doc;const canArc=['admin','secretariat','manager'].includes(M.me.role);
@@ -256,13 +299,13 @@ async function letterView(id){
   h+=flowBlock('letter',L.id,d.referrals)+attachBlock('letter',L.id,d.attachments);
   if(canArc)h+=L.status=='archived'?`<div class="card noprint"><button class="btn l" onclick="run(async()=>{await api('POST','/api/letters/${L.id}/reopen',{});route()})">بازگشایی از بایگانی</button></div>`:
     `<div class="card noprint"><h2>بایگانی</h2><div class="row"><div><label>کد / محل بایگانی فیزیکی</label><input id="arcC" placeholder="مثلاً کلاسور ۱۲ — پروژه دورود"></div><button class="btn ok" onclick="arch(${L.id},0)">بایگانی</button>${M.me.role!='secretariat'?`<button class="btn l" onclick="arch(${L.id},1)">بایگانی و بستن ارجاع‌های باز</button>`:''}</div></div>`;
-  h+=logBlock(d.log);$('#view').innerHTML=h;bindTabs()}
+  h+=logBlock(d.log);$('#pg').innerHTML=h;bindTabs()}
 const arch=(id,force)=>run(async()=>{await api('POST',`/api/letters/${id}/archive`,{archive_code:val('arcC'),force:!!force});flash('بایگانی شد');route()});
 
 // ---------------------------------------------------------------- درخواست‌های مالی
 async function requestsList(){
   const f=requestsList.f||{};
-  $('#view').innerHTML=`<h1>درخواست‌های مالی</h1><div class="card noprint"><div class="row">
+  $('#pg').innerHTML=`<h1>درخواست‌های مالی</h1><div class="card noprint"><div class="row">
    <div style="flex:2"><label>جستجو (عنوان، شماره، ذینفع، سند سپیدار)</label><input id="rQ" value="${esc(f.q||'')}"></div>
    <div><label>نوع</label><select id="rK">${opts(M.request_kinds.map(k=>[k,k]),f.kind,'همه')}</select></div>
    <div><label>وضعیت</label><select id="rS">${opts(Object.entries(R_ST).map(([k,v])=>[k,v[0]]),f.status,'همه')}</select></div>
@@ -274,7 +317,7 @@ async function requestsList(){
   $('#rres').innerHTML=rs.length?`<div class="mut">${fa(rs.length)} درخواست — جمع مبلغ درخواستی (بدون ردشده/لغوشده): ${money(sum)} ریال — جمع پرداختی: ${money(paid)} ریال</div><table><tr><th>شماره</th><th>تاریخ</th><th>نوع</th><th>عنوان</th><th>پروژه</th><th>درخواست‌کننده</th><th>مبلغ (ریال)</th><th>وضعیت</th><th>منتظر</th></tr>${rs.map(r=>`<tr class="cl" onclick="location='#/request/${r.id}'"><td><span>${fa(r.number)}</span></td><td class="mut">${jd(r.created_at)}</td><td>${esc(r.kind)}</td><td>${esc(r.title)}</td><td>${esc(r.project||'')}</td><td>${esc(r.requester)}</td><td>${money(r.amount)}</td><td>${tag(R_ST,r.status)}</td><td>${esc(r.waiting_for||(r.status=='approved'?'مالی':''))}</td></tr>`).join('')}</table>`:'<div class="card mut">درخواستی پیدا نشد.</div>'}
 function reqFilter(){run(async()=>{requestsList.f={q:val('rQ'),kind:val('rK'),status:val('rS'),project_id:val('rP'),fromJ:val('rF'),toJ:val('rT'),from:toIso(val('rF')),to:toIso(val('rT'))};await requestsList()})}
 function reqFormHtml(R){R=R||{};return `<div class="grid">
-  <div><label>نوع درخواست</label><select id="qK">${opts(M.request_kinds.map(k=>[k,k]),R.kind)}</select></div>
+  <div><label>نوع درخواست</label><select id="qK">${opts(M.request_kinds.filter(k=>k==R.kind||!['خرید کالا و مصالح','خرید تجهیزات'].includes(k)).map(k=>[k,k]),R.kind)}</select></div>
   <div><label>پروژه / کارگاه</label><select id="qP" onchange="newProj(this)">${projOpts(R.project_id,true)}</select></div>
   <div class="full"><label>عنوان درخواست *</label><input id="qT" value="${esc(R.title||'')}" placeholder="مثلاً خرید ۱۰ تن میلگرد ۱۶ برای کارگاه دورود"></div>
   <div><label>مبلغ (ریال)</label><input id="qA" class="num" style="text-align:left" value="${R.amount?money(R.amount):''}" oninput="this.nextElementSibling.textContent=wordsHint(this.value)"><div class="mut"></div></div>
@@ -283,7 +326,7 @@ function reqFormHtml(R){R=R||{};return `<div class="grid">
 function wordsHint(v){const n=+en(v).replace(/[^\d]/g,'');return n?fa((n/10).toLocaleString('en-US'))+' تومان':''}
 const reqVals=()=>({kind:val('qK'),project_id:val('qP'),title:val('qT'),amount:en(val('qA')).replace(/[^\d]/g,''),payee:val('qPy'),description:val('qD')});
 function requestForm(){
-  $('#view').innerHTML=`<h1>درخواست مالی جدید</h1><div class="card">${reqFormHtml()}</div>
+  $('#pg').innerHTML=`<h1>درخواست پرداخت / تنخواه جدید</h1><div class="card mut">برای خرید کالا و مصالح از «درخواست خرید» استفاده کنید؛ این فرم برای تنخواه، پرداخت به پیمانکار و تأمین‌کننده و هزینه‌های جاری است.</div><div class="card">${reqFormHtml()}</div>
   <div class="card"><h2>پیوست (پیش‌فاکتور، فاکتور، صورت‌وضعیت…)</h2><input type="file" id="qFiles" multiple></div>
   <div class="card mut">مسیر تأیید خودکار ساخته می‌شود: مدیر پروژه (یا مدیر اجرایی برای دفتر) ← انبار و تجهیزات (برای خرید کالا/تجهیزات) ← مدیرعامل (برای مبالغ ${money(M.ceo_threshold)} ریال و بیشتر) ← مالی برای پرداخت و ثبت سند سپیدار.</div>
   <button class="btn" id="qSave">ثبت و ارسال برای تأیید</button>`;
@@ -306,11 +349,133 @@ async function requestView(id){
   if((M.me.role=='finance'||isTop())&&R.status=='approved')h+=`<div class="card noprint" style="border-color:var(--pri)"><h2>ثبت پرداخت</h2><div class="grid"><div><label>مبلغ پرداختی (ریال)</label><input id="pA" class="num" value="${money(R.amount)}"></div><div><label>تاریخ پرداخت</label><input id="pD" value="${todayJ()}"></div><div><label>شماره سند سپیدار</label><input id="pS"></div><div><label>توضیح (چک/حواله/…)</label><input id="pN"></div></div><button class="btn" style="margin-top:8px" onclick="pay(${R.id})">ثبت پرداخت</button></div>`;
   if((M.me.role=='finance'||isTop())&&R.status=='paid')h+=`<div class="card noprint"><h2>ثبت شماره سند سپیدار</h2><div class="row"><div><input id="pS"></div><button class="btn" onclick="pay(${R.id})">ثبت</button></div></div>`;
   h+=flowBlock('request',R.id,d.referrals)+attachBlock('request',R.id,d.attachments)+logBlock(d.log);
-  $('#view').innerHTML=h;bindTabs()}
+  $('#pg').innerHTML=h;bindTabs()}
 const act=(id,dec)=>run(async()=>{await api('POST',`/api/requests/${id}/act`,{decision:dec,note:val('apN')});flash('ثبت شد');route()});
 const resub=id=>run(async()=>{await api('POST',`/api/requests/${id}/resubmit`,reqVals());flash('ارسال شد');route()});
 const cancelReq=id=>run(async()=>{if(!confirm('درخواست لغو شود؟'))return;await api('POST',`/api/requests/${id}/cancel`,{});route()});
 const pay=id=>run(async()=>{await api('POST',`/api/requests/${id}/pay`,{paid_amount:en(val('pA')).replace(/[^\d]/g,''),paid_at:en(val('pD')),sepidar_no:en(val('pS')),pay_note:val('pN')});flash('ثبت شد');route()});
+
+// ---------------------------------------------------------------- درخواست خرید کالا و پروژه‌ها
+const unitName=k=>(M.units.find(u=>u[0]==k)||[])[1]||'';
+const P_ST={open:'warn',returned:'bad',delivered:'ok',closed:'ok',rejected:'bad',cancelled:''};
+const pTag=P=>`<span class="tag ${P_ST[P.status]||''}">${esc(P.status=='open'?M.p_stages[P.stage]:M.p_status[P.status])}</span>`;
+function purTable(rs,noProj){return rs.length?`<table><tr><th>شماره</th><th>تاریخ</th>${noProj?'<th>پروژه</th>':''}<th>واحد</th><th>اقلام</th><th>درخواست‌کننده</th><th>وضعیت / مرحله</th><th>در دست</th></tr>${rs.map(r=>`<tr class="cl" onclick="location='#/purchase/${r.id}'"><td>${fa(r.number)}</td><td class="mut">${fa(r.req_date)}</td>${noProj?`<td>${esc(r.project||'')}</td>`:''}<td>${esc(unitName(r.unit))}</td><td>${esc(r.items_text||'')}</td><td>${esc(r.requester||'')}</td><td>${pTag(r)}</td><td>${esc(r.holder||'')}</td></tr>`).join('')}</table>`:'<div class="mut">موردی نیست.</div>'}
+async function hqStage(stage,title,withDone){
+  const rs=await api('GET','/api/purchases?status=open&stage='+stage);
+  let h=`<div class="card"><h2>${title} (${fa(rs.length)})</h2>${purTable(rs,1)}</div>`;
+  if(withDone){const cl=await api('GET','/api/purchases?status=closed&limit=50');h+=`<div class="card"><h2>آخرین درخواست‌های بایگانی‌شده</h2>${purTable(cl,1)}</div>`}
+  $('#pg').innerHTML=h}
+async function purchasesPage(){
+  const f=purchasesPage.f||{};
+  $('#pg').innerHTML=`<div class="card noprint"><div class="row">
+   <div style="flex:2"><label>جستجو (شماره، کالا، مشخصات، جهت استفاده، تأمین‌کننده)</label><input id="uQ" value="${esc(f.q||'')}"></div>
+   <div><label>پروژه</label><select id="uP">${opts(M.projects.filter(p=>p.code!='HQ').map(p=>[p.id,p.name]),f.project_id,'همه')}</select></div>
+   <div><label>واحد</label><select id="uN">${opts(M.units,f.unit,'همه')}</select></div>
+   <div><label>وضعیت</label><select id="uS">${opts(Object.entries(M.p_status),f.status,'همه')}</select></div>
+   <div><label>از تاریخ</label><input id="uF" value="${esc(f.fromJ||'')}"></div><div><label>تا تاریخ</label><input id="uT" value="${esc(f.toJ||'')}"></div>
+   <button class="btn" onclick="purFilter()">نمایش</button><button class="btn l" onclick="location='/api/purchases.csv?'+(purchasesPage.qs||'')">خروجی CSV</button></div></div><div id="ures"></div>`;
+  const qs=new URLSearchParams(Object.entries({q:f.q,project_id:f.project_id,unit:f.unit,status:f.status,from:f.from,to:f.to}).filter(x=>x[1]));purchasesPage.qs=qs.toString();
+  const rs=await api('GET','/api/purchases?'+qs);$('#ures').innerHTML=`<div class="mut">${fa(rs.length)} درخواست</div>`+purTable(rs,1)}
+function purFilter(){run(async()=>{purchasesPage.f={q:val('uQ'),project_id:val('uP'),unit:val('uN'),status:val('uS'),fromJ:val('uF'),toJ:val('uT'),from:toIso(val('uF')),to:toIso(val('uT'))};await purchasesPage()})}
+
+// ---------- صفحه پروژه: ارکان و زیرتب‌های فنی، اجرایی، پشتیبانی، انبار
+async function projectPage(id,sub){
+  const d=await api('GET','/api/projects/'+id);const P=d.project;const mem={};d.members.forEach(m=>mem[m.role_key]=m);
+  const my=M.my_roles.find(r=>r.project_id==P.id);sub=M.units.some(u=>u[0]==sub)?sub:(my?M.role_unit[my.role_key]:'tech');
+  const canReq=isTop()||!!my;
+  let h=`<div class="crumb">پروژه‌ها</div><div class="row" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">پروژه ${esc(P.name)}${P.code?' <span class="mut">(کد <span class="num">'+esc(P.code)+'</span>)</span>':''}</h1>${canReq?`<a class="btn" href="#/purchase-new/${P.id}">+ درخواست خرید</a>`:''}</div>`;
+  h+=`<div class="card"><h2>ارکان پروژه</h2>`;
+  if(isTop())h+=`<div class="grid"><div><label>نام پروژه</label><input id="pjN" value="${esc(P.name)}"></div><div><label>کد پروژه</label><input id="pjC" value="${esc(P.code)}"></div>
+    ${M.project_roles.map(([k,t])=>`<div><label>${t}</label><select id="pjR_${k}">${opts(M.users.map(u=>[u.id,u.full_name]),(mem[k]||{}).user_id,'— تعیین نشده —')}</select></div>`).join('')}</div>
+    <button class="btn" style="margin-top:8px" onclick="saveProject(${P.id})">ذخیره ارکان</button>`;
+  else h+=`<div class="kv">${M.project_roles.map(([k,t])=>`<div>${t}</div><div>${mem[k]?esc(mem[k].full_name):'<span class="mut">تعیین نشده</span>'}</div>`).join('')}</div>`;
+  const miss=M.project_roles.filter(([k])=>['supervisor','warehouse','pm'].includes(k)&&!mem[k]).map(r=>r[1]);
+  if(miss.length)h+=`<div class="tag warn" style="margin-top:8px">تا ${miss.join('، ')} تعیین نشود، درخواست خرید این پروژه به گردش نمی‌افتد.</div>`;
+  h+=`</div><div class="tabs">${M.units.map(([k,t])=>`<a href="#/project/${P.id}/${k}" class="${k==sub?'on':''}">${t}</a>`).join('')}</div><div id="ptab"><div class="mut">در حال بارگذاری…</div></div>`;
+  $('#pg').innerHTML=h;
+  const rs=await api('GET',`/api/purchases?project_id=${P.id}&unit=${sub}`);
+  let t='';
+  if(sub=='warehouse'){const inq=await api('GET',`/api/purchases?project_id=${P.id}&stage=warehouse_check&status=open`);const dl=await api('GET',`/api/purchases?project_id=${P.id}&status=delivered`);
+    t+=`<div class="card"><h2>استعلام‌های منتظر پاسخ انبار (${fa(inq.length)})</h2>${purTable(inq)}</div><div class="card"><h2>تحویل‌شده از موجودی انبار</h2>${purTable(dl)}</div>`}
+  t+=`<div class="card"><div class="row" style="justify-content:space-between"><h2>درخواست‌های خرید واحد ${unitName(sub)} (${fa(rs.length)})</h2><a class="btn l sm" href="/api/purchases.csv?project_id=${P.id}&unit=${sub}">خروجی CSV</a></div>${purTable(rs)}</div>`;
+  $('#ptab').innerHTML=t}
+const saveProject=id=>run(async()=>{const m={};M.project_roles.forEach(([k])=>m[k]=val('pjR_'+k));await api('POST',`/api/projects/${id}/update`,{name:val('pjN'),code:val('pjC'),members:m});await reloadMeta();flash('ذخیره شد');route()});
+
+// ---------- فرم درخواست خرید کالا (مطابق فرم کاغذی شرکت)
+const PUR_UNITS=['عدد','کیلوگرم','تن','متر','مترمربع','مترمکعب','شاخه','کیسه','لیتر','دستگاه','بسته','رول','سری','حلقه','جفت'];
+function purRow(i,it,edit){it=it||{};const e=v=>esc(v||'');return edit?`<tr><td class="c">${fa(i)}</td><td><input data-k="title" value="${e(it.title)}"></td><td><input data-k="qty" value="${e(it.qty)}"></td><td><input data-k="unit" value="${e(it.unit)}" list="purUnits"></td><td><input data-k="spec" value="${e(it.spec)}"></td><td><input data-k="note" value="${e(it.note)}"></td></tr>`
+  :`<tr><td class="c">${fa(i)}</td><td>${e(it.title)}</td><td>${e(fa(it.qty))}</td><td>${e(it.unit)}</td><td>${e(it.spec)}</td><td>${e(it.note)}</td></tr>`}
+function purSheet(P,items,edit,flow){
+  flow=flow||[];const e=v=>esc(v||'');
+  const projs=M.projects.filter(p=>p.code!='HQ'&&(isTop()||M.my_roles.some(r=>r.project_id==p.id)));
+  const sig=(st)=>{const f=[...flow].reverse().find(x=>x.stage==st&&['submit','resubmit','approve'].includes(x.action));return f?`<div class="sg">${esc(f.user_name)} — ${jd(f.at,1)}</div>`:''};
+  const pmSig=[['supervisor_approve','سرپرست کارگاه'],['pm_approve','مدیر پروژه']].map(([st,t])=>{const f=[...flow].reverse().find(x=>x.stage==st&&x.action=='approve');return f?`<div class="sg">${t}: ${esc(f.user_name)} — ${jd(f.at,1)}</div>`:''}).join('');
+  return `<div class="sheet">
+  <table><tr><td><div class="hd"><img src="/logo.png" class="logo" onerror="this.remove()"><div><div class="co">${esc(M.company)}</div><div class="ttl">درخواست خرید کالا</div></div></div></td>
+   <td class="meta"><div><label>تاریخ:</label>${fa(P.req_date||todayJ())}</div><div><label>شماره:</label>${P.number?`<span>${fa(P.number)}</span>`:'<span class="mut">پس از ثبت، خودکار</span>'}</div></td></tr></table>
+  <table><tr><td><label>نام پروژه:</label>${edit?`<select id="puP" onchange="purProj()">${opts(projs.map(p=>[p.id,p.name]),P.project_id,'— انتخاب کنید —')}</select>`:e(P.project)}</td>
+   <td><label>کد پروژه:</label><span id="puC" class="num">${e(P.project_code)}</span></td>
+   <td rowspan="2" class="w35"><label>جهت استفاده:</label>${edit?`<textarea id="puU" style="min-height:60px">${e(P.purpose)}</textarea>`:`<div style="white-space:pre-wrap">${e(P.purpose)}</div>`}</td></tr>
+   <tr><td><label>واحد درخواست کننده:</label>${edit?`<select id="puN">${opts(M.units,P.unit,'—')}</select>`:e(unitName(P.unit))}</td>
+   <td><label>انبار محل درخواست:</label>${edit?`<input id="puW" value="${e(P.warehouse)}">`:e(P.warehouse)}</td></tr></table>
+  <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا</th><th style="width:90px">مقدار</th><th style="width:105px">واحد</th><th>مشخصات فنی</th><th>توضیحات</th></tr></thead>
+   <tbody id="puItems">${Array.from({length:Math.max(7,items.length)},(_,i)=>purRow(i+1,items[i],edit)).join('')}</tbody></table>
+  ${edit?`<div class="noprint" style="margin-top:6px"><button class="btn l sm" onclick="addPurRow()">+ ردیف</button></div><datalist id="purUnits">${PUR_UNITS.map(u=>`<option value="${u}">`).join('')}</datalist>`:''}
+  <table class="sign"><tr><td><label>درخواست کننده:</label>${e(P.requester||M.me.full_name)}${sig('draft')||sig('returned')}</td><td><label>مدیریت پروژه / سرپرست کارگاه:</label>${pmSig}</td></tr></table></div>`}
+function addPurRow(){const b=$('#puItems');b.insertAdjacentHTML('beforeend',purRow(b.rows.length+1,{},1))}
+function purProj(init){const pid=+val('puP');const p=M.projects.find(x=>x.id==pid);$('#puC').textContent=p?p.code||'':'';
+  if(p&&!val('puW'))$('#puW').value='انبار کارگاه '+p.name;
+  const my=M.my_roles.find(r=>r.project_id==pid);if(my&&(!val('puN')||!init))$('#puN').value=M.role_unit[my.role_key]}
+function purVals(){return{project_id:val('puP'),unit:val('puN'),warehouse:val('puW'),purpose:val('puU'),
+  items:[...document.querySelectorAll('#puItems tr')].map(tr=>{const o={};tr.querySelectorAll('input').forEach(i=>o[i.dataset.k]=(i.dataset.k=='qty'?en(i.value):i.value).trim());return o}).filter(o=>o.title||o.qty)}}
+function purchaseForm(pid){
+  const projs=M.projects.filter(p=>p.code!='HQ'&&(isTop()||M.my_roles.some(r=>r.project_id==p.id)));
+  if(!projs.length){$('#pg').innerHTML='<h1>درخواست خرید کالا</h1><div class="card mut">شما عضو ارکان هیچ پروژه‌ای نیستید. درخواست خرید را یکی از ارکان پروژه ثبت می‌کند؛ هیات مدیره ارکان را در صفحه پروژه تعیین می‌کند.</div>';return}
+  if(!pid&&projs.length==1)pid=projs[0].id;
+  $('#pg').innerHTML=`<h1>درخواست خرید کالا</h1>${purSheet({project_id:pid?+pid:''},[],1)}
+  <div class="card"><h2>پیوست (اختیاری — عکس، نقشه، مشخصات)</h2><input type="file" id="puFiles" multiple></div>
+  <div class="card mut">پس از ثبت، شماره و تاریخ خودکار درج می‌شود و درخواست به کارتابل سرپرست کارگاه می‌رود: سرپرست کارگاه ← استعلام انبار کارگاه ← (اگر موجود نبود) سرپرست کارگاه ← مدیر پروژه ← پشتیبانی دفتر مرکزی (خرید) ← مالی (پرداخت) ← منشی (بایگانی).</div>
+  <button class="btn" id="puSave">تأیید و ارسال به سرپرست کارگاه</button>`;
+  if(pid)purProj(true);
+  $('#puSave').onclick=()=>run(async()=>{$('#puSave').disabled=true;try{const r=await api('POST','/api/purchases',purVals());await uploadFiles('purchase',r.id,'puFiles');flash('ثبت شد — '+fa(r.number));location='#/purchase/'+r.id}finally{const b=$('#puSave');if(b)b.disabled=false}})}
+
+// ---------- مشاهده و گردش درخواست خرید
+const PUR_SEQ=['draft','supervisor_review','warehouse_check','supervisor_approve','pm_approve','hq_purchase','finance_pay','archive'];
+const PUR_ACT={supervisor_review:[['inquire','ارسال استعلام به انبار کارگاه','ok'],['return','برگشت به درخواست‌کننده','l'],['reject','رد','bad']],
+  warehouse_check:[['in_stock','موجود است — تحویل به درخواست‌کننده و بایگانی','ok'],['not_in_stock','موجود نیست — ارسال به سرپرست کارگاه','']],
+  supervisor_approve:[['approve','تأیید و ارسال به مدیر پروژه','ok'],['return','برگشت به درخواست‌کننده','l'],['reject','رد','bad']],
+  pm_approve:[['approve','تأیید و ارسال به پشتیبانی دفتر مرکزی','ok'],['return','برگشت به درخواست‌کننده','l'],['reject','رد','bad']],
+  hq_purchase:[['purchased','خرید انجام شد — ارسال به مالی','ok'],['return','برگشت به درخواست‌کننده','l']],
+  finance_pay:[['paid','پرداخت شد — ارسال به منشی برای بایگانی','ok']],archive:[['archived','بایگانی','ok']]};
+function purChain(P,flow){
+  const seen=new Set(flow.map(f=>f.stage));let cur=PUR_SEQ.indexOf(P.stage);
+  if(P.status=='closed')cur=PUR_SEQ.length;
+  return `<div class="chain">${PUR_SEQ.map((k,i)=>{let c='';if(P.status=='delivered'){c=i<=2?'approved':'skipped'}else if(P.status=='open')c=i<cur?'approved':i==cur?'pending':'';else if(P.status=='closed')c='approved';else c=seen.has(k)?'approved':'skipped';
+    return `<div class="st ${c}">${fa(i+1)}. ${M.p_stages[k]}</div>`}).join('<span>←</span>')}${P.status=='delivered'?'<span>←</span><div class="st approved"><b>تحویل از انبار</b></div>':''}</div>`}
+async function purchaseView(id){
+  const d=await api('GET','/api/purchases/'+id);const P=d.doc;
+  let h=`<div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">درخواست خرید <span>${fa(P.number)}</span> ${pTag(P)}</h1>
+   <div class="row"><button class="btn l" onclick="printPur('${esc(P.number)}')">خروجی PDF</button><a class="btn l" href="/api/purchases/${P.id}.csv">خروجی CSV</a>${P.project_id?`<a class="btn l" href="#/project/${P.project_id}/${P.unit}">پروژه ${esc(P.project)}</a>`:''}</div></div>
+  <div class="card noprint"><div style="margin-bottom:8px"><b>اکنون در دست: </b>${P.holder?`<span class="tag pri">${esc(P.holder)} — ${esc(M.p_stages[P.stage])}</span>`:'<span class="mut">—</span>'}</div>${purChain(P,d.flow)}</div>`;
+  const ret=P.status=='returned'&&P.requester_id==M.me.id;
+  h+=ret?`<div class="card noprint" style="border-color:var(--bad)"><h2>درخواست برای اصلاح به شما برگشت</h2><div class="mut">علت: ${esc((d.flow.filter(f=>f.action=='return').pop()||{}).note)}</div></div>`+purSheet(P,d.items,1,d.flow)
+    +`<div class="card noprint"><label>توضیح اصلاح</label><input id="puRN"><div class="row" style="margin-top:8px"><button class="btn" onclick="purResub(${P.id})">ارسال مجدد به سرپرست کارگاه</button><button class="btn bad" onclick="purCancel(${P.id})">لغو درخواست</button></div></div>`
+    :purSheet(P,d.items,0,d.flow);
+  if(P.supplier||P.amount||P.paid_amount!=null||P.archive_code)h+=`<div class="card"><h2>خرید و پرداخت</h2><div class="kv">${P.supplier?`<div>تأمین‌کننده</div><div>${esc(P.supplier)}</div>`:''}${P.amount?`<div>مبلغ خرید</div><div>${money(P.amount)} ریال</div>`:''}${P.paid_amount!=null?`<div>پرداخت</div><div>${money(P.paid_amount)} ریال — ${esc(fa(P.paid_at))}</div><div>سند سپیدار</div><div>${esc(fa(P.sepidar_no))||'—'}</div>`:''}${P.archive_code?`<div>محل بایگانی</div><div>${esc(P.archive_code)}</div>`:''}</div></div>`;
+  if(d.actions.length){const st=P.stage;let x='';
+    if(st=='hq_purchase')x=`<div class="grid"><div><label>تأمین‌کننده / فروشنده</label><input id="paS"></div><div><label>مبلغ خرید (ریال)</label><input id="paA" class="num"></div></div>`;
+    if(st=='finance_pay')x=`<div class="grid"><div><label>مبلغ پرداختی (ریال) *</label><input id="paP" class="num" value="${P.amount?money(P.amount):''}"></div><div><label>تاریخ پرداخت</label><input id="paD" value="${todayJ()}"></div><div><label>شماره سند سپیدار</label><input id="paSp"></div></div>`;
+    if(st=='archive')x=`<div><label>کد / محل بایگانی فیزیکی</label><input id="paC" placeholder="مثلاً کلاسور خرید — موادکاران"></div>`;
+    h+=`<div class="card noprint" style="border-color:var(--warn)"><h2>اقدام شما — ${esc(M.p_stages[st])}</h2>${x}<label style="margin-top:8px">توضیح ${st=='warehouse_check'?'(مثلاً تحویل به چه کسی)':'(برای برگشت یا رد الزامی است)'}</label><textarea id="paN"></textarea>
+     <div class="row" style="margin-top:8px">${(PUR_ACT[st]||[]).map(([a,t,c])=>`<button class="btn ${c}" onclick="purAct(${P.id},'${a}')">${t}</button>`).join('')}</div></div>`}
+  else if(P.requester_id==M.me.id&&P.status=='open'&&P.stage=='supervisor_review')h+=`<div class="noprint" style="margin-bottom:14px"><button class="btn l sm" onclick="purCancel(${P.id})">لغو درخواست</button></div>`;
+  h+=`<div class="card"><h2>گردش درخواست</h2><table><tr><th>تاریخ</th><th>مرحله</th><th>اقدام</th><th>توسط</th><th>توضیح</th></tr>${d.flow.map(f=>`<tr><td class="mut" style="width:130px">${jd(f.at,1)}</td><td>${esc(M.p_stages[f.stage]||'')}</td><td>${esc(f.label)}</td><td>${esc(f.user_name)}</td><td>${esc(f.note)}</td></tr>`).join('')}</table></div>`;
+  h+=`<div class="noprint">${attachBlock('purchase',P.id,d.attachments)}</div>`;
+  $('#pg').innerHTML=h}
+function printPur(num){const t=document.title;document.title='درخواست خرید '+num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
+const purAct=(id,a)=>run(async()=>{if(a=='reject'&&!confirm('درخواست رد شود؟'))return;await api('POST',`/api/purchases/${id}/act`,{action:a,note:val('paN'),supplier:val('paS'),amount:en(val('paA')),paid_amount:en(val('paP')),paid_at:en(val('paD')),sepidar_no:en(val('paSp')),archive_code:val('paC')});flash('ثبت شد');refreshCount();route()});
+const purResub=id=>run(async()=>{await api('POST',`/api/purchases/${id}/resubmit`,Object.assign(purVals(),{note:val('puRN')}));flash('ارسال شد');route()});
+const purCancel=id=>run(async()=>{if(!confirm('درخواست خرید لغو شود؟'))return;await api('POST',`/api/purchases/${id}/cancel`,{});route()});
 
 // ---------------------------------------------------------------- گزارش‌ها
 async function reports(){
@@ -323,22 +488,25 @@ async function reports(){
   <div class="grid"><div class="card"><h2>نامه‌ها</h2><div class="kv"><div>وارده</div><div>${fa(lc('in'))}</div><div>صادره</div><div>${fa(lc('out'))}</div><div>داخلی</div><div>${fa(lc('internal'))}</div><div>جاری</div><div>${fa(lc(0,'open'))}</div><div>بایگانی‌شده</div><div>${fa(lc(0,'archived'))}</div></div></div>
   <div class="card"><h2>درخواست‌های مالی</h2><table><tr><th>وضعیت</th><th>تعداد</th><th>مبلغ (ریال)</th></tr>${d.requests.map(r=>`<tr><td>${tag(R_ST,r.status)}</td><td>${fa(r.n)}</td><td>${money(r.status=='paid'||r.status=='closed'?r.paid:r.amount)}</td></tr>`).join('')}</table>${d.no_sepidar?`<div class="tag warn" style="margin-top:6px">${fa(d.no_sepidar)} پرداخت هنوز سند سپیدار ندارد</div>`:''}</div></div>
   <div class="card"><h2>هزینه به تفکیک پروژه</h2><table><tr><th>پروژه</th><th>تعداد درخواست</th><th>تأییدشده (ریال)</th><th>پرداخت‌شده (ریال)</th></tr>${d.by_project.map(p=>`<tr><td>${esc(p.project)}</td><td>${fa(p.n)}</td><td>${money(p.approved)}</td><td>${money(p.paid)}</td></tr>`).join('')}</table></div>`;
-  $('#view').innerHTML=h}
+  $('#pg').innerHTML=h}
 
 // ---------------------------------------------------------------- مدیریت
 async function admin(){
   const d=await api('GET','/api/admin');const S=d.settings;const uo=sel=>opts(d.users.filter(u=>u.active).map(u=>[u.id,u.full_name]),sel,'—');
-  $('#view').innerHTML=`<h1>مدیریت سامانه</h1>
+  $('#pg').innerHTML=`<h1>مدیریت سامانه</h1>
   <div class="card"><h2>کاربران</h2><table><tr><th>نام کاربری</th><th>نام</th><th>سمت</th><th>نقش</th><th>فعال</th><th></th></tr>${d.users.map(u=>`<tr><td>${esc(u.username)}</td><td>${esc(u.full_name)}</td><td>${esc(u.title)}</td><td>${M.roles[u.role]}</td><td>${u.active?'بله':'خیر'}${u.must_change?' <span class="tag warn">رمز پیش‌فرض</span>':''}</td><td><a style="cursor:pointer" onclick='editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'>ویرایش</a> | <a style="cursor:pointer" onclick="resetPw(${u.id})">رمز ← ۱۲۳۴</a></td></tr>`).join('')}</table>
   <div class="grid" style="margin-top:10px" id="uF"><input type="hidden" id="uId"><div><label>نام کاربری</label><input id="uU" class="num"></div><div><label>نام کامل</label><input id="uN"></div><div><label>سمت</label><input id="uT"></div><div><label>نقش</label><select id="uR">${opts(Object.entries(M.roles),'staff')}</select></div><div><label><input type="checkbox" id="uA" style="width:auto" checked> فعال</label></div><div><button class="btn" onclick="saveUser()">ذخیره کاربر</button> <button class="btn l" onclick="editUser({})">جدید</button></div></div>
   <div class="mut">رمز کاربر جدید «1234» است و در اولین ورود باید تغییر کند. کاربر را حذف نکنید؛ غیرفعال کنید تا سوابقش بماند.</div></div>
   <div class="card"><h2>پروژه‌ها / کارگاه‌ها</h2><table><tr><th>نام</th><th>کد</th><th>مدیر پروژه (تأییدکننده اول)</th><th>فعال</th><th></th></tr>${d.projects.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(p.code)}</td><td>${esc(uname(p.manager_id)||(d.users.find(u=>u.id==p.manager_id)||{}).full_name||'— (مدیر اجرایی)')}</td><td>${p.active?'بله':'خیر'}</td><td><a style="cursor:pointer" onclick='editProj(${JSON.stringify(p).replace(/'/g,"&#39;")})'>ویرایش</a></td></tr>`).join('')}</table>
   <div class="grid" style="margin-top:10px"><input type="hidden" id="pId"><div><label>نام پروژه</label><input id="pNm"></div><div><label>کد</label><input id="pC"></div><div><label>مدیر پروژه</label><select id="pM">${uo()}</select></div><div><label><input type="checkbox" id="pAc" style="width:auto" checked> فعال</label></div><div><button class="btn" onclick="saveProj()">ذخیره پروژه</button> <button class="btn l" onclick="editProj({})">جدید</button></div></div></div>
-  <div class="card"><h2>تنظیمات گردش مالی</h2><div class="grid"><div><label>نام شرکت</label><input id="sCo" value="${esc(S.company)}"></div>
+  <div class="card"><h2>تنظیمات گردش مالی و خرید</h2><div class="grid"><div><label>نام شرکت</label><input id="sCo" value="${esc(S.company)}"></div>
    <div><label>سقف نیاز به تأیید مدیرعامل (ریال)</label><input id="sTh" class="num" value="${money(S.ceo_threshold)}"></div>
    <div><label>مدیرعامل</label><select id="sCeo">${uo(S.ceo_user)}</select></div>
    <div><label>تأییدکننده درخواست‌های دفتر (مدیر اجرایی)</label><select id="sOff">${uo(S.office_approver)}</select></div>
    <div><label>مسئول انبار و تجهیزات</label><select id="sWh">${uo(S.warehouse_user)}</select></div>
+   <div><label>مدیر پشتیبانی دفتر مرکزی (خرید)</label><select id="sSup">${uo(S.support_manager)}</select></div>
+   <div><label>مدیر مالی دفتر مرکزی (پرداخت)</label><select id="sFin">${uo(S.finance_manager)}</select></div>
+   <div><label>منشی (بایگانی درخواست‌های خرید)</label><select id="sArc">${uo(S.archive_user)}</select></div>
    <div><label>مهلت پیش‌فرض ارجاع (روز)</label><input id="sDd" value="${esc(S.default_due_days)}"></div></div>
    <button class="btn" style="margin-top:8px" onclick="saveSet()">ذخیره تنظیمات</button></div>
   <div class="card"><h2>پشتیبان‌گیری</h2><div class="mut">نسخه پشتیبان پایگاه داده هر روز خودکار در پوشه data\\backups ساخته می‌شود (۶۰ روز آخر نگه داشته می‌شود). آخرین‌ها: ${d.backups.map(esc).join('، ')||'—'}<br>برای نسخه بیرونی (شامل اسکن‌ها) فایل backup.bat را هفتگی اجرا کنید.</div></div>`}
@@ -347,16 +515,18 @@ const saveUser=()=>run(async()=>{await api('POST','/api/admin/user',{id:val('uId
 const resetPw=id=>run(async()=>{if(!confirm('رمز این کاربر به 1234 برگردد؟'))return;await api('POST','/api/admin/reset',{id});flash('رمز بازنشانی شد');admin()});
 function editProj(p){$('#pId').value=p.id||'';$('#pNm').value=p.name||'';$('#pC').value=p.code||'';$('#pM').value=p.manager_id||'';$('#pAc').checked=p.active!==0}
 const saveProj=()=>run(async()=>{await api('POST','/api/admin/project',{id:val('pId'),name:val('pNm'),code:val('pC'),manager_id:val('pM'),active:$('#pAc').checked});flash('ذخیره شد');M=Object.assign(M,await api('GET','/api/meta'));admin()});
-const saveSet=()=>run(async()=>{await api('POST','/api/admin/settings',{company:val('sCo'),ceo_threshold:en(val('sTh')).replace(/[^\d]/g,''),ceo_user:val('sCeo'),office_approver:val('sOff'),warehouse_user:val('sWh'),default_due_days:en(val('sDd'))});flash('ذخیره شد');M=Object.assign(M,await api('GET','/api/meta'))});
+const saveSet=()=>run(async()=>{await api('POST','/api/admin/settings',{company:val('sCo'),ceo_threshold:en(val('sTh')).replace(/[^\d]/g,''),ceo_user:val('sCeo'),office_approver:val('sOff'),warehouse_user:val('sWh'),support_manager:val('sSup'),finance_manager:val('sFin'),archive_user:val('sArc'),default_due_days:en(val('sDd'))});flash('ذخیره شد');await reloadMeta()});
 
 // ---------------------------------------------------------------- راهنما
-function help(){$('#view').innerHTML=`<h1>راهنمای کوتاه</h1><div class="card" style="line-height:2.1">
+function help(){$('#pg').innerHTML=`<h1>راهنمای کوتاه</h1><div class="card" style="line-height:2.1">
 <b>قاعده اصلی:</b> هیچ نامه یا درخواستی بیرون از سامانه دست‌به‌دست نمی‌شود. کاغذ فقط برای بایگانی فیزیکی است و هر سند باید در هر لحظه در دست یک نفر مشخص باشد.<br>
 <b>دبیرخانه (منشی):</b> نامه رسیده را اسکن کنید ← «ثبت نامه» ← مشخصات و فایل اسکن را وارد کنید ← همان‌جا به فرد مسئول ارجاع دهید (یا به مدیرعامل برای دستور). شماره ثبت را روی اصل نامه بنویسید.<br>
 <b>مدارک کارگاه‌ها که در تلگرام/واتساپ می‌رسد:</b> اگر نیاز به اقدام دفتر دارد، دبیرخانه آن را با نحوه دریافت «تلگرام/واتساپ کارگاه» ثبت و ارجاع می‌کند.<br>
 <b>هر کاربر:</b> روزی دو بار «کارتابل من» را ببیند. روی هر کار: «در حال اقدام»، «انجام شد» (با شرح)، «برگشت» (با علت) یا «ارجاع به دیگری». ردیف‌های قرمز مهلتشان گذشته است.<br>
 <b>ارجاع‌دهنده:</b> در زبانه «پیگیری ارجاع‌های من» می‌بیند کار دست چه کسی مانده؛ دیگر نیازی به پیگیری تلفنی نیست.<br>
-<b>درخواست مالی:</b> «درخواست جدید» ← پیش‌فاکتور را پیوست کنید ← مسیر تأیید خودکار ساخته می‌شود. تأییدکننده‌ها در «منتظر تأیید من» تأیید/رد/برگشت می‌زنند. مالی پس از پرداخت، شماره سند سپیدار را ثبت می‌کند.<br>
+<b>درخواست خرید کالا:</b> یکی از ارکان پروژه از «درخواست خرید» فرم را پر و تأیید می‌کند ← سرپرست کارگاه ← استعلام انبار کارگاه (اگر موجود بود تحویل و بایگانی می‌شود) ← سرپرست کارگاه ← مدیر پروژه ← پشتیبانی دفتر مرکزی (خرید) ← مالی (پرداخت) ← منشی (بایگانی). هر مرحله در «کارتابل من» فرد مسئول ظاهر می‌شود. در صفحه هر درخواست «خروجی PDF» و «خروجی CSV» هست.<br>
+<b>ارکان پروژه:</b> هیات مدیره و مدیر سیستم در صفحه هر پروژه (بخش پروژه‌ها) مدیر پروژه، سرپرست کارگاه، معاونان، پشتیبانی و انبار را تعیین می‌کنند.<br>
+<b>درخواست مالی (تنخواه، پرداخت):</b> «دفتر مرکزی › مالی › درخواست پرداخت / تنخواه جدید» ← پیش‌فاکتور را پیوست کنید ← مسیر تأیید خودکار ساخته می‌شود. تأییدکننده‌ها در «منتظر تأیید من» تأیید/رد/برگشت می‌زنند. مالی پس از پرداخت، شماره سند سپیدار را ثبت می‌کند.<br>
 <b>بایگانی:</b> پس از انجام کار، دبیرخانه نامه را با کد محل بایگانی فیزیکی (کلاسور/قفسه) بایگانی می‌کند. جستجو با هر بخشی از موضوع، شماره یا کد بایگانی ممکن است.<br>
 <b>تاریخ‌ها</b> را شمسی و به شکل ۱۴۰۵/۰۷/۱۵ وارد کنید. <b>مبالغ</b> به ریال است.</div>`}
 

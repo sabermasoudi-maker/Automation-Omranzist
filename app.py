@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.1'
+VERSION = '1.2'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 OPEN = ('new', 'seen', 'doing')
@@ -40,6 +40,41 @@ SOURCES = ['پست', 'تحویل حضوری', 'ایمیل', 'فکس', 'تلگر�
 REQUEST_KINDS = ['خرید کالا و مصالح', 'خرید تجهیزات', 'خرید خدمات', 'تنخواه', 'پرداخت به پیمانکار',
                  'پرداخت به تامین‌کننده', 'هزینه جاری دفتر', 'سایر']
 WAREHOUSE_KINDS = ('خرید کالا و مصالح', 'خرید تجهیزات')
+
+# ارکان هر پروژه و واحدهای درخواست‌کننده (زیرتب‌های پروژه)
+PROJECT_ROLES = [('pm', 'مدیر پروژه'), ('supervisor', 'سرپرست کارگاه'), ('exec', 'معاون اجرایی'),
+                 ('tech', 'معاون فنی'), ('support', 'پشتیبانی'), ('warehouse', 'انبار')]
+UNITS = [('tech', 'فنی'), ('exec', 'اجرایی'), ('support', 'پشتیبانی'), ('warehouse', 'انبار')]
+ROLE_UNIT = {'pm': 'exec', 'supervisor': 'exec', 'exec': 'exec', 'tech': 'tech', 'support': 'support',
+             'warehouse': 'warehouse'}
+HQ_ROLES = {'support_manager': 'مدیر پشتیبانی دفتر مرکزی', 'finance_manager': 'مدیر مالی دفتر مرکزی',
+            'archive_user': 'منشی (بایگانی)'}
+
+# گردش درخواست خرید: مرحله ← {اقدام: (مرحله بعد، شرح)}؛ None یعنی رد و بسته شدن
+P_STAGES = {'draft': 'ثبت و تأیید درخواست‌کننده', 'supervisor_review': 'بررسی سرپرست کارگاه',
+            'warehouse_check': 'استعلام موجودی از انبار کارگاه', 'supervisor_approve': 'تأیید سرپرست کارگاه',
+            'pm_approve': 'تأیید مدیر پروژه', 'hq_purchase': 'خرید — پشتیبانی دفتر مرکزی',
+            'finance_pay': 'پرداخت — مالی دفتر مرکزی', 'archive': 'بایگانی — دبیرخانه',
+            'returned': 'برگشت به درخواست‌کننده', 'done': 'پایان'}
+_RET = ('returned', 'برگشت به درخواست‌کننده برای اصلاح')
+_REJ = (None, 'رد درخواست')
+P_FLOW = {
+    'supervisor_review': {'inquire': ('warehouse_check', 'ارسال استعلام به انبار کارگاه'), 'return': _RET, 'reject': _REJ},
+    'warehouse_check': {'in_stock': ('done', 'موجود در انبار — تحویل به درخواست‌کننده و بایگانی'),
+                        'not_in_stock': ('supervisor_approve', 'موجود نیست — ارسال به سرپرست کارگاه')},
+    'supervisor_approve': {'approve': ('pm_approve', 'تأیید و ارسال به مدیر پروژه'), 'return': _RET, 'reject': _REJ},
+    'pm_approve': {'approve': ('hq_purchase', 'تأیید و ارسال به پشتیبانی دفتر مرکزی'), 'return': _RET, 'reject': _REJ},
+    'hq_purchase': {'purchased': ('finance_pay', 'خرید انجام شد — ارسال به مالی'), 'return': _RET},
+    'finance_pay': {'paid': ('archive', 'پرداخت شد — ارسال به دبیرخانه برای بایگانی')},
+    'archive': {'archived': ('done', 'بایگانی شد')},
+}
+STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check': ('member', 'warehouse'),
+                'supervisor_approve': ('member', 'supervisor'), 'pm_approve': ('member', 'pm'),
+                'hq_purchase': ('setting', 'support_manager'), 'finance_pay': ('setting', 'finance_manager'),
+                'archive': ('setting', 'archive_user')}
+P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل از انبار',
+            'closed': 'خریداری، پرداخت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد'}
+SEED_PROJECTS = ['موادکاران', 'پروژه بدون نام ۱', 'پروژه بدون نام ۲']
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, full_name TEXT NOT NULL,
@@ -67,6 +102,20 @@ CREATE TABLE IF NOT EXISTS attachments(id INTEGER PRIMARY KEY, doc_type TEXT, do
 CREATE TABLE IF NOT EXISTS log(id INTEGER PRIMARY KEY, doc_type TEXT, doc_id INTEGER, user_id INTEGER, event TEXT,
   detail TEXT DEFAULT '', at TEXT);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS project_members(project_id INTEGER NOT NULL, role_key TEXT NOT NULL, user_id INTEGER NOT NULL,
+  PRIMARY KEY(project_id, role_key));
+CREATE TABLE IF NOT EXISTS purchases(id INTEGER PRIMARY KEY, year INTEGER, seq INTEGER, number TEXT, project_id INTEGER NOT NULL,
+  unit TEXT DEFAULT '', warehouse TEXT DEFAULT '', purpose TEXT DEFAULT '', requester_id INTEGER, req_date TEXT,
+  stage TEXT, status TEXT DEFAULT 'open', holder_id INTEGER, supplier TEXT DEFAULT '', amount INTEGER, paid_amount INTEGER,
+  paid_at TEXT DEFAULT '', sepidar_no TEXT DEFAULT '', archive_code TEXT DEFAULT '', created_at TEXT, closed_at TEXT);
+CREATE TABLE IF NOT EXISTS purchase_items(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, row_no INTEGER, title TEXT,
+  qty TEXT DEFAULT '', unit TEXT DEFAULT '', spec TEXT DEFAULT '', note TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS purchase_flow(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, stage TEXT, action TEXT,
+  label TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
+CREATE INDEX IF NOT EXISTS ix_pur_holder ON purchases(holder_id, status);
+CREATE INDEX IF NOT EXISTS ix_pur_proj ON purchases(project_id);
+CREATE INDEX IF NOT EXISTS ix_pur_items ON purchase_items(purchase_id);
+CREATE INDEX IF NOT EXISTS ix_pur_flow ON purchase_flow(purchase_id);
 CREATE INDEX IF NOT EXISTS ix_ref_to ON referrals(to_id, status);
 CREATE INDEX IF NOT EXISTS ix_ref_doc ON referrals(doc_type, doc_id);
 CREATE INDEX IF NOT EXISTS ix_steps ON steps(request_id);
@@ -75,7 +124,8 @@ CREATE INDEX IF NOT EXISTS ix_log ON log(doc_type, doc_id);
 """
 
 DEFAULT_SETTINGS = {'company': 'شرکت گسترش فناوری عمران زیست', 'ceo_threshold': '1000000000',
-                    'ceo_user': '', 'office_approver': '', 'warehouse_user': '', 'default_due_days': '3'}
+                    'ceo_user': '', 'office_approver': '', 'warehouse_user': '', 'default_due_days': '3',
+                    'support_manager': '', 'finance_manager': '', 'archive_user': ''}
 
 SEED_USERS = [  # (username, full_name, title, role)
     ('admin', 'مدیر سیستم', 'راهبر سامانه', 'admin'),
@@ -158,8 +208,37 @@ def init_db():
         c.execute("UPDATE settings SET value=? WHERE key='office_approver'", (str(ids['aliasghari']),))
         c.execute("UPDATE settings SET value=? WHERE key='warehouse_user'", (str(ids['aliasghari']),))
         c.execute("INSERT INTO projects(name,code,manager_id) VALUES('دفتر مرکزی','HQ',NULL)")
+    migrate(c)
     c.commit()
     c.close()
+
+
+def migrate(c):
+    """ارتقای پایگاه داده نسخه‌های قبلی؛ فقط یک بار اجرا می‌شود."""
+    c.execute("INSERT OR IGNORE INTO project_members(project_id,role_key,user_id) "
+              "SELECT id,'pm',manager_id FROM projects WHERE manager_id IS NOT NULL")
+    if settings(c).get('seed_v12'):
+        return
+    ids = {r['username']: r['id'] for r in c.execute('SELECT id,username FROM users')}
+    for key, un in (('support_manager', 'support'), ('finance_manager', 'finance'), ('archive_user', 'secretary')):
+        if un in ids:
+            c.execute("UPDATE settings SET value=? WHERE key=? AND value=''", (str(ids[un]), key))
+    for name in SEED_PROJECTS:
+        if c.execute('SELECT 1 FROM projects WHERE name=?', (name,)).fetchone():
+            continue
+        mid = ids.get('kasaeian') if name == 'موادکاران' else None
+        pid = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (name, '', mid)).lastrowid
+        sync_pm(c, pid, mid)
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v12','1')")
+
+
+def sync_pm(c, pid, uid):
+    """مدیر پروژه هم در ارکان و هم در projects.manager_id (تأییدکننده اول درخواست مالی) نگه داشته می‌شود."""
+    if uid:
+        c.execute("INSERT OR REPLACE INTO project_members(project_id,role_key,user_id) VALUES(?,'pm',?)", (pid, uid))
+    else:
+        c.execute("DELETE FROM project_members WHERE project_id=? AND role_key='pm'", (pid,))
+    c.execute('UPDATE projects SET manager_id=? WHERE id=?', (uid or None, pid))
 
 
 def settings(c):
@@ -216,6 +295,15 @@ def sees_all(u):
     return u['role'] in ('admin', 'manager', 'secretariat')
 
 
+def is_broad(c, u):
+    """کسانی که همه درخواست‌های خرید همه پروژه‌ها را می‌بینند."""
+    return is_mgr(u) or u['role'] in ('finance', 'secretariat') or str(u['id']) == settings(c).get('support_manager')
+
+
+def is_member(c, u, pid):
+    return c.execute('SELECT 1 FROM project_members WHERE project_id=? AND user_id=?', (pid, u['id'])).fetchone() is not None
+
+
 # ------------------------------------------------------------------ دسترسی به سند
 def participant(c, u, dt, did):
     return c.execute('SELECT 1 FROM referrals WHERE doc_type=? AND doc_id=? AND (to_id=? OR from_id=?) LIMIT 1',
@@ -237,6 +325,14 @@ def can_view_request(c, u, R):
     return participant(c, u, 'request', R['id'])
 
 
+def can_view_purchase(c, u, P):
+    if is_broad(c, u) or u['id'] in (P['requester_id'], P['holder_id']) or is_member(c, u, P['project_id']):
+        return True
+    if c.execute('SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=?', (P['id'], u['id'])).fetchone():
+        return True
+    return participant(c, u, 'purchase', P['id'])
+
+
 def get_doc(c, u, dt, did):
     if dt == 'letter':
         d = one(c.execute('SELECT * FROM letters WHERE id=?', (did,)))
@@ -244,6 +340,9 @@ def get_doc(c, u, dt, did):
     elif dt == 'request':
         d = one(c.execute('SELECT * FROM requests WHERE id=?', (did,)))
         need(d, 'درخواست پیدا نشد', 404); need(can_view_request(c, u, d))
+    elif dt == 'purchase':
+        d = one(c.execute('SELECT * FROM purchases WHERE id=?', (did,)))
+        need(d, 'درخواست خرید پیدا نشد', 404); need(can_view_purchase(c, u, d))
     else:
         raise ApiError('نوع سند نامعتبر')
     return d
@@ -368,10 +467,20 @@ def api_meta(h, c, u, b, q):
             'projects': rows(c.execute('SELECT id,name,code,manager_id FROM projects WHERE active=1 ORDER BY id')),
             'roles': ROLES, 'letter_kinds': LETTER_KINDS, 'actions': ACTIONS, 'sources': SOURCES,
             'request_kinds': REQUEST_KINDS, 'default_due_days': int(S.get('default_due_days') or 3),
-            'ceo_threshold': int(S.get('ceo_threshold') or 0)}
+            'ceo_threshold': int(S.get('ceo_threshold') or 0),
+            'project_roles': PROJECT_ROLES, 'units': UNITS, 'role_unit': ROLE_UNIT, 'p_stages': P_STAGES,
+            'p_status': P_STATUS, 'hq_roles': HQ_ROLES, 'broad': is_broad(c, u),
+            'my_roles': rows(c.execute('SELECT project_id, role_key FROM project_members WHERE user_id=?', (u['id'],)))}
+
+
+PUR_SEL = ("SELECT x.*, pr.name project, pr.code project_code, ru.full_name requester, hu.full_name holder, "
+           "(SELECT group_concat(title, '، ') FROM purchase_items WHERE purchase_id=x.id) items_text FROM purchases x "
+           "LEFT JOIN projects pr ON pr.id=x.project_id LEFT JOIN users ru ON ru.id=x.requester_id "
+           "LEFT JOIN users hu ON hu.id=x.holder_id ")
 
 
 DOC_LABEL_SQL = """CASE r.doc_type WHEN 'letter' THEN (SELECT number||' — '||subject FROM letters WHERE id=r.doc_id)
+ WHEN 'purchase' THEN (SELECT number||' — درخواست خرید' FROM purchases WHERE id=r.doc_id)
  ELSE (SELECT number||' — '||title FROM requests WHERE id=r.doc_id) END"""
 
 
@@ -404,8 +513,11 @@ def api_cartable(h, c, u, b, q):
         desk = rows(c.execute(
             "SELECT l.* FROM letters l WHERE l.status='open' AND NOT EXISTS (SELECT 1 FROM referrals r WHERE "
             "r.doc_type='letter' AND r.doc_id=l.id AND r.status IN %s) ORDER BY l.id DESC LIMIT 200" % str(OPEN)))
+    pur_held = rows(c.execute(PUR_SEL + "WHERE x.holder_id=? AND x.status IN ('open','returned') ORDER BY x.id", (u['id'],)))
+    pur_mine = rows(c.execute(PUR_SEL + "WHERE x.requester_id=? AND x.status IN ('open','returned') ORDER BY x.id DESC",
+                              (u['id'],)))
     return {'inbox': inbox, 'sent': sent, 'approvals': approvals, 'mine': mine, 'pay': pay, 'desk': desk,
-            'today': today()}
+            'pur_held': pur_held, 'pur_mine': pur_mine, 'today': today()}
 
 
 @route('GET', '/api/counts')
@@ -415,6 +527,8 @@ def api_counts(h, c, u, b, q):
                    "AND s.status='pending' AND q.status='pending'", (u['id'],)).fetchone()[0]
     if u['role'] in ('finance',):
         n += c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]
+    n += c.execute("SELECT COUNT(*) FROM purchases WHERE holder_id=? AND status IN ('open','returned')",
+                   (u['id'],)).fetchone()[0]
     return {'n': n}
 
 
@@ -769,6 +883,248 @@ def api_request_pay(h, c, u, b, q, rid):
     return {'ok': True}
 
 
+# ---------- پروژه‌ها و ارکان
+@route('GET', r'/api/projects/(\d+)')
+def api_project_get(h, c, u, b, q, pid):
+    pr = one(c.execute('SELECT * FROM projects WHERE id=?', (int(pid),)))
+    need(pr, 'پروژه پیدا نشد', 404)
+    mem = rows(c.execute('SELECT m.role_key, m.user_id, us.full_name FROM project_members m LEFT JOIN users us '
+                         'ON us.id=m.user_id WHERE m.project_id=?', (pr['id'],)))
+    return {'project': pr, 'members': mem}
+
+
+@route('POST', r'/api/projects/(\d+)/update')
+def api_project_update(h, c, u, b, q, pid):
+    need(is_mgr(u), 'ویرایش پروژه و ارکان آن فقط توسط هیات مدیره و مدیر سیستم انجام می‌شود')
+    pr = one(c.execute('SELECT * FROM projects WHERE id=?', (int(pid),)))
+    need(pr, 'پروژه پیدا نشد', 404)
+    name = (b.get('name') or '').strip(); need(name, 'نام پروژه الزامی است', 400)
+    need(not c.execute('SELECT 1 FROM projects WHERE name=? AND active=1 AND id!=?', (name, pr['id'])).fetchone(),
+         'پروژه دیگری با این نام وجود دارد', 400)
+    c.execute('UPDATE projects SET name=?, code=? WHERE id=?', (name, (b.get('code') or '').strip(), pr['id']))
+    mem = b.get('members') or {}
+    for key, label in PROJECT_ROLES:
+        v = int(mem.get(key) or 0)
+        if v:
+            need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (v,)).fetchone(), 'کاربر «%s» نامعتبر است' % label, 400)
+        if key == 'pm':
+            sync_pm(c, pr['id'], v)
+        elif v:
+            c.execute('INSERT OR REPLACE INTO project_members(project_id,role_key,user_id) VALUES(?,?,?)', (pr['id'], key, v))
+        else:
+            c.execute('DELETE FROM project_members WHERE project_id=? AND role_key=?', (pr['id'], key))
+    log(c, 'project', pr['id'], u['id'], 'ویرایش پروژه و ارکان', name)
+    return {'ok': True}
+
+
+# ---------- درخواست خرید کالا
+def stage_holder(c, P, stage):
+    """کاربری که درخواست در این مرحله به کارتابل او می‌رود."""
+    if stage == 'returned':
+        return P['requester_id']
+    kind, key = STAGE_HOLDER[stage]
+    if kind == 'member':
+        r = c.execute('SELECT user_id FROM project_members WHERE project_id=? AND role_key=?',
+                      (P['project_id'], key)).fetchone()
+        need(r, '«%s» برای این پروژه تعریف نشده؛ هیات مدیره باید ارکان پروژه را در صفحه پروژه تکمیل کند'
+             % dict(PROJECT_ROLES)[key], 400)
+        uid = r[0]
+    else:
+        uid = int(settings(c).get(key) or 0)
+        need(uid, '«%s» در «مدیریت سامانه ← تنظیمات» تعیین نشده' % HQ_ROLES[key], 400)
+    need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (uid,)).fetchone(),
+         'کاربر مسئول مرحله «%s» غیرفعال است' % P_STAGES[stage], 400)
+    return uid
+
+
+def pflow(c, pid, u, stage, action, label, note=''):
+    c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
+              (pid, stage, action, label, u['id'], note, now()))
+    log(c, 'purchase', pid, u['id'], label, note)
+
+
+def to_int(v):
+    d = re.sub(r'[^\d]', '', str(v or '').translate(FA2EN))
+    return int(d) if d else None
+
+
+def pur_fields(c, u, b):
+    pid = int(b.get('project_id') or 0)
+    pr = one(c.execute("SELECT * FROM projects WHERE id=? AND active=1 AND code!='HQ'", (pid,)))
+    need(pr, 'پروژه را انتخاب کنید', 400)
+    need(is_mgr(u) or is_member(c, u, pid), 'فقط ارکان پروژه «%s» می‌توانند برای آن درخواست خرید ثبت کنند' % pr['name'])
+    unit = b.get('unit')
+    need(unit in dict(UNITS), 'واحد درخواست‌کننده را انتخاب کنید', 400)
+    items = []
+    for it in b.get('items') or []:
+        t = (it.get('title') or '').strip()
+        if not t:
+            continue
+        qty = (str(it.get('qty') or '')).translate(FA2EN).strip()
+        need(qty, 'مقدار کالای «%s» وارد نشده' % t, 400)
+        items.append((t, qty, (it.get('unit') or '').strip(), (it.get('spec') or '').strip(), (it.get('note') or '').strip()))
+    need(items, 'حداقل یک ردیف کالا با شرح و مقدار وارد کنید', 400)
+    return dict(project_id=pid, unit=unit, warehouse=(b.get('warehouse') or '').strip(),
+                purpose=(b.get('purpose') or '').strip(), requester_id=u['id']), items
+
+
+def save_items(c, pid, items):
+    c.execute('DELETE FROM purchase_items WHERE purchase_id=?', (pid,))
+    for i, it in enumerate(items, 1):
+        c.execute('INSERT INTO purchase_items(purchase_id,row_no,title,qty,unit,spec,note) VALUES(?,?,?,?,?,?,?)',
+                  (pid, i) + it)
+
+
+def pur_filter(c, u, q):
+    w, p = ['1=1'], []
+    if not is_broad(c, u):
+        w.append('(x.requester_id=? OR x.holder_id=? OR x.project_id IN (SELECT project_id FROM project_members '
+                 'WHERE user_id=?) OR EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id AND f.user_id=?))')
+        p += [u['id']] * 4
+    for k in ('project_id', 'holder_id'):
+        if q.get(k):
+            w.append('x.%s=?' % k); p.append(int(q[k]))
+    for k in ('unit', 'stage', 'status'):
+        if q.get(k):
+            w.append('x.%s=?' % k); p.append(q[k])
+    if q.get('q'):
+        w.append('(x.number LIKE ? OR x.purpose LIKE ? OR x.supplier LIKE ? OR EXISTS(SELECT 1 FROM purchase_items i '
+                 'WHERE i.purchase_id=x.id AND (i.title LIKE ? OR i.spec LIKE ?)))')
+        p += ['%' + q['q'] + '%'] * 5
+    if q.get('from'):
+        w.append('substr(x.created_at,1,10)>=?'); p.append(q['from'])
+    if q.get('to'):
+        w.append('substr(x.created_at,1,10)<=?'); p.append(q['to'])
+    return ' AND '.join(w), p
+
+
+@route('GET', '/api/purchases')
+def api_purchases(h, c, u, b, q):
+    w, p = pur_filter(c, u, q)
+    return rows(c.execute(PUR_SEL + 'WHERE %s ORDER BY x.id DESC LIMIT %d' % (w, int(q.get('limit') or 500)), p))
+
+
+PUR_CSV_HEAD = ['شماره', 'تاریخ', 'پروژه', 'کد پروژه', 'واحد درخواست‌کننده', 'انبار محل درخواست', 'جهت استفاده',
+                'درخواست‌کننده', 'ردیف', 'شرح کالا', 'مقدار', 'واحد', 'مشخصات فنی', 'توضیحات', 'وضعیت', 'مرحله',
+                'در دست', 'تأمین‌کننده', 'مبلغ خرید (ریال)', 'مبلغ پرداختی (ریال)', 'تاریخ پرداخت', 'سند سپیدار',
+                'کد بایگانی']
+
+
+def pur_csv(c, lst, fname):
+    out = io.StringIO(); wr = csv.writer(out)
+    wr.writerow(PUR_CSV_HEAD)
+    units = dict(UNITS)
+    for P in lst:
+        its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],))) or [{}]
+        for it in its:
+            wr.writerow([P['number'], P['req_date'], P['project'] or '', P['project_code'] or '', units.get(P['unit'], ''),
+                         P['warehouse'], P['purpose'], P['requester'] or '', it.get('row_no', ''), it.get('title', ''),
+                         it.get('qty', ''), it.get('unit', ''), it.get('spec', ''), it.get('note', ''),
+                         P_STATUS.get(P['status'], P['status']), P_STAGES.get(P['stage'], P['stage']), P['holder'] or '',
+                         P['supplier'], P['amount'] or '', P['paid_amount'] or '', P['paid_at'], P['sepidar_no'],
+                         P['archive_code']])
+    return ('csv', fname, out.getvalue())
+
+
+@route('GET', '/api/purchases.csv')
+def api_purchases_csv(h, c, u, b, q):
+    q['limit'] = 100000
+    return pur_csv(c, api_purchases(h, c, u, b, q), 'purchases.csv')
+
+
+@route('GET', r'/api/purchases/(\d+)\.csv')
+def api_purchase_csv(h, c, u, b, q, pid):
+    get_doc(c, u, 'purchase', int(pid))
+    return pur_csv(c, rows(c.execute(PUR_SEL + 'WHERE x.id=?', (int(pid),))), 'purchase-%s.csv' % pid)
+
+
+@route('POST', '/api/purchases')
+def api_purchase_new(h, c, u, b, q):
+    f, items = pur_fields(c, u, b)
+    holder = stage_holder(c, f, 'supervisor_review')
+    y = jyear()
+    seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchases WHERE year=?', (y,)).fetchone()[0]
+    number = 'خ %d/%04d' % (y, seq)
+    cur = c.execute('INSERT INTO purchases(year,seq,number,project_id,unit,warehouse,purpose,requester_id,req_date,stage,'
+                    'status,holder_id,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    (y, seq, number, f['project_id'], f['unit'], f['warehouse'], f['purpose'], u['id'], jstr(today()),
+                     'supervisor_review', 'open', holder, now()))
+    save_items(c, cur.lastrowid, items)
+    pflow(c, cur.lastrowid, u, 'draft', 'submit', 'تهیه، تأیید و ارسال به سرپرست کارگاه', number)
+    return {'id': cur.lastrowid, 'number': number}
+
+
+@route('GET', r'/api/purchases/(\d+)')
+def api_purchase_get(h, c, u, b, q, pid):
+    get_doc(c, u, 'purchase', int(pid))
+    P = one(c.execute(PUR_SEL + 'WHERE x.id=?', (int(pid),)))
+    items = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],)))
+    flow = rows(c.execute('SELECT f.*, us.full_name user_name FROM purchase_flow f LEFT JOIN users us ON us.id=f.user_id '
+                          'WHERE f.purchase_id=? ORDER BY f.id', (P['id'],)))
+    att = doc_extras(c, 'purchase', P['id'])[0]
+    return {'doc': P, 'items': items, 'flow': flow, 'attachments': att,
+            'actions': list(P_FLOW.get(P['stage'], {})) if P['holder_id'] == u['id'] and P['status'] == 'open' else []}
+
+
+@route('POST', r'/api/purchases/(\d+)/act')
+def api_purchase_act(h, c, u, b, q, pid):
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(P['status'] == 'open' and P['holder_id'] == u['id'], 'این درخواست در کارتابل شما نیست')
+    acts = P_FLOW.get(P['stage']) or {}
+    a = b.get('action')
+    need(a in acts, 'اقدام نامعتبر', 400)
+    nxt, label = acts[a]
+    note = (b.get('note') or '').strip()
+    if a in ('return', 'reject'):
+        need(note, 'علت برگشت یا رد را بنویسید', 400)
+    if a == 'purchased':
+        c.execute('UPDATE purchases SET supplier=?, amount=? WHERE id=?',
+                  ((b.get('supplier') or '').strip(), to_int(b.get('amount')), P['id']))
+    elif a == 'paid':
+        amt = to_int(b.get('paid_amount'))
+        need(amt is not None, 'مبلغ پرداختی را وارد کنید', 400)
+        c.execute('UPDATE purchases SET paid_amount=?, paid_at=?, sepidar_no=? WHERE id=?',
+                  (amt, (b.get('paid_at') or jstr(today())).translate(FA2EN), (b.get('sepidar_no') or '').strip(), P['id']))
+    elif a == 'archived':
+        c.execute('UPDATE purchases SET archive_code=? WHERE id=?', ((b.get('archive_code') or '').strip(), P['id']))
+    if nxt is None:
+        st, stage, holder = 'rejected', 'done', None
+    elif nxt == 'done':
+        st, stage, holder = ('delivered' if a == 'in_stock' else 'closed'), 'done', None
+    elif nxt == 'returned':
+        st, stage, holder = 'returned', 'returned', P['requester_id']
+    else:
+        st, stage, holder = 'open', nxt, stage_holder(c, P, nxt)
+    c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
+              (st, stage, holder, now() if stage == 'done' else None, P['id']))
+    pflow(c, P['id'], u, P['stage'], a, label, note)
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/resubmit')
+def api_purchase_resubmit(h, c, u, b, q, pid):
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(P['requester_id'] == u['id'] and P['status'] == 'returned', 'فقط درخواست‌کننده، پس از برگشت درخواست')
+    f, items = pur_fields(c, u, b)
+    holder = stage_holder(c, f, 'supervisor_review')
+    c.execute("UPDATE purchases SET project_id=?, unit=?, warehouse=?, purpose=?, stage='supervisor_review', status='open', "
+              'holder_id=? WHERE id=?', (f['project_id'], f['unit'], f['warehouse'], f['purpose'], holder, P['id']))
+    save_items(c, P['id'], items)
+    pflow(c, P['id'], u, 'returned', 'resubmit', 'اصلاح و ارسال مجدد به سرپرست کارگاه', (b.get('note') or '').strip())
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/cancel')
+def api_purchase_cancel(h, c, u, b, q, pid):
+    P = get_doc(c, u, 'purchase', int(pid))
+    need((P['requester_id'] == u['id'] and (P['status'] == 'returned' or P['stage'] == 'supervisor_review'))
+         or (is_mgr(u) and P['status'] in ('open', 'returned')), 'لغو این درخواست برای شما ممکن نیست')
+    need(P['status'] in ('open', 'returned'), 'این درخواست بسته شده است', 400)
+    c.execute("UPDATE purchases SET status='cancelled', stage='done', holder_id=NULL, closed_at=? WHERE id=?", (now(), P['id']))
+    pflow(c, P['id'], u, P['stage'], 'cancel', 'لغو درخواست', (b.get('note') or '').strip())
+    return {'ok': True}
+
+
 # ---------- گزارش‌ها
 @route('GET', '/api/reports')
 def api_reports(h, c, u, b, q):
@@ -803,11 +1159,13 @@ def api_reports(h, c, u, b, q):
 
 @route('POST', '/api/projects')
 def api_project_new(h, c, u, b, q):
-    need(is_mgr(u) or u['role'] == 'secretariat', 'تعریف پروژه فقط توسط هیات مدیره و دبیرخانه انجام می‌شود')
+    need(is_mgr(u), 'تعریف پروژه جدید فقط توسط هیات مدیره و مدیر سیستم انجام می‌شود')
     name = (b.get('name') or '').strip(); need(name, 'نام پروژه الزامی است', 400)
     need(not c.execute('SELECT 1 FROM projects WHERE name=? AND active=1', (name,)).fetchone(), 'این پروژه قبلاً تعریف شده', 400)
     mid = int(b['manager_id']) if b.get('manager_id') else None
     cur = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (name, (b.get('code') or '').strip(), mid))
+    sync_pm(c, cur.lastrowid, mid)
+    log(c, 'project', cur.lastrowid, u['id'], 'تعریف پروژه', name)
     return one(c.execute('SELECT id,name,code,manager_id FROM projects WHERE id=?', (cur.lastrowid,)))
 
 
@@ -856,8 +1214,10 @@ def api_admin_project(h, c, u, b, q):
     if b.get('id'):
         c.execute('UPDATE projects SET name=?,code=?,manager_id=?,active=? WHERE id=?',
                   (b['name'].strip(), b.get('code') or '', mid, 1 if b.get('active', True) else 0, int(b['id'])))
+        sync_pm(c, int(b['id']), mid)
     else:
-        c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (b['name'].strip(), b.get('code') or '', mid))
+        cur = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (b['name'].strip(), b.get('code') or '', mid))
+        sync_pm(c, cur.lastrowid, mid)
     return {'ok': True}
 
 
@@ -914,6 +1274,12 @@ class H(BaseHTTPRequestHandler):
         if method == 'GET' and path in ('/', '/index.html'):
             with open(os.path.join(BASE, 'index.html'), 'rb') as f:
                 return self.send(200, f.read(), 'text/html; charset=utf-8')
+        if method == 'GET' and path == '/logo.png':  # آرم شرکت (اختیاری): فایل logo.png کنار app.py
+            lp = os.path.join(BASE, 'logo.png')
+            if os.path.exists(lp):
+                with open(lp, 'rb') as f:
+                    return self.send(200, f.read(), 'image/png')
+            return self.send(404, b'', 'image/png')
         c = db()
         try:
             u = self.user(c)
