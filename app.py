@@ -27,9 +27,15 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.7.1'
+VERSION = '1.8'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
+AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
+
+
+def search_words(q):
+    """کلمات جستجو، هر کدام به شکل الگوی LIKE؛ همه کلمات باید پیدا شوند."""
+    return ['%' + t + '%' for t in (q.get('q') or '').split() if t][:8]
 OPEN = ('new', 'seen', 'doing')
 ROLES = {'admin': 'مدیر سیستم', 'manager': 'عضو هیات مدیره', 'secretariat': 'دبیرخانه',
          'finance': 'مالی', 'staff': 'کارمند'}
@@ -750,10 +756,12 @@ def letter_filter(u, q, see_all=False):
         w.append(part); p += [u['id']] * 3
     elif not is_mgr(u):
         w.append('(l.confidential=0 OR ' + part + ')'); p += [u['id']] * 3
-    if q.get('q'):
-        w.append('(l.subject LIKE ? OR l.number LIKE ? OR l.counterpart LIKE ? OR l.summary LIKE ? OR l.their_number LIKE ?'
-                 ' OR l.archive_code LIKE ?)')
-        p += ['%' + q['q'] + '%'] * 6
+    for t in search_words(q):  # هر کلمه باید جایی از نامه، ارجاع‌ها یا نام پیوست‌ها باشد
+        w.append("(l.subject LIKE ? OR l.number LIKE ? OR l.counterpart LIKE ? OR l.summary LIKE ? OR l.their_number LIKE ?"
+                 " OR l.archive_code LIKE ? OR EXISTS(SELECT 1 FROM referrals r WHERE r.doc_type='letter' AND r.doc_id=l.id "
+                 "AND (r.instruction LIKE ? OR r.reply LIKE ?)) OR EXISTS(SELECT 1 FROM attachments a WHERE "
+                 "a.doc_type='letter' AND a.doc_id=l.id AND a.deleted_at IS NULL AND a.name LIKE ?))")
+        p += [t] * 9
     for k in ('kind', 'status'):
         if q.get(k):
             w.append('l.%s=?' % k); p.append(q[k])
@@ -989,9 +997,9 @@ def req_filter(u, q, see_all=False):
         w.append("(q.requester_id=? OR EXISTS(SELECT 1 FROM steps s WHERE s.request_id=q.id AND s.approver_id=?) OR "
                  "EXISTS(SELECT 1 FROM referrals r WHERE r.doc_type='request' AND r.doc_id=q.id AND (r.to_id=? OR r.from_id=?)))")
         p += [u['id']] * 4
-    if q.get('q'):
+    for t in search_words(q):
         w.append('(q.title LIKE ? OR q.number LIKE ? OR q.payee LIKE ? OR q.description LIKE ? OR q.sepidar_no LIKE ?)')
-        p += ['%' + q['q'] + '%'] * 5
+        p += [t] * 5
     for k in ('kind', 'status'):
         if q.get(k):
             w.append('q.%s=?' % k); p.append(q[k])
@@ -1318,10 +1326,14 @@ def pur_filter(c, u, q):
         if q.get(k):
             vals = q[k].split(',')
             w.append('x.%s IN (%s)' % (k, ','.join('?' * len(vals)))); p += vals
-    if q.get('q'):
-        w.append('(x.number LIKE ? OR x.purpose LIKE ? OR x.supplier LIKE ? OR EXISTS(SELECT 1 FROM purchase_items i '
-                 'WHERE i.purchase_id=x.id AND (i.title LIKE ? OR i.spec LIKE ?)))')
-        p += ['%' + q['q'] + '%'] * 5
+    for t in search_words(q):  # هر کلمه باید جایی از درخواست، اقلام، پروژه، افراد یا پیوست‌ها باشد
+        w.append("(x.number LIKE ? OR x.purpose LIKE ? OR x.supplier LIKE ? OR x.warehouse LIKE ? OR x.sepidar_no LIKE ? "
+                 "OR EXISTS(SELECT 1 FROM purchase_items i WHERE i.purchase_id=x.id AND (i.title LIKE ? OR i.spec LIKE ? "
+                 "OR i.note LIKE ?)) OR EXISTS(SELECT 1 FROM projects pj WHERE pj.id=x.project_id AND (pj.name LIKE ? OR "
+                 "pj.code LIKE ?)) OR EXISTS(SELECT 1 FROM users us WHERE us.id=x.requester_id AND us.full_name LIKE ?) "
+                 "OR EXISTS(SELECT 1 FROM attachments a WHERE a.doc_type='purchase' AND a.doc_id=x.id AND "
+                 "a.deleted_at IS NULL AND a.name LIKE ?))")
+        p += [t] * 12
     if q.get('from'):
         w.append('substr(x.created_at,1,10)>=?'); p.append(q['from'])
     if q.get('to'):
@@ -1356,6 +1368,17 @@ def pur_csv(c, lst, fname):
                          P['supplier'], P['amount'] or '', P['paid_amount'] or '', P['paid_at'], P['sepidar_no'],
                          P['archive_code'], (P['cancel_reason'] or '') + (' — ' + P['cancel_note'] if P['cancel_note'] else '')])
     return ('csv', fname, out.getvalue())
+
+
+@route('GET', '/api/search')
+def api_search(h, c, u, b, q):
+    """جستجوی یک‌جا در مکاتبات و درخواست‌ها؛ هر کس فقط آنچه اجازه دیدنش را دارد."""
+    need(search_words(q), 'عبارت جستجو را بنویسید', 400)
+    qq = {'q': q['q'], 'limit': 200}
+    res = {'letters': api_letters(h, c, u, b, dict(qq)), 'purchases': api_purchases(h, c, u, b, dict(qq)), 'requests': []}
+    if not is_site_only(c, u):
+        res['requests'] = api_requests(h, c, u, b, dict(qq))
+    return res
 
 
 @route('GET', '/api/purchases.csv')
@@ -1676,7 +1699,7 @@ class H(BaseHTTPRequestHandler):
         self.set_cookie = None
         url = urllib.parse.urlparse(self.path)
         path = url.path
-        q = {k: v[0].translate(FA2EN) for k, v in urllib.parse.parse_qs(url.query).items()}
+        q = {k: v[0].translate(FA2EN).translate(AR2FA) for k, v in urllib.parse.parse_qs(url.query).items()}
         if method == 'GET' and path in ('/', '/index.html'):
             with open(os.path.join(BASE, 'index.html'), 'rb') as f:
                 return self.send(200, f.read(), 'text/html; charset=utf-8')

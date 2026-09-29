@@ -22,6 +22,9 @@ label{display:block;font-size:12.5px;color:var(--mut);margin-bottom:2px}
 #app{display:none;min-height:100vh}
 header{background:#17344d;color:#fff;display:flex;align-items:center;gap:16px;padding:8px 18px}
 header b{font-size:15px}header .sp{flex:1}header a{color:#cfe3f3;cursor:pointer}
+#gsF{flex:0 1 320px}#gsF input{background:rgba(255,255,255,.12);border:1px solid #4b6a85;color:#fff;border-radius:16px;padding:4px 12px}
+#gsF input::placeholder{color:#b9cde0}#gsF input:focus{background:#fff;color:var(--ink);outline:none}
+mark{background:#fff3b0;padding:0 1px;border-radius:2px}
 header .ver{font-weight:normal;font-size:12px;background:rgba(255,255,255,.14);color:#dbe9f5;border-radius:10px;padding:1px 8px;margin-right:6px;white-space:nowrap}
 .wrap{display:flex}
 nav{width:200px;background:#fff;border-left:1px solid var(--line);min-height:calc(100vh - 44px);padding:10px 0}
@@ -97,6 +100,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
  header{position:sticky;top:0;z-index:7;gap:10px;padding:8px 10px;flex-wrap:wrap}
  header b{font-size:13.5px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}header .sp{display:none}
  #meName{font-size:12px;width:100%;order:9;color:#cfe3f3}
+ #gsF{order:8;flex:1 1 100%}
  #menuBtn{display:inline-flex;align-items:center;gap:4px;background:none;border:1px solid #4b6a85;color:#fff;border-radius:6px;font-size:20px;padding:2px 10px;cursor:pointer}
  .wrap{display:block}
  nav{position:fixed;top:0;right:0;bottom:0;width:270px;max-width:82vw;z-index:9;overflow-y:auto;transform:translateX(105%);transition:transform .2s;box-shadow:-4px 0 18px rgba(0,0,0,.2);min-height:0}
@@ -139,7 +143,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
   <button class="btn" onclick="doLogin()" style="width:100%">ورود</button>
 </div>
 <div id="app">
-  <header><button id="menuBtn" onclick="toggleNav()" aria-label="منو">☰<span class="badge" id="cnt2" style="display:none"></span></button><b id="coName">اتوماسیون اداری</b><span class="sp"></span><span id="meName"></span>
+  <header><button id="menuBtn" onclick="toggleNav()" aria-label="منو">☰<span class="badge" id="cnt2" style="display:none"></span></button><b id="coName">اتوماسیون اداری</b><form id="gsF" onsubmit="gSearch();return false"><input id="gsQ" type="search" placeholder="جستجو در مکاتبات و درخواست‌ها…" autocomplete="off"></form><span class="sp"></span><span id="meName"></span>
     <a onclick="pwModal()">تغییر رمز</a><a onclick="logout()">خروج</a></header>
   <div class="wrap"><nav id="nav"></nav><div id="navbg" onclick="toggleNav(0)"></div><main id="view"></main></div>
 </div>
@@ -219,7 +223,7 @@ window.addEventListener('hashchange',route);
 async function route(){
   if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
   toggleNav(0);try{drawNav(p=='project'?'project/'+id:M.site_only?({letter:'letters','letter-edit':'letters'}[p]||p):(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
-  const V={cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
+  const V={search:()=>searchPage(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('hq_purchase','درخواست‌های کالا منتظر خرید توسط پشتیبانی دفتر مرکزی'),'hq-finance':()=>hqStage('finance_pay','خریدهای انجام‌شده منتظر پرداخت'),'hq-office':()=>hqStage('archive','درخواست‌های کالا منتظر بایگانی',1),
     'report-purchases':()=>purchasesPage(),'report-requests':requestsList,'report-letters':lettersList,
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
@@ -457,12 +461,31 @@ async function projectPage(id,sub){
   if(miss.length)h+=`<div class="tag warn" style="margin-top:8px">تا ${miss.join('، ')} تعیین نشود، درخواست کالای این پروژه به گردش نمی‌افتد.</div>`;
   h+=`</div><div class="tabs">${M.units.map(([k,t])=>`<a href="#/project/${P.id}/${k}" class="${k==sub?'on':''}">${t}</a>`).join('')}</div><div id="ptab"><div class="mut">در حال بارگذاری…</div></div>`;
   $('#pg').innerHTML=h;
+  $('#ptab').insertAdjacentHTML('beforebegin',`<form class="row noprint" style="margin-bottom:10px" onsubmit="projSearch(${P.id});return false"><div style="flex:3"><input id="pjQ" type="search" placeholder="جستجو در همه درخواست‌های کالای این پروژه (شماره، کالا، مشخصات، درخواست‌کننده، تأمین‌کننده…)"></div><button class="btn l">جستجو</button></form>`);
   const rs=await api('GET',`/api/purchases?project_id=${P.id}&unit=${sub}`);
   let t='';
   if(sub=='warehouse'){const inq=await api('GET',`/api/purchases?project_id=${P.id}&stage=warehouse_check&status=open`);const dl=await api('GET',`/api/purchases?project_id=${P.id}&status=delivered`);
     t+=`<div class="card"><h2>استعلام‌های منتظر پاسخ انبار (${fa(inq.length)})</h2>${purTable(inq)}</div><div class="card"><h2>تحویل‌شده از موجودی انبار</h2>${purTable(dl)}</div>`}
   t+=`<div class="card"><div class="row" style="justify-content:space-between"><h2>درخواست‌های کالای واحد ${unitName(sub)} (${fa(rs.length)})</h2><a class="btn l sm" href="/api/purchases.csv?project_id=${P.id}&unit=${sub}">خروجی CSV</a></div>${purTable(rs)}</div>`;
   $('#ptab').innerHTML=t}
+const projSearch=pid=>run(async()=>{const q=val('pjQ').trim();if(!q)return route();const rs=await api('GET',`/api/purchases?project_id=${pid}&q=${encodeURIComponent(q)}`);
+  document.querySelectorAll('.tabs a').forEach(a=>a.classList.remove('on'));
+  $('#ptab').innerHTML=`<div class="card"><div class="row" style="justify-content:space-between"><h2>نتیجه جستجوی «${esc(q)}» در این پروژه (${fa(rs.length)})</h2><a class="btn l sm" href="/api/purchases.csv?project_id=${pid}&q=${encodeURIComponent(q)}">خروجی CSV</a></div>${hl(purTable(rs),q)}</div>`});
+// ---------- جستجوی یک‌جا
+function gSearch(q){q=(q??val('gsQ')).trim();if(!q)return;location.hash='#/search/'+encodeURIComponent(q)}
+function hl(html,q){ // پررنگ کردن کلمات جستجو در متن جدول (نه داخل تگ‌ها)
+  const ws=[...new Set(q.split(/\s+/).filter(w=>w.length>1).flatMap(w=>[w,en(w),fa(w)]))].map(w=>w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'));if(!ws.length)return html;
+  const re=new RegExp('('+ws.join('|')+')','g');return html.replace(/>([^<]+)</g,(m,t)=>'>'+t.replace(re,'<mark>$1</mark>')+'<')}
+async function searchPage(raw){
+  const q=decodeURIComponent(raw||'').trim();$('#gsQ').value=q;
+  $('#pg').innerHTML=`<h1>جستجو</h1><form class="card noprint" onsubmit="gSearch(val('sQ'));return false"><div class="row"><div style="flex:3"><input id="sQ" type="search" value="${esc(q)}" placeholder="مثلاً: میلگرد موادکاران  یا  ۱۴۰۵/۰۰۱۲  یا نام شخص"></div><button class="btn">جستجو</button></div>
+   <div class="mut" style="margin-top:6px">در شماره، موضوع، طرف مکاتبه، خلاصه، دستور و پاسخ ارجاع‌ها، شرح و مشخصات کالا، پروژه، درخواست‌کننده، تأمین‌کننده و نام پیوست‌ها جستجو می‌شود. اگر چند کلمه بنویسید، نتیجه‌هایی می‌آید که همه کلمات را داشته باشند. فقط سندهایی نمایش داده می‌شود که اجازه دیدنشان را دارید.</div></form><div id="sres"></div>`;
+  if(!q)return;
+  const d=await api('GET','/api/search?q='+encodeURIComponent(q));
+  const lt=d.letters.length?`<table><tr><th>شماره</th><th>نوع</th><th>تاریخ ثبت</th><th>موضوع</th><th>طرف مکاتبه</th><th>در دست</th><th>وضعیت</th></tr>${d.letters.map(r=>`<tr class="cl" onclick="location='#/letter/${r.id}'"><td>${fa(r.number)}</td><td>${M.letter_kinds[r.kind]}</td><td class="mut">${jd(r.created_at)}</td><td>${r.confidential?'<span class="tag bad">محرمانه</span> ':''}${esc(r.subject)}</td><td>${esc(r.counterpart)}</td><td>${esc(r.holders||'')}</td><td>${tag(L_ST,r.status)}</td></tr>`).join('')}</table>`:'<div class="mut">نامه‌ای پیدا نشد.</div>';
+  const rq=d.requests.length?`<table><tr><th>شماره</th><th>تاریخ</th><th>عنوان</th><th>پروژه</th><th>درخواست‌کننده</th><th>مبلغ (ریال)</th><th>وضعیت</th></tr>${d.requests.map(r=>`<tr class="cl" onclick="location='#/request/${r.id}'"><td>${fa(r.number)}</td><td class="mut">${jd(r.created_at)}</td><td>${esc(r.title)}</td><td>${esc(r.project||'')}</td><td>${esc(r.requester)}</td><td>${money(r.amount)}</td><td>${tag(R_ST,r.status)}</td></tr>`).join('')}</table>`:'';
+  $('#sres').innerHTML=hl(`<div class="card"><h2>درخواست‌های کالا (${fa(d.purchases.length)})</h2>${d.purchases.length?purTable(d.purchases,1):'<div class="mut">درخواستی پیدا نشد.</div>'}</div>
+   <div class="card"><h2>مکاتبات (${fa(d.letters.length)})</h2>${lt}</div>${M.site_only?'':`<div class="card"><h2>درخواست‌های مالی (${fa(d.requests.length)})</h2>${rq||'<div class="mut">درخواستی پیدا نشد.</div>'}</div>`}`,en(q))}
 const saveProject=id=>run(async()=>{const m={},t={};M.project_roles.forEach(([k])=>m[k]=val('pjR_'+k));M.team_roles.forEach(([k])=>t[k]=picked('pjT_'+k));await api('POST',`/api/projects/${id}/update`,{name:val('pjN'),code:val('pjC'),members:m,team:t});await reloadMeta();flash('ذخیره شد');route()});
 
 // ---------- فرم درخواست کالا (مطابق فرم کاغذی شرکت)
