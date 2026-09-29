@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.1'
+VERSION = '2.2'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -1512,12 +1512,29 @@ def tech_already(c, P):
                      (P['id'], t, last_ret)).fetchone() is not None
 
 
-def after_supervisor(c, P, notes):
-    """پس از تأیید سرپرست کارگاه: معاون فنی (مصالح اصلی یا بالاتر از کلاس الف)، سپس خرید کارگاه یا مدیر پروژه."""
-    if P['category'] == 'main' or P['pclass'] != 'A':
-        if not tech_already(c, P):
-            return 'tech_review'
+def done_this_round(c, P, stage):
+    """این مرحله در نوبت فعلی (پس از آخرین ارسال مجدد) تأیید شده است."""
+    last_ret = c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action='resubmit'",
+                         (P['id'],)).fetchone()[0]
+    return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND stage=? AND action='approve' AND id>?",
+                     (P['id'], stage, last_ret)).fetchone() is not None
+
+
+def after_stock(c, P, notes):
+    """پس از استعلام انبار: بررسی معاون فنی، سپس سرپرست کارگاه (نسخه ۲.۲: معاون فنی پیش از سرپرست کارگاه)."""
+    if tech_already(c, P):
         notes.append('بررسی معاون فنی لازم نبود؛ معاون فنی قبلاً درخواست را ثبت یا تأیید کرده است')
+        return 'supervisor_approve'
+    return 'tech_review'
+
+
+def after_supervisor(c, P, notes):
+    """پس از تأیید سرپرست کارگاه: خرید کارگاه (کلاس الف) یا مدیر پروژه.
+    درخواست‌هایی که پیش از نسخه ۲.۲ به سرپرست رسیده‌اند و معاون فنی هنوز بررسی‌شان نکرده، با قاعده قبلی به معاون فنی می‌روند."""
+    if (P['category'] == 'main' or P['pclass'] != 'A') and not done_this_round(c, P, 'tech_review') \
+            and not tech_already(c, P) and not c.execute(
+                "SELECT 1 FROM purchase_flow WHERE purchase_id=? AND stage='tech_review'", (P['id'],)).fetchone():
+        return 'tech_review'
     return after_tech(P)
 
 
@@ -2025,7 +2042,7 @@ def api_purchase_act(h, c, u, b, q, pid):
         if left <= 0:
             move(c, u, P, 'done', ('stock', label + ' — همه اقلام از انبار تحویل شد'), note, 'delivered')
             return {'ok': True}
-        nxt = 'supervisor_approve'
+        nxt = after_stock(c, P, notes)
     elif a == 'approve' and P['stage'] == 'supervisor_approve':  # برآورد مبلغ و تعیین کلاس خرید
         est = to_int(b.get('estimate'))
         need(est or not to_int(settings(c).get('class_a_max')), 'مبلغ برآوردی خرید را وارد کنید', 400)
@@ -2035,7 +2052,8 @@ def api_purchase_act(h, c, u, b, q, pid):
         nxt = after_supervisor(c, P, notes)
         label += (' — کلاس خرید %s' % CLASS_LABEL[cl]) if cl else ' — کلاس خرید نامعلوم (سقف‌ها تعیین نشده)'
     elif a == 'approve' and P['stage'] == 'tech_review':
-        nxt = after_tech(P)
+        # درخواست قدیمی که سرپرست کارگاه پیش از معاون فنی تأییدش کرده بود، مستقیم به خرید یا مدیر پروژه می‌رود
+        nxt = after_tech(P) if done_this_round(c, P, 'supervisor_approve') else 'supervisor_approve'
     elif a == 'quoted':  # پیشنهاد قیمت و فروشنده با پیش‌فاکتور
         sup, amt = (b.get('supplier') or '').strip(), to_int(b.get('amount'))
         need(sup and amt, 'فروشنده پیشنهادی و مبلغ را وارد کنید', 400)
