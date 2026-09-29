@@ -25,6 +25,18 @@ header b{font-size:15px}header .sp{flex:1}header a{color:#cfe3f3;cursor:pointer}
 #gsF{flex:0 1 320px}#gsF input{background:rgba(255,255,255,.12);border:1px solid #4b6a85;color:#fff;border-radius:16px;padding:4px 12px}
 #gsF input::placeholder{color:#b9cde0}#gsF input:focus{background:#fff;color:var(--ink);outline:none}
 mark{background:#fff3b0;padding:0 1px;border-radius:2px}
+/* نامه روی سربرگ A4 */
+.lhwrap{overflow-x:auto;padding-bottom:6px}
+.lhpage{position:relative;width:210mm;height:297mm;background:#fff no-repeat top center/210mm 297mm;color:#000;overflow:hidden;margin:0 auto 14px;box-shadow:0 1px 8px rgba(0,0,0,.18);-webkit-print-color-adjust:exact;print-color-adjust:exact;font-family:"B Nazanin","B Lotus",Vazirmatn,Tahoma,serif}
+.lhf{position:absolute;white-space:nowrap}
+.lhb{position:absolute;display:flex;flex-direction:column;line-height:2;overflow:hidden}
+.lhto{font-weight:bold;margin-bottom:4px;white-space:pre-wrap}.lhsub{font-weight:bold;margin-bottom:10px}
+.lhtxt{text-align:justify}
+.lhsig{align-self:flex-end;text-align:center;min-width:55mm;margin-top:10mm;line-height:1.8}.lhsig img{max-height:26mm;max-width:60mm;display:block;margin:0 auto -4mm}
+.lhsamp{height:22mm;border:1px dashed #999;display:flex;align-items:center;justify-content:center;color:#999;margin-bottom:2mm}
+.lhprev{width:105mm;height:148.5mm;overflow:hidden;border:1px solid var(--line)}.lhprev .lhpage{transform:scale(.5);transform-origin:top right;margin:0}
+@page lh{size:A4;margin:0}
+@media print{.lhpage{page:lh;box-shadow:none;margin:0}.lhwrap{overflow:visible}}
 header .ver{font-weight:normal;font-size:12px;background:rgba(255,255,255,.14);color:#dbe9f5;border-radius:10px;padding:1px 8px;margin-right:6px;white-space:nowrap}
 .wrap{display:flex}
 nav{width:200px;background:#fff;border-left:1px solid var(--line);min-height:calc(100vh - 44px);padding:10px 0}
@@ -175,7 +187,7 @@ const opts=(arr,sel,empty)=>(empty!==undefined?`<option value="">${esc(empty)}</
 let M=null;
 const uname=id=>(M.users.find(u=>u.id==id)||{}).full_name||'';
 const REF_ST={new:['دیده نشده','bad'],seen:['دیده شد','warn'],doing:['در حال اقدام','pri'],done:['انجام شد','ok'],returned:['برگشت','bad'],forwarded:['ارجاع شد','ok'],closed:['بسته','']};
-const L_ST={open:['جاری','warn'],archived:['بایگانی','ok']};
+const L_ST={draft:['پیش‌نویس — منتظر امضا و ثبت دبیرخانه','bad'],open:['جاری','warn'],archived:['بایگانی','ok']};
 const R_ST={pending:['در انتظار تأیید','warn'],returned:['برگشت برای اصلاح','bad'],approved:['تأیید شد — منتظر پرداخت','pri'],paid:['پرداخت شد — بدون سند سپیدار','warn'],closed:['پرداخت و ثبت شد','ok'],rejected:['رد شد','bad'],cancelled:['لغو شد','']};
 const PRI={normal:['عادی',''],urgent:['فوری','warn'],very_urgent:['خیلی فوری','bad']};
 const tag=(m,k)=>m[k]?`<span class="tag ${m[k][1]}">${m[k][0]}</span>`:esc(k);
@@ -206,7 +218,7 @@ const HQ=[['hq-support','پشتیبانی','hq-support',[['hq-support','منتظ
   ['hq-office','اداری','letters',[['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['hq-office','بایگانی درخواست‌های کالا']]],
   ['hq-reports','گزارش‌ها','reports',[['reports','خلاصه و عملکرد'],['report-purchases','همه درخواست‌های کالا'],['report-requests','همه درخواست‌های مالی'],['report-letters','همه مکاتبات']]]];
 const REPORT_PAGES=HQ[3][3].map(t=>t[0]); // فقط هیات مدیره، مدیر سیستم، مدیر پشتیبانی و مدیر مالی
-const HQ_OF={};HQ.forEach(g=>g[3].forEach(t=>HQ_OF[t[0]]=g));Object.assign(HQ_OF,{letter:HQ[2],'letter-edit':HQ[2],request:HQ[1]});
+const HQ_OF={};HQ.forEach(g=>g[3].forEach(t=>HQ_OF[t[0]]=g));Object.assign(HQ_OF,{letter:HQ[2],'letter-edit':HQ[2],'letter-print':HQ[2],request:HQ[1]});
 const navProjects=()=>M.projects.filter(p=>p.code!='HQ'&&(M.broad||M.my_roles.some(r=>r.project_id==p.id)));
 function drawNav(cur){
   const a=(k,t,cls,extra)=>`<a href="#/${k}" class="${cls||''} ${cur==k?'on':''}">${t}${extra||''}</a>`;
@@ -223,14 +235,14 @@ window.addEventListener('hashchange',route);
 async function route(){
   if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
   toggleNav(0);try{drawNav(p=='project'?'project/'+id:M.site_only?({letter:'letters','letter-edit':'letters'}[p]||p):(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
-  const V={search:()=>searchPage(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
+  const V={search:()=>searchPage(id),'letter-print':()=>letterPrint(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('hq_purchase','درخواست‌های کالا منتظر خرید توسط پشتیبانی دفتر مرکزی'),'hq-finance':()=>hqStage('finance_pay','خریدهای انجام‌شده منتظر پرداخت'),'hq-office':()=>hqStage('archive','درخواست‌های کالا منتظر بایگانی',1),
     'report-purchases':()=>purchasesPage(),'report-requests':requestsList,'report-letters':lettersList,
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
-  const SITE_OK=['letters','letter-new','letter','letter-edit'];
+  const SITE_OK=['letters','letter-new','letter','letter-edit','letter-print'];
   if(M.site_only&&((HQ_OF[p]&&!SITE_OK.includes(p))||['reports','admin'].includes(p))){location.hash='#/cartable';return}
   if(REPORT_PAGES.includes(p)&&!M.can_report){location.hash='#/cartable';return}
-  $('#view').innerHTML=(M.site_only?'':subBar(p))+'<div id="pg"><div class="mut">در حال بارگذاری…</div></div>';
+  $('#view').innerHTML=(M.site_only||p=='letter-print'?'':subBar(p))+'<div id="pg"><div class="mut">در حال بارگذاری…</div></div>';
   await run(async()=>{await (V[p]||cartable)()});window.scrollTo(0,0)}
 function pwModal(force){
   const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card"><h2>${force?'برای شروع، رمز عبور پیش‌فرض را تغییر دهید':'تغییر رمز عبور'}</h2>
@@ -288,7 +300,7 @@ async function cartable(){
   h+=`<div data-p="sent" style="display:none">${tbl(['سند','به','اقدام','تاریخ ارجاع','مهلت','وضعیت'],d.sent.map(r=>`<tr class="cl ${late(r)?'late':''}" onclick="location='${docLink(r)}'"><td>${esc(fa(r.doc_label))}</td><td>${esc(r.to_name)}</td><td>${esc(r.action)}</td><td class="mut">${jd(r.created_at,1)}</td><td>${jd(r.due_date)}</td><td>${tag(REF_ST,r.status)}</td></tr>`),'ارجاع باز ندارید.')}</div>`;
   h+=`<div data-p="mine" style="display:none">${d.pur_mine.length?'<h2>درخواست‌های کالای من</h2>'+purTable(d.pur_mine,1):''}${d.mine.length||!d.pur_mine.length?'<h2>درخواست‌های مالی من</h2>':''}${tbl(['شماره','عنوان','پروژه','مبلغ (ریال)','وضعیت'],d.mine.map(r=>`<tr class="cl" onclick="location='#/request/${r.id}'"><td>${fa(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.project||'')}</td><td>${money(r.amount)}</td><td>${tag(R_ST,r.status)}</td></tr>`),'درخواست مالی باز ندارید.')}</div>`;
   h+=`<div data-p="pay" style="display:none">${tbl(['شماره','عنوان','ذینفع','پروژه','مبلغ تأییدشده (ریال)','وضعیت'],d.pay.map(r=>`<tr class="cl" onclick="location='#/request/${r.id}'"><td>${fa(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.payee)}</td><td>${esc(r.project||'')}</td><td>${money(r.amount)}</td><td>${tag(R_ST,r.status)}</td></tr>`),'موردی برای پرداخت نیست.')}</div>`;
-  h+=`<div data-p="desk" style="display:none">${tbl(['شماره','موضوع','طرف مکاتبه','تاریخ ثبت'],d.desk.map(r=>`<tr class="cl" onclick="location='#/letter/${r.id}'"><td>${fa(r.number)}</td><td>${esc(r.subject)}</td><td>${esc(r.counterpart)}</td><td class="mut">${jd(r.created_at,1)}</td></tr>`),'همه نامه‌های جاری ارجاع شده‌اند.')}</div>`;
+  h+=`<div data-p="desk" style="display:none">${tbl(['شماره','موضوع','طرف مکاتبه','تاریخ ثبت'],d.desk.map(r=>`<tr class="cl" onclick="location='#/letter/${r.id}'"><td>${r.to_register?'<span class="tag pri">صادره آماده ثبت و شماره</span>':fa(r.number)}</td><td>${esc(r.subject)}</td><td>${esc(r.counterpart)}</td><td class="mut">${jd(r.created_at,1)}</td></tr>`),'همه نامه‌های جاری ارجاع شده‌اند.')}</div>`;
   $('#pg').innerHTML=h;bindTabs()}
 
 // ---------------------------------------------------------------- نامه‌ها
@@ -322,9 +334,13 @@ async function lettersList(){
   $('#lres').innerHTML=rs.length?`<div class="mut">${fa(rs.length)} نامه</div><table><tr><th>شماره</th><th>نوع</th><th>تاریخ ثبت</th><th>موضوع</th><th>طرف مکاتبه</th><th>پروژه</th><th>در دست</th><th>وضعیت</th></tr>${rs.map(r=>`<tr class="cl" onclick="location='#/letter/${r.id}'"><td><span>${fa(r.number)}</span></td><td>${M.letter_kinds[r.kind]}</td><td class="mut">${jd(r.created_at)}</td><td>${r.priority!='normal'?tag(PRI,r.priority)+' ':''}${r.confidential?'<span class="tag bad">محرمانه</span> ':''}${esc(r.subject)}</td><td>${esc(r.counterpart)}</td><td>${esc(r.project||'')}</td><td>${esc(r.holders||'')}</td><td>${tag(L_ST,r.status)}${r.archive_code?' <span class="mut">'+esc(fa(r.archive_code))+'</span>':''}</td></tr>`).join('')}</table>`:'<div class="card mut">نامه‌ای با این شرایط پیدا نشد.</div>'}
 function letFilter(){run(async()=>{lettersList.f={q:val('fQ'),kind:val('fK'),status:val('fS'),project_id:val('fP'),holder:val('fH'),fromJ:val('fF'),toJ:val('fT'),from:toIso(val('fF')),to:toIso(val('fT')),overdue:$('#fO').checked};await lettersList()})}
 function letCsv(){location='/api/letters.csv?'+(lettersList.qs||'')}
-function letterFormHtml(L){L=L||{kind:M.me.role=='secretariat'?'in':'internal',letter_date:todayJ(),priority:'normal'};const kinds=Object.entries(M.letter_kinds).filter(k=>L.id||k[0]=='internal'||['admin','secretariat','manager'].includes(M.me.role));
+function letterFormHtml(L){const myProj=M.site_only&&M.my_roles.length?M.my_roles[0].project_id:'';L=L||{kind:M.me.role=='secretariat'?'in':'internal',letter_date:M.me.role=='secretariat'?todayJ():'',priority:'normal',project_id:myProj};const kinds=Object.entries(M.letter_kinds).filter(k=>L.id||k[0]!='in'||['admin','secretariat','manager'].includes(M.me.role));
+  const signers=M.site_only?M.users.filter(u=>M.colleagues.includes(u.id)||u.id==M.me.id):M.users;const locked=L.id&&L.kind=='out'&&L.status!='draft';
   return `<div class="grid">
   <div><label>نوع نامه</label><select id="lK" ${L.id?'disabled':''}>${opts(kinds,L.kind)}</select></div>
+  <div><label>امضاکننده (برای نامه روی سربرگ)</label><select id="lSg" ${locked?'disabled':''}>${opts(signers.map(u=>[u.id,u.full_name+(u.title?' — '+u.title:'')]),L.signer_id,'— بدون امضا —')}</select></div>
+  <div class="full"><label>متن نامه (روی سربرگ چاپ می‌شود؛ برای نامه وارده لازم نیست)</label><textarea id="lBody" style="min-height:220px;line-height:2" ${locked?'disabled':''} placeholder="با سلام و احترام،&#10;…">${esc(L.body||'')}</textarea>
+   <div class="mut">صادره: شماره هنگام ثبت در دبیرخانه داده می‌شود. اگر امضاکننده انتخاب شود، نامه برای امضا به کارتابل او می‌رود؛ تغییر متن پس از امضا، امضا را برمی‌دارد.</div></div>
   <div class="full"><label>موضوع *</label><input id="lSub" value="${esc(L.subject||'')}"></div>
   <div><label>طرف مکاتبه (فرستنده / گیرنده)</label><input id="lCp" value="${esc(L.counterpart||'')}" placeholder="مثلاً کارفرما، کارگاه دورود…"></div>
   <div><label>شماره نامه طرف مقابل</label><input id="lTn" value="${esc(L.their_number||'')}"></div>
@@ -335,31 +351,57 @@ function letterFormHtml(L){L=L||{kind:M.me.role=='secretariat'?'in':'internal',l
   <div><label>فوریت</label><select id="lPr">${opts(Object.entries(PRI).map(([k,v])=>[k,v[0]]),L.priority)}</select></div>
   <div><label><input type="checkbox" id="lConf" style="width:auto" ${L.confidential?'checked':''}> محرمانه (فقط هیات مدیره و افراد در گردش)</label></div>
   <div class="full"><label>خلاصه / توضیح</label><textarea id="lSum">${esc(L.summary||'')}</textarea></div></div>`}
-const letterVals=()=>({kind:val('lK'),subject:val('lSub'),counterpart:val('lCp'),their_number:val('lTn'),their_date:val('lTd'),letter_date:val('lLd'),project_id:val('lP'),source:val('lSrc'),priority:val('lPr'),confidential:$('#lConf').checked,summary:val('lSum')});
+const letterVals=()=>({body:val('lBody'),signer_id:val('lSg'),kind:val('lK'),subject:val('lSub'),counterpart:val('lCp'),their_number:val('lTn'),their_date:val('lTd'),letter_date:val('lLd'),project_id:val('lP'),source:val('lSrc'),priority:val('lPr'),confidential:$('#lConf').checked,summary:val('lSum')});
 function letterForm(){
   $('#pg').innerHTML=`<h1>ثبت نامه</h1><div class="card"><h2>مشخصات نامه</h2>${letterFormHtml()}</div>
   <div class="card"><h2>اسکن نامه و پیوست‌ها</h2><input type="file" id="lFiles" multiple accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.doc,.docx,.xls,.xlsx,.zip"><div class="mut">اسکن را ترجیحاً PDF بگیرید. چند فایل را می‌توانید با هم انتخاب کنید.</div></div>
   <div class="card"><h2>ارجاع اولیه (اختیاری)</h2>${referForm('lr')}</div>
-  <button class="btn" id="lSave">ثبت و دریافت شماره</button>`;
-  $('#lSave').onclick=()=>run(async()=>{$('#lSave').disabled=true;try{const b=letterVals();const r=referVals('lr');if(r.to_ids.length)Object.assign(b,r);const res=await api('POST','/api/letters',b);await uploadFiles('letter',res.id,'lFiles');flash('ثبت شد — شماره '+fa(res.number));location='#/letter/'+res.id}finally{const s=$('#lSave');if(s)s.disabled=false}})}
+  <button class="btn" id="lSave">ثبت نامه</button>`;
+  $('#lSave').onclick=()=>run(async()=>{$('#lSave').disabled=true;try{const b=letterVals();const r=referVals('lr');if(r.to_ids.length)Object.assign(b,r);const res=await api('POST','/api/letters',b);await uploadFiles('letter',res.id,'lFiles');flash(res.number?'ثبت شد — شماره '+fa(res.number):'پیش‌نویس صادره ثبت شد؛ پس از امضا، دبیرخانه شماره می‌دهد');location='#/letter/'+res.id}finally{const s=$('#lSave');if(s)s.disabled=false}})}
 async function letterEdit(id){const d=await api('GET','/api/letters/'+id);$('#pg').innerHTML=`<h1>ویرایش مشخصات نامه ${fa(d.doc.number)}</h1><div class="card">${letterFormHtml(d.doc)}</div><button class="btn" id="lSave">ذخیره</button> <a href="#/letter/${id}">انصراف</a>`;
   $('#lSave').onclick=()=>run(async()=>{await api('POST',`/api/letters/${id}/update`,letterVals());location='#/letter/'+id})}
 async function letterView(id){
   const d=await api('GET','/api/letters/'+id);const L=d.doc;const canArc=['admin','secretariat','manager'].includes(M.me.role);
   let h=`<div class="print-only"><h2>${esc(M.company)} — برگه گردش نامه</h2></div>
-  <div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">نامه ${M.letter_kinds[L.kind]} <span>${fa(L.number)}</span></h1>
-  <div class="row">${isTop()||M.me.role=='secretariat'||L.created_by==M.me.id?`<a class="btn l" href="#/letter-edit/${L.id}">ویرایش مشخصات</a>`:''}<button class="btn l" onclick="print()">چاپ برگه گردش</button></div></div>
+  <div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">نامه ${M.letter_kinds[L.kind]} <span>${L.number?fa(L.number):'(پیش‌نویس، بدون شماره)'}</span></h1>
+  <div class="row">${L.body?`<a class="btn" href="#/letter-print/${L.id}">نمایش روی سربرگ / PDF</a>`:''}${isTop()||M.me.role=='secretariat'||L.created_by==M.me.id?`<a class="btn l" href="#/letter-edit/${L.id}">ویرایش مشخصات</a>`:''}<button class="btn l" onclick="print()">چاپ برگه گردش</button></div></div>
+  ${d.can_sign?`<div class="card noprint" style="border-color:var(--warn)"><h2>امضای نامه</h2>${L.body?(d.my_stamp?`<div class="mut" style="margin-bottom:6px">متن را بخوانید؛ با زدن «امضا»، نام، سمت و کلیشه امضای شما زیر نامه درج می‌شود.</div><div class="row"><div><label>رمز عبور خودتان (برای تأیید امضا)</label><input type="password" id="sgPw" autocomplete="current-password"></div><button class="btn ok" onclick="signLetter(${L.id})">امضا</button><a class="btn l" href="#/letter-print/${L.id}">پیش‌نمایش روی سربرگ</a></div>`:'<div class="tag bad">کلیشه امضای شما هنوز در «مدیریت سامانه» بارگذاری نشده است.</div>'):'<div class="tag warn">متن نامه خالی است.</div>'}</div>`:''}
+  ${d.can_register?`<div class="card noprint" style="border-color:var(--pri)"><h2>ثبت صادره در دبیرخانه</h2><div class="row"><button class="btn" onclick="regLetter(${L.id})">ثبت و دریافت شماره</button><span class="mut">پس از ثبت، شماره و تاریخ روی سربرگ درج می‌شود و متن دیگر قابل تغییر نیست.</span></div></div>`:''}
   <div class="card"><div class="kv">
    <div>موضوع</div><div><b>${esc(L.subject)}</b> ${tag(PRI,L.priority)} ${L.confidential?'<span class="tag bad">محرمانه</span>':''}</div>
-   <div>شماره ثبت</div><div><span>${fa(L.number)}</span></div><div>تاریخ ثبت</div><div>${jd(L.created_at,1)} — ${esc(L.creator)}</div>
+   <div>شماره ثبت</div><div><span>${L.number?fa(L.number):'—'}</span></div>
+   ${L.signer_id?`<div>امضاکننده</div><div>${esc(L.signer||'')} ${L.signed_at?`<span class="tag ok">امضا شد — ${jd(L.signed_at,1)}</span>`:'<span class="tag warn">منتظر امضا</span>'}</div>`:''}<div>تاریخ ثبت</div><div>${jd(L.created_at,1)} — ${esc(L.creator)}</div>
    <div>طرف مکاتبه</div><div>${esc(L.counterpart)}</div><div>شماره / تاریخ طرف مقابل</div><div>${esc(fa(L.their_number))} ${esc(fa(L.their_date))}</div>
    <div>تاریخ نامه</div><div>${esc(fa(L.letter_date))}</div><div>پروژه</div><div>${esc(L.project||'—')}</div><div>نحوه دریافت/ارسال</div><div>${esc(L.source||'—')}</div>
    <div>وضعیت</div><div>${tag(L_ST,L.status)} ${L.archive_code?'کد بایگانی: <b>'+esc(fa(L.archive_code))+'</b>':''}</div>
-   ${L.summary?`<div>خلاصه</div><div style="white-space:pre-wrap">${esc(L.summary)}</div>`:''}</div></div>`;
+   ${L.summary?`<div>خلاصه</div><div style="white-space:pre-wrap">${esc(L.summary)}</div>`:''}</div></div>
+  ${L.body?`<div class="card"><h2>متن نامه</h2><div style="white-space:pre-wrap;line-height:2">${esc(L.body)}</div></div>`:''}`;
   h+=flowBlock('letter',L.id,d.referrals)+attachBlock('letter',L.id,d.attachments);
   if(canArc)h+=L.status=='archived'?`<div class="card noprint"><button class="btn l" onclick="run(async()=>{await api('POST','/api/letters/${L.id}/reopen',{});route()})">بازگشایی از بایگانی</button></div>`:
     `<div class="card noprint"><h2>بایگانی</h2><div class="row"><div><label>کد / محل بایگانی فیزیکی</label><input id="arcC" placeholder="مثلاً کلاسور ۱۲ — پروژه دورود"></div><button class="btn ok" onclick="arch(${L.id},0)">بایگانی</button>${M.me.role!='secretariat'?`<button class="btn l" onclick="arch(${L.id},1)">بایگانی و بستن ارجاع‌های باز</button>`:''}</div></div>`;
   h+=logBlock(d.log);$('#pg').innerHTML=h;bindTabs()}
+const signLetter=id=>run(async()=>{if(!val('sgPw'))throw new Error('رمز عبور را وارد کنید');await api('POST',`/api/letters/${id}/sign`,{password:val('sgPw')});flash('نامه امضا شد');refreshCount();route()});
+const regLetter=id=>run(async()=>{if(!confirm('صادره ثبت و شماره‌گذاری شود؟'))return;const r=await api('POST',`/api/letters/${id}/register`,{});flash('ثبت شد — شماره '+fa(r.number));route()});
+// ---------- نامه روی سربرگ (A4)
+function lhPage(S){const L=S.letter,Y=S.layout;const pos=o=>Object.entries(o).map(([k,v])=>`${k}:${v}mm`).join(';');
+  return `<div class="lhpage" style="${S.letterhead?`background-image:url('/api/letterheads/${S.letterhead.scope}/img?t=${S.letterhead.v||''}');`:''}font-size:${Y.font}pt">
+   <div class="lhf" style="${pos(Y.no)}">شماره: <b>${L.number?fa(L.number):'……'}</b></div>
+   <div class="lhf" style="${pos(Y.date)}">تاریخ: <b>${L.letter_date?fa(L.letter_date):'……'}</b></div>
+   <div class="lhf" style="${pos(Y.att)}">پیوست: <b>${S.attachments?'دارد':'ندارد'}</b></div>
+   ${S.project?`<div class="lhf" style="${pos(Y.proj)}"><b>پروژه ${esc(S.project)}</b></div>`:''}
+   <div class="lhb" style="${pos(Y.body)}">${L.counterpart?`<div class="lhto">${esc(L.counterpart)}</div>`:''}<div class="lhsub">موضوع: ${esc(L.subject)}</div>
+    <div class="lhtxt">${esc(L.body||'').replace(/\n/g,'<br>')}</div>
+    ${L.signed_at?`<div class="lhsig">${S.sample?`<div class="lhsamp">کلیشه امضا</div>`:`<img src="/api/letters/${L.id}/sig" alt="">`}<div><b>${esc(L.sig_name)}</b></div><div>${esc(L.sig_title)}</div></div>`:'<div class="lhsig noprint mut">(هنوز امضا نشده)</div>'}</div></div>`}
+function lhOverflow(root){const b=(root||document).querySelector('.lhb');return b&&b.scrollHeight>b.clientHeight+2}
+async function letterPrint(id){
+  const S=await api('GET',`/api/letters/${id}/sheet`);const L=S.letter;
+  $('#pg').innerHTML=`<div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">نامه روی سربرگ ${L.number?fa(L.number):'(پیش‌نویس)'}</h1><div class="row"><button class="btn" onclick="printLetter('${esc(L.number||'پیش‌نویس')}')">چاپ / خروجی PDF</button><a class="btn l" href="#/letter/${L.id}">بازگشت به نامه</a></div></div>
+   ${S.letterhead?'':'<div class="card noprint tag warn">برای این نامه سربرگی بارگذاری نشده؛ در «مدیریت سامانه ← سربرگ‌ها» بارگذاری کنید.</div>'}
+   ${L.status=='draft'?'<div class="card noprint mut">این نامه هنوز در دبیرخانه ثبت نشده؛ شماره و تاریخ پس از ثبت درج می‌شود.</div>':''}
+   <div id="lhOv" class="card noprint tag bad" style="display:none">متن نامه از یک صفحه بیشتر است و انتهای آن روی سربرگ جا نمی‌شود؛ متن را کوتاه‌تر کنید یا اندازه قلم سربرگ را کوچک‌تر کنید.</div>
+   <div class="lhwrap">${lhPage(S)}</div>`;
+  if(lhOverflow())$('#lhOv').style.display='block'}
+function printLetter(num){const t=document.title;document.title='نامه '+num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
 const arch=(id,force)=>run(async()=>{await api('POST',`/api/letters/${id}/archive`,{archive_code:val('arcC'),force:!!force});flash('بایگانی شد');route()});
 
 // ---------------------------------------------------------------- درخواست‌های مالی
@@ -624,7 +666,36 @@ async function admin(){
    <div><label>علت‌های لغو درخواست کالا (هر خط یک علت)</label><textarea id="sCx" style="min-height:110px">${esc(S.cancel_reasons||'')}</textarea></div>
    <div><label>مهلت پیش‌فرض ارجاع (روز)</label><input id="sDd" value="${esc(S.default_due_days)}"></div></div>
    <button class="btn" style="margin-top:8px" onclick="saveSet()">ذخیره تنظیمات</button></div>
-  <div class="card"><h2>پشتیبان‌گیری</h2><div class="mut">نسخه پشتیبان پایگاه داده هر روز خودکار در پوشه data\\backups ساخته می‌شود (۶۰ روز آخر نگه داشته می‌شود). آخرین‌ها: ${d.backups.map(esc).join('، ')||'—'}<br>برای نسخه بیرونی (شامل اسکن‌ها) فایل backup.bat را هفتگی اجرا کنید.</div></div>`}
+  <div id="lhAdmin"><div class="card mut">در حال بارگذاری سربرگ‌ها و امضاها…</div></div>
+  <div class="card"><h2>پشتیبان‌گیری</h2><div class="mut">نسخه پشتیبان پایگاه داده هر روز خودکار در پوشه data\\backups ساخته می‌شود (۶۰ روز آخر نگه داشته می‌شود). آخرین‌ها: ${d.backups.map(esc).join('، ')||'—'}<br>برای نسخه بیرونی (شامل اسکن‌ها) فایل backup.bat را هفتگی اجرا کنید.</div></div>`;
+  lhAdmin()}
+// ---------- مدیریت: سربرگ‌ها و کلیشه‌های امضا
+let LHA=null;
+async function lhAdmin(){
+  LHA=await api('GET','/api/admin/letterheads');const t=Date.now();
+  $('#lhAdmin').innerHTML=`<div class="card"><h2>سربرگ‌ها</h2><div class="mut" style="margin-bottom:8px">تصویر A4 سربرگ (PNG یا JPG، ترجیحاً ۳۰۰ dpi، برگ خالی). نامه‌های هر پروژه روی سربرگ همان پروژه و اگر نداشت روی «پیش‌فرض همه کارگاه‌ها» می‌آید و نام پروژه را سامانه روی آن درج می‌کند. نامه‌های بدون پروژه روی سربرگ دفتر مرکزی می‌آیند.</div>
+   <table><tr><th>سربرگ</th><th>وضعیت</th><th>بارگذاری تصویر</th><th></th></tr>${LHA.letterheads.map((x,i)=>`<tr><td><b>${esc(x.label)}</b></td><td>${x.has?`<span class="tag ok">دارد</span> <span class="mut">${jd(x.updated_at,1)}</span>`:`<span class="mut">${x.scope.startsWith('project:')?'ندارد — از پیش‌فرض کارگاه‌ها':'ندارد'}</span>`}</td>
+    <td><div class="row"><input type="file" id="lhF${i}" accept=".png,.jpg,.jpeg" style="max-width:230px"><button class="btn l sm" onclick="lhUpload(${i})">بارگذاری</button></div></td>
+    <td>${x.has?`<a style="cursor:pointer" onclick="lhEdit(${i})">تنظیم جای شماره، تاریخ و متن</a> | <a style="cursor:pointer;color:var(--bad)" onclick="lhDel(${i})">حذف</a>`:''}</td></tr>`).join('')}</table></div>
+  <div class="card"><h2>کلیشه‌های امضا</h2><div class="mut" style="margin-bottom:8px">تصویر امضا (ترجیحاً PNG با زمینه شفاف). فقط خودِ هر شخص با حساب و رمز خودش می‌تواند نامه را امضا کند؛ بارگذاری کلیشه به معنای اجازه امضا به دیگری نیست.</div>
+   <table><tr><th>نام</th><th>سمت</th><th>کلیشه</th><th>بارگذاری</th><th></th></tr>${LHA.signatures.map(s=>`<tr><td>${esc(s.full_name)}</td><td class="mut">${esc(s.title)}</td><td>${s.has_sig?`<img src="/api/admin/users/${s.id}/sig?t=${t}" style="max-height:44px;max-width:140px;background:#fff">`:'<span class="mut">ندارد</span>'}</td>
+    <td><div class="row"><input type="file" id="sgF${s.id}" accept=".png,.jpg,.jpeg" style="max-width:230px"><button class="btn l sm" onclick="sigUpload(${s.id})">بارگذاری</button></div></td><td>${s.has_sig?`<a style="cursor:pointer;color:var(--bad)" onclick="sigDel(${s.id})">حذف</a>`:''}</td></tr>`).join('')}</table></div>`}
+const upImg=async(url,inp)=>{const f=$('#'+inp);if(!f||!f.files.length)throw new Error('ابتدا فایل تصویر را انتخاب کنید');await api('POST',url,undefined,{name:f.files[0].name,data:f.files[0]})};
+const lhUpload=i=>run(async()=>{await upImg(`/api/admin/letterheads/${LHA.letterheads[i].scope}/upload`,'lhF'+i);flash('سربرگ بارگذاری شد');lhAdmin()});
+const lhDel=i=>run(async()=>{if(!confirm('سربرگ «'+LHA.letterheads[i].label+'» حذف شود؟'))return;await api('POST',`/api/admin/letterheads/${LHA.letterheads[i].scope}/delete`,{});lhAdmin()});
+const sigUpload=id=>run(async()=>{await upImg(`/api/admin/users/${id}/sig`,'sgF'+id);flash('کلیشه امضا بارگذاری شد');lhAdmin()});
+const sigDel=id=>run(async()=>{if(!confirm('کلیشه امضا حذف شود؟'))return;await api('POST',`/api/admin/users/${id}/sig/delete`,{});lhAdmin()});
+function lhEdit(i){const x=LHA.letterheads[i];const Y=JSON.parse(JSON.stringify(x.layout));
+  const F=[['no','top','شماره — از بالا'],['no','left','شماره — از چپ'],['date','top','تاریخ — از بالا'],['date','left','تاریخ — از چپ'],['att','top','پیوست — از بالا'],['att','left','پیوست — از چپ'],['proj','top','نام پروژه — از بالا'],['proj','right','نام پروژه — از راست'],['body','top','متن — از بالا'],['body','bottom','متن — از پایین'],['body','right','متن — از راست'],['body','left','متن — از چپ']];
+  const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card" style="width:min(1000px,96vw)"><h2>تنظیم سربرگ «${esc(x.label)}» (میلی‌متر)</h2><div class="row" style="align-items:flex-start;gap:16px">
+   <div style="flex:1;min-width:260px"><div class="grid" style="grid-template-columns:1fr 1fr">${F.map(([a,b,t])=>`<div><label>${t}</label><input data-a="${a}" data-b="${b}" value="${Y[a][b]}" class="num"></div>`).join('')}<div><label>اندازه قلم (pt)</label><input id="lhFont" value="${Y.font}" class="num"></div></div>
+    <div class="row" style="margin-top:10px"><button class="btn" id="lhSave">ذخیره</button><button class="btn l" id="lhX">انصراف</button></div></div>
+   <div class="lhprev" id="lhPv"></div></div></div>`;document.body.appendChild(d);
+  const draw=()=>{d.querySelectorAll('input[data-a]').forEach(inp=>Y[inp.dataset.a][inp.dataset.b]=+en(inp.value)||0);Y.font=+en(val('lhFont'))||13;
+    $('#lhPv').innerHTML=lhPage({sample:1,letterhead:{scope:x.scope,v:x.updated_at},layout:Y,project:x.scope=='hq'?'':(x.scope=='site'?'نمونه':x.label.replace(/^پروژه /,'')),attachments:1,
+     letter:{number:'ص 1405/0012',letter_date:todayJ(),counterpart:'جناب آقای …\nمدیرعامل محترم شرکت …',subject:'نمونه نامه برای تنظیم سربرگ',body:'با سلام و احترام،\nاین متن نمونه است تا جای شماره، تاریخ، پیوست، نام پروژه و متن نامه روی سربرگ تنظیم شود. اعداد سمت راست را تغییر دهید و نتیجه را همین‌جا ببینید.\nبا تشکر',signed_at:1,sig_name:'نام امضاکننده',sig_title:'سمت امضاکننده'}})};
+  d.querySelectorAll('input').forEach(inp=>inp.oninput=draw);draw();d.querySelector('#lhX').onclick=()=>d.remove();
+  d.querySelector('#lhSave').onclick=()=>run(async()=>{await api('POST',`/api/admin/letterheads/${x.scope}/layout`,Y);d.remove();flash('تنظیم سربرگ ذخیره شد');lhAdmin()})}
 function editUser(u){$('#uId').value=u.id||'';$('#uU').value=u.username||'';$('#uN').value=u.full_name||'';$('#uT').value=u.title||'';$('#uR').value=u.role||'staff';$('#uA').checked=u.active!==0;$('#uU').focus()}
 const saveUser=()=>run(async()=>{await api('POST','/api/admin/user',{id:val('uId'),username:val('uU'),full_name:val('uN'),title:val('uT'),role:val('uR'),active:$('#uA').checked});flash('ذخیره شد');M=Object.assign(M,await api('GET','/api/meta'));admin()});
 const resetPw=id=>run(async()=>{if(!confirm('رمز این کاربر به 1234 برگردد؟'))return;await api('POST','/api/admin/reset',{id});flash('رمز بازنشانی شد');admin()});

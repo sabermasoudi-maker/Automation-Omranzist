@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.8'
+VERSION = '1.9'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -82,6 +82,10 @@ P_FLOW = {
     'archive': {'archived': ('done', 'بایگانی شد')},
     'draft': {'submit': (None, '')},  # مرحله بعد از روی سمت درخواست‌کننده تعیین می‌شود
 }
+LH_DIR, SIG_DIR, SIG_COPY_DIR = 'سربرگ', 'کلیشه امضا', os.path.join('کلیشه امضا', 'نامه‌ها')
+# جای شماره، تاریخ، پیوست، نام پروژه و متن روی سربرگ (میلی‌متر از لبه‌های A4)؛ برای هر سربرگ قابل تنظیم است
+LH_DEFAULT = {'no': {'top': 22, 'left': 20}, 'date': {'top': 29, 'left': 20}, 'att': {'top': 36, 'left': 20},
+              'proj': {'top': 42, 'right': 20}, 'body': {'top': 58, 'right': 22, 'left': 22, 'bottom': 30}, 'font': 13}
 PUR_DIR = 'درخواست کالا'  # پوشه پیوست‌های درخواست کالا در data\files؛ هر درخواست یک زیرپوشه به شماره خودش
 STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check': ('member', 'warehouse'),
                 'tech_review': ('member', 'tech'), 'supervisor_approve': ('member', 'supervisor'),
@@ -155,6 +159,7 @@ CREATE TABLE IF NOT EXISTS purchase_items(id INTEGER PRIMARY KEY, purchase_id IN
   qty TEXT DEFAULT '', unit TEXT DEFAULT '', spec TEXT DEFAULT '', note TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS purchase_flow(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, stage TEXT, action TEXT,
   label TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
+CREATE TABLE IF NOT EXISTS letterheads(scope TEXT PRIMARY KEY, path TEXT, layout TEXT DEFAULT '', updated_at TEXT);
 CREATE TABLE IF NOT EXISTS project_team(project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_key TEXT NOT NULL,
   PRIMARY KEY(project_id, user_id));
 CREATE TABLE IF NOT EXISTS purchase_versions(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, version INTEGER,
@@ -276,7 +281,11 @@ def add_columns(c):
                           ('need_date', "TEXT DEFAULT ''"), ('version', 'INTEGER DEFAULT 1'),
                           ('cancel_reason', "TEXT DEFAULT ''"), ('cancel_note', "TEXT DEFAULT ''")],
             'attachments': [('kind', "TEXT DEFAULT ''"), ('deleted_at', 'TEXT'), ('deleted_by', 'INTEGER'),
-                            ('flow_id', 'INTEGER')]}
+                            ('flow_id', 'INTEGER')],
+            'letters': [('body', "TEXT DEFAULT ''"), ('signer_id', 'INTEGER'), ('signed_at', 'TEXT'),
+                        ('sig_name', "TEXT DEFAULT ''"), ('sig_title', "TEXT DEFAULT ''"), ('sig_file', "TEXT DEFAULT ''"),
+                        ('registered_at', 'TEXT')],
+            'users': [('sig_path', "TEXT DEFAULT ''")]}
     for t, cols in want.items():
         have = {r[1] for r in c.execute('PRAGMA table_info(%s)' % t)}
         for name, decl in cols:
@@ -571,7 +580,7 @@ def make_referrals(c, u, dt, did, to_ids, action, instruction, due, parent_id=No
         names.append(tu['full_name'])
     log(c, dt, did, u['id'], 'ارجاع', '%s ← %s%s' % (action, '، '.join(names), (' : ' + instruction) if instruction else ''))
     if dt == 'letter':
-        c.execute("UPDATE letters SET status='open', closed_at=NULL WHERE id=? AND status!='archived'", (did,))
+        c.execute("UPDATE letters SET status='open', closed_at=NULL WHERE id=? AND status NOT IN ('archived','draft')", (did,))
 
 
 # ------------------------------------------------------------------ درخواست مالی
@@ -688,7 +697,7 @@ PUR_SEL = ("SELECT x.*, pr.name project, pr.code project_code, ru.full_name requ
            "LEFT JOIN users hu ON hu.id=x.holder_id ")
 
 
-DOC_LABEL_SQL = """CASE r.doc_type WHEN 'letter' THEN (SELECT number||' — '||subject FROM letters WHERE id=r.doc_id)
+DOC_LABEL_SQL = """CASE r.doc_type WHEN 'letter' THEN (SELECT COALESCE(number,'پیش‌نویس')||' — '||subject FROM letters WHERE id=r.doc_id)
  WHEN 'purchase' THEN (SELECT number||' — درخواست کالا' FROM purchases WHERE id=r.doc_id)
  ELSE (SELECT number||' — '||title FROM requests WHERE id=r.doc_id) END"""
 
@@ -719,7 +728,11 @@ def api_cartable(h, c, u, b, q):
             "ORDER BY q.id"))
     desk = []
     if u['role'] == 'secretariat' or is_mgr(u):
+        # اول: صادره‌های امضاشده (یا بی‌امضاکننده) که منتظر ثبت و شماره دبیرخانه‌اند
         desk = rows(c.execute(
+            "SELECT l.*, 1 to_register FROM letters l WHERE l.status='draft' AND (l.signer_id IS NULL OR "
+            "l.signed_at IS NOT NULL) ORDER BY l.id"))
+        desk += rows(c.execute(
             "SELECT l.* FROM letters l WHERE l.status='open' AND NOT EXISTS (SELECT 1 FROM referrals r WHERE "
             "r.doc_type='letter' AND r.doc_id=l.id AND r.status IN %s) ORDER BY l.id DESC LIMIT 200" % str(OPEN)))
     pur_held = rows(c.execute(PUR_SEL + "WHERE x.holder_id=? AND x.status IN ('open','returned') ORDER BY x.id", (u['id'],)))
@@ -809,27 +822,140 @@ def letter_fields(b):
                 their_date=b.get('their_date') or '', letter_date=b.get('letter_date') or '',
                 project_id=int(b['project_id']) if b.get('project_id') else None,
                 priority=b.get('priority') if b.get('priority') in ('normal', 'urgent', 'very_urgent') else 'normal',
-                confidential=1 if b.get('confidential') else 0, summary=b.get('summary') or '', source=b.get('source') or '')
+                confidential=1 if b.get('confidential') else 0, summary=b.get('summary') or '', source=b.get('source') or '',
+                body=(b.get('body') or '').strip(), signer_id=int(b['signer_id']) if b.get('signer_id') else None)
+
+
+def next_letter_number(c, kind):
+    y = jyear()
+    seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM letters WHERE year=? AND kind=?', (y, kind)).fetchone()[0]
+    return y, seq, '%s %d/%04d' % (LETTER_PREFIX[kind], y, seq)
+
+
+def ask_signature(c, u, lid, signer_id):
+    """نامه برای امضا به کارتابل امضاکننده می‌رود (اگر خودِ نویسنده نباشد)."""
+    if signer_id and signer_id != u['id'] and not c.execute(
+            "SELECT 1 FROM referrals WHERE doc_type='letter' AND doc_id=? AND to_id=? AND action='امضا' AND status IN %s"
+            % str(OPEN), (lid, signer_id)).fetchone():
+        make_referrals(c, u, 'letter', lid, [signer_id], 'امضا', 'لطفاً نامه را بررسی و امضا کنید', '')
 
 
 @route('POST', '/api/letters')
 def api_letter_new(h, c, u, b, q):
     f = letter_fields(b)
-    if f['kind'] in ('in', 'out'):
-        need(u['role'] in ('admin', 'secretariat', 'manager'), 'ثبت نامه وارده/صادره فقط توسط دبیرخانه انجام می‌شود')
-    y = jyear()
-    seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM letters WHERE year=? AND kind=?', (y, f['kind'])).fetchone()[0]
-    number = '%s %d/%04d' % (LETTER_PREFIX[f['kind']], y, seq)
+    if f['kind'] == 'in':
+        need(u['role'] in ('admin', 'secretariat', 'manager'), 'ثبت نامه وارده فقط توسط دبیرخانه انجام می‌شود')
+    if f['signer_id']:
+        need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (f['signer_id'],)).fetchone(), 'امضاکننده نامعتبر', 400)
+        if is_site_only(c, u):
+            need(f['signer_id'] in colleagues_of(c, u['id']) + [u['id']], 'امضاکننده باید از همکاران پروژه باشد', 400)
+    # صادره: شماره فقط هنگام ثبت در دبیرخانه؛ مگر دبیرخانه نامه امضاشده کاغذی را مستقیم ثبت کند
+    draft = f['kind'] == 'out' and (f['signer_id'] or u['role'] not in ('admin', 'secretariat'))
+    y, seq, number = (None, None, None) if draft else next_letter_number(c, f['kind'])
     cur = c.execute('INSERT INTO letters(kind,year,seq,number,subject,counterpart,their_number,their_date,letter_date,'
-                    'project_id,priority,confidential,summary,source,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                    'project_id,priority,confidential,summary,source,created_by,created_at,body,signer_id,status,'
+                    'registered_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                     (f['kind'], y, seq, number, f['subject'], f['counterpart'], f['their_number'], f['their_date'],
                      f['letter_date'], f['project_id'], f['priority'], f['confidential'], f['summary'], f['source'],
-                     u['id'], now()))
+                     u['id'], now(), f['body'], f['signer_id'], 'draft' if draft else 'open', None if draft else now()))
     lid = cur.lastrowid
-    log(c, 'letter', lid, u['id'], 'ثبت', number)
+    log(c, 'letter', lid, u['id'], 'ثبت پیش‌نویس صادره' if draft else 'ثبت', number or '')
+    ask_signature(c, u, lid, f['signer_id'])
     if b.get('to_ids'):
         make_referrals(c, u, 'letter', lid, b['to_ids'], b.get('action') or 'اقدام', b.get('instruction'), b.get('due'))
-    return {'id': lid, 'number': number}
+    return {'id': lid, 'number': number or ''}
+
+
+@route('POST', r'/api/letters/(\d+)/sign')
+def api_letter_sign(h, c, u, b, q, lid):
+    """فقط خودِ امضاکننده، با تأیید رمز عبور، امضا می‌کند؛ کلیشه امضا در همان لحظه کنار نامه نگه داشته می‌شود."""
+    L = get_doc(c, u, 'letter', int(lid))
+    need(L['signer_id'] == u['id'], 'امضای این نامه با شما نیست')
+    need(not L['signed_at'], 'این نامه قبلاً امضا شده است', 400)
+    need((L['body'] or '').strip(), 'متن نامه خالی است', 400)
+    me = one(c.execute('SELECT * FROM users WHERE id=?', (u['id'],)))
+    need(pw_ok(b.get('password') or '', me), 'رمز عبور نادرست است', 400)
+    need(me['sig_path'] and os.path.exists(os.path.join(FILES, me['sig_path'])),
+         'کلیشه امضای شما در «مدیریت سامانه» بارگذاری نشده است', 400)
+    os.makedirs(os.path.join(FILES, SIG_COPY_DIR), exist_ok=True)
+    rel = os.path.join(SIG_COPY_DIR, 'letter-%d%s' % (L['id'], os.path.splitext(me['sig_path'])[1]))
+    shutil.copyfile(os.path.join(FILES, me['sig_path']), os.path.join(FILES, rel))
+    c.execute('UPDATE letters SET signed_at=?, sig_name=?, sig_title=?, sig_file=? WHERE id=?',
+              (now(), me['full_name'], me['title'] or '', rel, L['id']))
+    c.execute("UPDATE referrals SET status='done', done_at=?, reply='امضا شد' WHERE doc_type='letter' AND doc_id=? "
+              "AND to_id=? AND action='امضا' AND status IN %s" % str(OPEN), (now(), L['id'], u['id']))
+    log(c, 'letter', L['id'], u['id'], 'امضا', me['full_name'])
+    return {'ok': True}
+
+
+@route('POST', r'/api/letters/(\d+)/register')
+def api_letter_register(h, c, u, b, q, lid):
+    """ثبت صادره در دبیرخانه و دریافت شماره."""
+    L = get_doc(c, u, 'letter', int(lid))
+    need(u['role'] in ('admin', 'secretariat'), 'ثبت و شماره‌گذاری صادره فقط توسط دبیرخانه انجام می‌شود')
+    need(L['status'] == 'draft', 'این نامه قبلاً ثبت شده است', 400)
+    need(not L['signer_id'] or L['signed_at'], 'نامه هنوز امضا نشده است', 400)
+    y, seq, number = next_letter_number(c, L['kind'])
+    c.execute("UPDATE letters SET year=?, seq=?, number=?, status='open', registered_at=?, "
+              "letter_date=CASE WHEN letter_date='' OR letter_date IS NULL THEN ? ELSE letter_date END WHERE id=?",
+              (y, seq, number, now(), jstr(today()), L['id']))
+    log(c, 'letter', L['id'], u['id'], 'ثبت در دبیرخانه و شماره', number)
+    return {'ok': True, 'number': number}
+
+
+def letterhead_for(c, L):
+    """سربرگ نامه: سربرگ همان پروژه، وگرنه سربرگ پیش‌فرض کارگاه‌ها؛ نامه بدون پروژه روی سربرگ دفتر مرکزی."""
+    pr = one(c.execute('SELECT * FROM projects WHERE id=?', (L['project_id'],))) if L['project_id'] else None
+    scopes = ['project:%d' % pr['id'], 'site'] if pr and pr['code'] != 'HQ' else ['hq']
+    for sc in scopes:
+        r = one(c.execute('SELECT * FROM letterheads WHERE scope=? AND path IS NOT NULL', (sc,)))
+        if r:
+            return r, (pr['name'] if sc != 'hq' else '')
+    return None, (pr['name'] if pr and pr['code'] != 'HQ' else '')
+
+
+@route('GET', r'/api/letters/(\d+)/sheet')
+def api_letter_sheet(h, c, u, b, q, lid):
+    L = get_doc(c, u, 'letter', int(lid))
+    lh, pname = letterhead_for(c, L)
+    natt = c.execute("SELECT COUNT(*) FROM attachments WHERE doc_type='letter' AND doc_id=? AND deleted_at IS NULL",
+                     (L['id'],)).fetchone()[0]
+    return {'letter': {k: L[k] for k in ('id', 'kind', 'number', 'subject', 'counterpart', 'letter_date', 'body',
+                                         'signed_at', 'sig_name', 'sig_title', 'status')},
+            'letterhead': {'scope': lh['scope'], 'v': lh['updated_at']} if lh else None,
+            'layout': (json.loads(lh['layout'] or '{}') if lh else {}) or LH_DEFAULT, 'project': pname, 'attachments': natt}
+
+
+@route('GET', r'/api/letters/(\d+)/sig')
+def api_letter_sig(h, c, u, b, q, lid):
+    L = get_doc(c, u, 'letter', int(lid))
+    need(L['signed_at'] and L['sig_file'], 'امضا ندارد', 404)
+    return img_file(L['sig_file'])
+
+
+@route('GET', r'/api/letterheads/([\w:]+)/img')
+def api_letterhead_img(h, c, u, b, q, scope):
+    r = one(c.execute('SELECT * FROM letterheads WHERE scope=?', (scope,)))
+    need(r and r['path'], 'سربرگ پیدا نشد', 404)
+    return img_file(r['path'])
+
+
+def img_file(rel):
+    p = os.path.join(FILES, rel)
+    need(os.path.exists(p), 'فایل پیدا نشد', 404)
+    with open(p, 'rb') as f:
+        data = f.read()
+    return ('file', 'image/png' if data[:4] == b'\x89PNG' else 'image/jpeg', data)
+
+
+def save_image(h, sub, stem):
+    raw = h.raw_body
+    need(raw and (raw[:4] == b'\x89PNG' or raw[:3] == b'\xff\xd8\xff'), 'فقط تصویر PNG یا JPG قابل بارگذاری است', 400)
+    os.makedirs(os.path.join(FILES, sub), exist_ok=True)
+    rel = os.path.join(sub, '%s-%s%s' % (stem, secrets.token_hex(4), '.png' if raw[:4] == b'\x89PNG' else '.jpg'))
+    with open(os.path.join(FILES, rel), 'wb') as f:
+        f.write(raw)
+    return rel
 
 
 @route('GET', r'/api/letters/(\d+)')
@@ -847,7 +973,14 @@ def api_letter_get(h, c, u, b, q, lid):
             else:
                 c.execute("UPDATE referrals SET status='seen', seen_at=? WHERE id=?", (now(), r['id']))
                 r['status'] = 'seen'
-    return {'doc': L, 'attachments': att, 'referrals': refs, 'log': lg}
+    L['signer'] = (one(c.execute('SELECT full_name FROM users WHERE id=?', (L['signer_id'],))) or {}).get('full_name')
+    L.pop('sig_file', None)
+    me = one(c.execute('SELECT sig_path FROM users WHERE id=?', (u['id'],)))
+    return {'doc': L, 'attachments': att, 'referrals': refs, 'log': lg,
+            'can_sign': L['signer_id'] == u['id'] and not L['signed_at'],
+            'my_stamp': bool(me and me['sig_path']),
+            'can_register': L['status'] == 'draft' and u['role'] in ('admin', 'secretariat')
+            and (not L['signer_id'] or bool(L['signed_at']))}
 
 
 @route('POST', r'/api/letters/(\d+)/update')
@@ -855,11 +988,20 @@ def api_letter_update(h, c, u, b, q, lid):
     L = get_doc(c, u, 'letter', int(lid))
     need(is_mgr(u) or u['role'] == 'secretariat' or L['created_by'] == u['id'])
     f = letter_fields(dict(b, kind=L['kind']))
+    changed = f['body'] != (L['body'] or '') or f['signer_id'] != L['signer_id'] or f['subject'] != L['subject'] \
+        or f['counterpart'] != L['counterpart'] or f['project_id'] != L['project_id']
+    if L['kind'] == 'out' and L['status'] != 'draft':
+        need(not changed, 'متن، گیرنده و امضاکننده صادره پس از ثبت در دبیرخانه قابل تغییر نیست', 400)
     c.execute('UPDATE letters SET subject=?,counterpart=?,their_number=?,their_date=?,letter_date=?,project_id=?,priority=?,'
-              'confidential=?,summary=?,source=? WHERE id=?', (f['subject'], f['counterpart'], f['their_number'],
-              f['their_date'], f['letter_date'], f['project_id'], f['priority'], f['confidential'], f['summary'],
-              f['source'], L['id']))
+              'confidential=?,summary=?,source=?,body=?,signer_id=? WHERE id=?', (f['subject'], f['counterpart'],
+              f['their_number'], f['their_date'], f['letter_date'], f['project_id'], f['priority'], f['confidential'],
+              f['summary'], f['source'], f['body'], f['signer_id'], L['id']))
     log(c, 'letter', L['id'], u['id'], 'ویرایش مشخصات')
+    if changed and L['signed_at']:  # متن امضاشده تغییر کرد: امضا برداشته می‌شود و باید دوباره امضا شود
+        c.execute("UPDATE letters SET signed_at=NULL, sig_name='', sig_title='', sig_file='' WHERE id=?", (L['id'],))
+        log(c, 'letter', L['id'], u['id'], 'برداشتن امضا به دلیل تغییر نامه')
+    if f['signer_id'] and (changed or not L['signer_id']):
+        ask_signature(c, u, L['id'], f['signer_id'])
     return {'ok': True}
 
 
@@ -1596,6 +1738,88 @@ def api_project_new(h, c, u, b, q):
     return one(c.execute('SELECT id,name,code,manager_id FROM projects WHERE id=?', (cur.lastrowid,)))
 
 
+# ---------- مدیریت: سربرگ‌ها و کلیشه‌های امضا
+@route('GET', '/api/admin/letterheads')
+def api_admin_letterheads(h, c, u, b, q):
+    need(is_mgr(u))
+    have = {r['scope']: r for r in rows(c.execute('SELECT scope, path, layout, updated_at FROM letterheads'))}
+    items = [('hq', 'دفتر مرکزی'), ('site', 'پیش‌فرض همه کارگاه‌ها')] + \
+        [('project:%d' % p['id'], 'پروژه ' + p['name']) for p in
+         rows(c.execute("SELECT id, name FROM projects WHERE active=1 AND code!='HQ' ORDER BY id"))]
+    out = []
+    for sc, label in items:
+        r = have.get(sc) or {}
+        out.append({'scope': sc, 'label': label, 'has': bool(r.get('path')), 'updated_at': r.get('updated_at'),
+                    'layout': json.loads(r.get('layout') or '{}') or LH_DEFAULT})
+    sigs = rows(c.execute("SELECT id, full_name, title, sig_path != '' AND sig_path IS NOT NULL has_sig FROM users "
+                          'WHERE active=1 ORDER BY id'))
+    return {'letterheads': out, 'signatures': sigs, 'default_layout': LH_DEFAULT}
+
+
+def lh_scope_ok(c, sc):
+    need(sc in ('hq', 'site') or (re.match(r'^project:\d+$', sc) and c.execute(
+        'SELECT 1 FROM projects WHERE id=?', (int(sc.split(':')[1]),)).fetchone()), 'سربرگ نامعتبر', 400)
+
+
+@route('POST', r'/api/admin/letterheads/([\w:]+)/upload')
+def api_admin_lh_upload(h, c, u, b, q, sc):
+    need(is_mgr(u)); lh_scope_ok(c, sc)
+    rel = save_image(h, LH_DIR, sc.replace(':', '-'))
+    c.execute('INSERT INTO letterheads(scope,path,updated_at) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET path=?, '
+              'updated_at=?', (sc, rel, now(), rel, now()))
+    log(c, 'letterhead', 0, u['id'], 'بارگذاری سربرگ', sc)
+    return {'ok': True}
+
+
+@route('POST', r'/api/admin/letterheads/([\w:]+)/layout')
+def api_admin_lh_layout(h, c, u, b, q, sc):
+    need(is_mgr(u)); lh_scope_ok(c, sc)
+    lay = {}
+    for k, v in LH_DEFAULT.items():
+        if isinstance(v, dict):
+            lay[k] = {kk: max(0.0, min(290.0, float(str((b.get(k) or {}).get(kk, vv)).translate(FA2EN) or vv)))
+                      for kk, vv in v.items()}
+        else:
+            lay[k] = max(9.0, min(20.0, float(str(b.get(k, v)).translate(FA2EN) or v)))
+    c.execute('INSERT INTO letterheads(scope,layout,updated_at) VALUES(?,?,?) ON CONFLICT(scope) DO UPDATE SET layout=?, '
+              'updated_at=?', (sc, json.dumps(lay), now(), json.dumps(lay), now()))
+    return {'ok': True}
+
+
+@route('POST', r'/api/admin/letterheads/([\w:]+)/delete')
+def api_admin_lh_delete(h, c, u, b, q, sc):
+    need(is_mgr(u)); lh_scope_ok(c, sc)
+    c.execute('DELETE FROM letterheads WHERE scope=?', (sc,))
+    return {'ok': True}
+
+
+@route('POST', r'/api/admin/users/(\d+)/sig')
+def api_admin_sig_upload(h, c, u, b, q, uid):
+    """کلیشه امضا فقط در مدیریت سامانه بارگذاری می‌شود؛ ولی امضای نامه فقط با حساب و رمز خودِ شخص ممکن است."""
+    need(is_mgr(u))
+    need(one(c.execute('SELECT 1 x FROM users WHERE id=?', (int(uid),))), 'کاربر پیدا نشد', 404)
+    rel = save_image(h, SIG_DIR, 'user-%s' % uid)
+    c.execute('UPDATE users SET sig_path=? WHERE id=?', (rel, int(uid)))
+    log(c, 'user', int(uid), u['id'], 'بارگذاری کلیشه امضا')
+    return {'ok': True}
+
+
+@route('POST', r'/api/admin/users/(\d+)/sig/delete')
+def api_admin_sig_delete(h, c, u, b, q, uid):
+    need(is_mgr(u))
+    c.execute("UPDATE users SET sig_path='' WHERE id=?", (int(uid),))
+    log(c, 'user', int(uid), u['id'], 'حذف کلیشه امضا')
+    return {'ok': True}
+
+
+@route('GET', r'/api/admin/users/(\d+)/sig')
+def api_admin_sig_view(h, c, u, b, q, uid):
+    need(is_mgr(u))
+    r = one(c.execute('SELECT sig_path FROM users WHERE id=?', (int(uid),)))
+    need(r and r['sig_path'], 'کلیشه امضا ندارد', 404)
+    return img_file(r['sig_path'])
+
+
 # ---------- مدیریت
 @route('GET', '/api/admin')
 def api_admin(h, c, u, b, q):
@@ -1738,6 +1962,8 @@ class H(BaseHTTPRequestHandler):
                         need(u, 'ابتدا وارد شوید', 401)
                     res = fn(self, c, u, body, q, *mm.groups())
                     c.commit()
+                    if isinstance(res, tuple) and res[0] == 'file':  # تصویر سربرگ یا امضا
+                        return self.send(200, res[2], res[1], {'Cache-Control': 'private, no-store'})
                     if isinstance(res, tuple) and res[0] == 'csv':
                         return self.send(200, '﻿' + res[2], 'text/csv; charset=utf-8',
                                          {'Content-Disposition': 'attachment; filename=%s' % res[1]})
