@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '1.9'
+VERSION = '2.0'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -64,24 +64,41 @@ HQ_ROLES = {'support_manager': 'مدیر پشتیبانی دفتر مرکزی', 
 # گردش درخواست کالا: مرحله ← {اقدام: (مرحله بعد، شرح)}
 P_STAGES = {'draft': 'پیش‌نویس درخواست‌کننده', 'unit_approval': 'تأیید رئیس واحد',
             'supervisor_review': 'بررسی سرپرست کارگاه',  # فقط برای درخواست‌های نسخه‌های قبل
-            'warehouse_check': 'استعلام موجودی از انبار کارگاه', 'tech_review': 'بررسی معاون فنی',
-            'supervisor_approve': 'تأیید سرپرست کارگاه', 'pm_approve': 'بررسی مدیر پروژه',
-            'hq_purchase': 'خرید — پشتیبانی دفتر مرکزی', 'finance_pay': 'پرداخت — مالی دفتر مرکزی',
+            'warehouse_check': 'استعلام موجودی از انبار کارگاه',
+            'supervisor_approve': 'تأیید سرپرست کارگاه و برآورد مبلغ', 'tech_review': 'بررسی معاون فنی',
+            'site_purchase': 'خرید در کارگاه با تنخواه — پشتیبانی کارگاه', 'pm_approve': 'بررسی مدیر پروژه',
+            'hq_quotes': 'استعلام و پیش‌فاکتور — پشتیبانی دفتر مرکزی',
+            'price_approve': 'تأیید قیمت و فروشنده — مدیر پروژه / هیات مدیره',
+            'hq_purchase': 'خرید — پشتیبانی دفتر مرکزی', 'delivery': 'تحویل کالا — درخواست‌کننده و انبار',
+            'finance_settle': 'تسویه — مالی دفتر مرکزی', 'finance_pay': 'پرداخت — مالی دفتر مرکزی',
             'archive': 'بایگانی — دبیرخانه', 'returned': 'برگشت به درخواست‌کننده', 'done': 'پایان'}
 _RET = ('returned', 'برگشت به درخواست‌کننده برای اصلاح')
+# مرحله بعد با None یعنی سرور بر اساس موجودی، کلاس خرید یا وضعیت تحویل و پرداخت تعیینش می‌کند
 P_FLOW = {
+    'draft': {'submit': (None, '')},
     'unit_approval': {'approve': ('warehouse_check', 'تأیید رئیس واحد و ارسال استعلام به انبار کارگاه'), 'return': _RET},
     'supervisor_review': {'inquire': ('warehouse_check', 'ارسال استعلام به انبار کارگاه'), 'return': _RET},
-    'warehouse_check': {'in_stock': ('done', 'موجود است — حواله خروج و تحویل به درخواست‌کننده'),
-                        'not_in_stock': ('supervisor_approve', 'موجود نیست')},
-    'tech_review': {'approve': ('supervisor_approve', 'تأیید معاون فنی'), 'return': _RET},
-    'supervisor_approve': {'approve': ('pm_approve', 'تأیید سرپرست کارگاه و ارسال به مدیر پروژه'), 'return': _RET},
-    'pm_approve': {'approve': ('hq_purchase', 'تأیید مدیر پروژه و ارسال به پشتیبانی دفتر مرکزی'), 'return': _RET},
-    'hq_purchase': {'purchased': ('finance_pay', 'خرید انجام شد — ارسال به مالی')},
+    'warehouse_check': {'stock': (None, 'ثبت موجودی انبار')},
+    'supervisor_approve': {'approve': (None, 'تأیید سرپرست کارگاه'), 'return': _RET},
+    'tech_review': {'approve': (None, 'تأیید معاون فنی'), 'return': _RET},
+    'site_purchase': {'purchased': ('delivery', 'خرید با تنخواه انجام شد — ارسال برای تحویل')},
+    'pm_approve': {'approve': ('hq_quotes', 'تأیید مدیر پروژه — ارسال به پشتیبانی برای استعلام قیمت'), 'return': _RET},
+    'hq_quotes': {'quoted': ('price_approve', 'استعلام و پیش‌فاکتورها آماده شد — ارسال برای تأیید قیمت')},
+    'price_approve': {'approve': ('hq_purchase', 'تأیید قیمت و فروشنده — ارسال برای خرید'),
+                      'requote': ('hq_quotes', 'برگشت برای استعلام مجدد')},
+    'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای تحویل')},
+    'delivery': {'recv_ok': (None, 'تأیید تحویل توسط درخواست‌کننده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
+                 'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
+    'finance_settle': {'settled': ('archive', 'تسویه کامل شد — ارسال به دبیرخانه برای بایگانی')},
     'finance_pay': {'paid': ('archive', 'پرداخت شد — ارسال به دبیرخانه برای بایگانی')},
     'archive': {'archived': ('done', 'بایگانی شد')},
-    'draft': {'submit': (None, '')},  # مرحله بعد از روی سمت درخواست‌کننده تعیین می‌شود
 }
+# مدارکی که از مرحله استعلام قیمت به بعد پیوست می‌شوند و قیمت‌ها، برای کارکنان کارگاه نمایش داده نمی‌شوند
+HQ_ONLY_STAGES = ('hq_quotes', 'price_approve', 'hq_purchase', 'finance_settle', 'finance_pay', 'archive')
+PAY_STAGES = ('hq_purchase', 'site_purchase', 'delivery', 'finance_settle', 'finance_pay', 'archive')
+PAY_METHODS = ['نقد / حواله بانکی', 'چک', 'تنخواه', 'سایر']
+CLASS_LABEL = {'A': 'الف', 'B': 'ب', 'C': 'ج', 'D': 'د'}
+BUY_STATUS = {'bought': 'خریداری شد', 'partial': 'بخشی خریداری شد', 'none': 'خریداری نشد'}
 LH_DIR, SIG_DIR, SIG_COPY_DIR = 'سربرگ', 'کلیشه امضا', os.path.join('کلیشه امضا', 'نامه‌ها')
 # جای شماره، تاریخ، پیوست، نام پروژه و متن روی سربرگ (میلی‌متر از لبه‌های A4)؛ برای هر سربرگ قابل تنظیم است
 LH_DEFAULT = {'no': {'top': 22, 'left': 20}, 'date': {'top': 29, 'left': 20}, 'att': {'top': 36, 'left': 20},
@@ -89,8 +106,10 @@ LH_DEFAULT = {'no': {'top': 22, 'left': 20}, 'date': {'top': 29, 'left': 20}, 'a
 PUR_DIR = 'درخواست کالا'  # پوشه پیوست‌های درخواست کالا در data\files؛ هر درخواست یک زیرپوشه به شماره خودش
 STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check': ('member', 'warehouse'),
                 'tech_review': ('member', 'tech'), 'supervisor_approve': ('member', 'supervisor'),
-                'pm_approve': ('member', 'pm'),
-                'hq_purchase': ('setting', 'support_manager'), 'finance_pay': ('setting', 'finance_manager'),
+                'site_purchase': ('member', 'support'), 'pm_approve': ('member', 'pm'),
+                'price_approve': ('member', 'pm'),
+                'hq_quotes': ('setting', 'support_manager'), 'hq_purchase': ('setting', 'support_manager'),
+                'finance_settle': ('setting', 'finance_manager'), 'finance_pay': ('setting', 'finance_manager'),
                 'archive': ('setting', 'archive_user')}
 UNIT_HEAD = {'tech': 'tech', 'exec': 'exec', 'support': 'supervisor', 'warehouse': 'supervisor'}  # رئیس هر واحد
 HEAD_ROLES = ('tech', 'exec', 'supervisor')  # درخواست این افراد، خودش تأیید رئیس واحد است
@@ -103,8 +122,8 @@ CATEGORIES = [('main', 'مصالح اصلی'), ('general', 'عمومی و مصر
 URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
 ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
 DEFAULT_CANCEL_REASONS = 'نیاز نیست\nبودجه تأمین نیست\nتکراری است\nزمان‌بندی اجازه نمی‌دهد\nسایر'
-P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل از انبار',
-            'closed': 'خریداری، پرداخت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
+P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل کامل از موجودی انبار',
+            'closed': 'تحویل، تسویه و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
 SEED_PROJECTS = ['موادکاران', 'پروژه بدون نام ۱', 'پروژه بدون نام ۲']
 # حساب‌های سمت‌های پروژه موادکاران (موقت؛ مدیر سیستم بعداً نام، شخص یا حساب را عوض می‌کند)
 # چارت سازمانی کارگاه موادکاران (۱۴۰۵/۰۷): (نام کاربری، نام، سمت، کلید سمت)
@@ -160,6 +179,10 @@ CREATE TABLE IF NOT EXISTS purchase_items(id INTEGER PRIMARY KEY, purchase_id IN
 CREATE TABLE IF NOT EXISTS purchase_flow(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, stage TEXT, action TEXT,
   label TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
 CREATE TABLE IF NOT EXISTS letterheads(scope TEXT PRIMARY KEY, path TEXT, layout TEXT DEFAULT '', updated_at TEXT);
+CREATE TABLE IF NOT EXISTS purchase_payments(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, amount INTEGER,
+  paid_at TEXT, method TEXT DEFAULT '', cheque_no TEXT DEFAULT '', cheque_date TEXT DEFAULT '', sepidar_no TEXT DEFAULT '',
+  note TEXT DEFAULT '', user_id INTEGER, at TEXT);
+CREATE INDEX IF NOT EXISTS ix_pur_pay ON purchase_payments(purchase_id);
 CREATE TABLE IF NOT EXISTS project_team(project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_key TEXT NOT NULL,
   PRIMARY KEY(project_id, user_id));
 CREATE TABLE IF NOT EXISTS purchase_versions(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, version INTEGER,
@@ -179,7 +202,9 @@ CREATE INDEX IF NOT EXISTS ix_log ON log(doc_type, doc_id);
 DEFAULT_SETTINGS = {'company': 'شرکت گسترش فناوری عمران زیست', 'ceo_threshold': '1000000000',
                     'ceo_user': '', 'office_approver': '', 'warehouse_user': '', 'default_due_days': '3',
                     'support_manager': '', 'finance_manager': '', 'archive_user': '',
-                    'cancel_reasons': DEFAULT_CANCEL_REASONS}
+                    'cancel_reasons': DEFAULT_CANCEL_REASONS,
+                    # سقف ریالی کلاس‌های خرید (هیات مدیره تعیین می‌کند)؛ خالی = همه خریدها از دفتر مرکزی
+                    'class_a_max': '', 'class_b_max': '', 'class_c_max': ''}
 
 SEED_USERS = [  # (username, full_name, title, role)
     ('admin', 'مدیر سیستم', 'راهبر سامانه', 'admin'),
@@ -276,15 +301,24 @@ def init_db():
 
 
 def add_columns(c):
-    """ستون‌های اضافه‌شده در نسخه ۱.۴ (افزودنی؛ داده‌ای حذف نمی‌شود)."""
+    """ستون‌های اضافه‌شده در نسخه‌های بعدی (افزودنی؛ داده‌ای حذف نمی‌شود)."""
     want = {'purchases': [('category', "TEXT DEFAULT 'general'"), ('urgency', "TEXT DEFAULT 'normal'"),
                           ('need_date', "TEXT DEFAULT ''"), ('version', 'INTEGER DEFAULT 1'),
-                          ('cancel_reason', "TEXT DEFAULT ''"), ('cancel_note', "TEXT DEFAULT ''")],
+                          ('cancel_reason', "TEXT DEFAULT ''"), ('cancel_note', "TEXT DEFAULT ''"),
+                          # ۲.۰: برآورد و کلاس خرید، پیشنهاد قیمت، تحویل دوطرفه، تسویه
+                          ('estimate', 'INTEGER'), ('pclass', "TEXT DEFAULT ''"),
+                          ('proposed_supplier', "TEXT DEFAULT ''"), ('proposed_amount', 'INTEGER'),
+                          ('recv_by', 'INTEGER'), ('recv_at', 'TEXT'), ('wh_by', 'INTEGER'), ('wh_at', 'TEXT'),
+                          ('settled_at', 'TEXT'), ('settled_by', 'INTEGER')],
+            'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
+                               ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
+                               ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''")],
             'attachments': [('kind', "TEXT DEFAULT ''"), ('deleted_at', 'TEXT'), ('deleted_by', 'INTEGER'),
-                            ('flow_id', 'INTEGER')],
+                            ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0')],
             'letters': [('body', "TEXT DEFAULT ''"), ('signer_id', 'INTEGER'), ('signed_at', 'TEXT'),
                         ('sig_name', "TEXT DEFAULT ''"), ('sig_title', "TEXT DEFAULT ''"), ('sig_file', "TEXT DEFAULT ''"),
-                        ('registered_at', 'TEXT')],
+                        ('registered_at', 'TEXT'), ('main_to_id', 'INTEGER'), ('cc_text', "TEXT DEFAULT ''"),
+                        ('cc_ids', "TEXT DEFAULT ''"), ('main_action', "TEXT DEFAULT ''"), ('dispatched', 'INTEGER DEFAULT 1')],
             'users': [('sig_path', "TEXT DEFAULT ''")]}
     for t, cols in want.items():
         have = {r[1] for r in c.execute('PRAGMA table_info(%s)' % t)}
@@ -711,7 +745,8 @@ def api_cartable(h, c, u, b, q):
         "ORDER BY (r.due_date!='' AND r.due_date<?) DESC, r.id DESC" % (DOC_LABEL_SQL, str(OPEN)), (u['id'], today())))
     sent = rows(c.execute(
         'SELECT r.*, t.full_name to_name, %s doc_label FROM referrals r LEFT JOIN users t ON t.id=r.to_id '
-        'WHERE r.from_id=? AND r.status IN %s ORDER BY r.id DESC LIMIT 300' % (DOC_LABEL_SQL, str(OPEN)), (u['id'],)))
+        "WHERE r.from_id=? AND r.status IN %s AND r.action!='برگشت' ORDER BY r.id DESC LIMIT 300"
+        % (DOC_LABEL_SQL, str(OPEN)), (u['id'],)))
     approvals = rows(c.execute(
         'SELECT s.*, q.number, q.title, q.amount, q.kind, q.created_at, ru.full_name requester, p.name project '
         'FROM steps s JOIN requests q ON q.id=s.request_id LEFT JOIN users ru ON ru.id=q.requester_id '
@@ -735,11 +770,12 @@ def api_cartable(h, c, u, b, q):
         desk += rows(c.execute(
             "SELECT l.* FROM letters l WHERE l.status='open' AND NOT EXISTS (SELECT 1 FROM referrals r WHERE "
             "r.doc_type='letter' AND r.doc_id=l.id AND r.status IN %s) ORDER BY l.id DESC LIMIT 200" % str(OPEN)))
-    pur_held = rows(c.execute(PUR_SEL + "WHERE x.holder_id=? AND x.status IN ('open','returned') ORDER BY x.id", (u['id'],)))
+    pur_held = rows(c.execute(PUR_SEL + "WHERE " + PUR_HELD_SQL + " ORDER BY x.id", (u['id'], u['id'])))
+    pur_pay = rows(c.execute(PUR_SEL + "WHERE " + PUR_PAY_SQL + " ORDER BY x.id")) if is_finance(c, u) else []
     pur_mine = rows(c.execute(PUR_SEL + "WHERE x.requester_id=? AND x.status IN ('open','returned') ORDER BY x.id DESC",
                               (u['id'],)))
     return {'inbox': inbox, 'sent': sent, 'approvals': approvals, 'mine': mine, 'pay': pay, 'desk': desk,
-            'pur_held': pur_held, 'pur_mine': pur_mine, 'today': today()}
+            'pur_held': pur_held, 'pur_mine': pur_mine, 'pur_pay': pur_pay, 'today': today()}
 
 
 @route('GET', '/api/counts')
@@ -749,9 +785,19 @@ def api_counts(h, c, u, b, q):
                    "AND s.status='pending' AND q.status='pending'", (u['id'],)).fetchone()[0]
     if u['role'] in ('finance',):
         n += c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]
-    n += c.execute("SELECT COUNT(*) FROM purchases WHERE holder_id=? AND status IN ('open','returned')",
-                   (u['id'],)).fetchone()[0]
+    n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_HELD_SQL, (u['id'], u['id'])).fetchone()[0]
+    if is_finance(c, u):
+        n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_PAY_SQL).fetchone()[0]
     return {'n': n}
+
+
+# درخواست‌های کالای در کارتابل: دارنده (جز درخواست‌کننده‌ای که تحویل را تأیید کرده) و انباردارِ منتظر تأیید تحویل
+PUR_HELD_SQL = ("((x.holder_id=? AND x.status IN ('open','returned') AND NOT (x.stage='delivery' AND x.recv_at IS NOT NULL)) "
+                "OR (x.stage='delivery' AND x.status='open' AND x.wh_at IS NULL AND EXISTS(SELECT 1 FROM project_members m "
+                "WHERE m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?)))")
+# منتظر پرداخت یا تسویه مالی (پس از تأیید قیمت یا خرید کارگاه)
+PUR_PAY_SQL = ("(x.status='open' AND x.settled_at IS NULL AND x.stage IN ('hq_purchase','site_purchase','delivery',"
+               "'finance_settle','finance_pay'))")
 
 
 # ---------- نامه‌ها
@@ -840,6 +886,17 @@ def ask_signature(c, u, lid, signer_id):
         make_referrals(c, u, 'letter', lid, [signer_id], 'امضا', 'لطفاً نامه را بررسی و امضا کنید', '')
 
 
+def dispatch_letter(c, u, lid, instruction='', due=''):
+    """ارسال نامه به مخاطب اصلی (اقدام) و رونوشت‌ها (جهت اطلاع)."""
+    L = one(c.execute('SELECT * FROM letters WHERE id=?', (lid,)))
+    if L['main_to_id'] and L['main_to_id'] != u['id']:
+        make_referrals(c, u, 'letter', lid, [L['main_to_id']], L['main_action'] or 'اقدام', instruction or '', due or '')
+    cc = [int(x) for x in (L['cc_ids'] or '').split(',') if x.strip() and int(x) != u['id']]
+    if cc:
+        make_referrals(c, u, 'letter', lid, cc, 'جهت اطلاع', 'رونوشت', '')
+    c.execute('UPDATE letters SET dispatched=1 WHERE id=?', (lid,))
+
+
 @route('POST', '/api/letters')
 def api_letter_new(h, c, u, b, q):
     f = letter_fields(b)
@@ -861,6 +918,19 @@ def api_letter_new(h, c, u, b, q):
     lid = cur.lastrowid
     log(c, 'letter', lid, u['id'], 'ثبت پیش‌نویس صادره' if draft else 'ثبت', number or '')
     ask_signature(c, u, lid, f['signer_id'])
+    # مخاطب اصلی (برای اقدام) و رونوشت‌ها (جهت اطلاع)؛ اگر نامه امضا لازم دارد، پس از امضا فرستاده می‌شود
+    main_to = int(b['main_to_id']) if b.get('main_to_id') else None
+    cc_ids = [int(x) for x in (b.get('cc_ids') or []) if str(x).strip() and int(x) != main_to]
+    if is_site_only(c, u):
+        allowed = set(colleagues_of(c, u['id']))
+        need(all(t in allowed for t in ([main_to] if main_to else []) + cc_ids),
+             'کارکنان کارگاه فقط به همکاران پروژه خود نامه می‌دهند', 400)
+    wait_sign = bool(f['signer_id'] and f['signer_id'] != u['id'])
+    c.execute('UPDATE letters SET main_to_id=?, cc_text=?, cc_ids=?, main_action=?, dispatched=? WHERE id=?',
+              (main_to, (b.get('cc_text') or '').strip(), ','.join(map(str, cc_ids)), b.get('action') or 'اقدام',
+               0 if wait_sign else 1, lid))
+    if not wait_sign:
+        dispatch_letter(c, u, lid, b.get('instruction'), b.get('due'))
     if b.get('to_ids'):
         make_referrals(c, u, 'letter', lid, b['to_ids'], b.get('action') or 'اقدام', b.get('instruction'), b.get('due'))
     return {'id': lid, 'number': number or ''}
@@ -885,6 +955,8 @@ def api_letter_sign(h, c, u, b, q, lid):
     c.execute("UPDATE referrals SET status='done', done_at=?, reply='امضا شد' WHERE doc_type='letter' AND doc_id=? "
               "AND to_id=? AND action='امضا' AND status IN %s" % str(OPEN), (now(), L['id'], u['id']))
     log(c, 'letter', L['id'], u['id'], 'امضا', me['full_name'])
+    if not L['dispatched']:  # حالا که امضا شد، به مخاطب اصلی و رونوشت‌ها می‌رود
+        dispatch_letter(c, u, L['id'])
     return {'ok': True}
 
 
@@ -920,8 +992,14 @@ def api_letter_sheet(h, c, u, b, q, lid):
     lh, pname = letterhead_for(c, L)
     natt = c.execute("SELECT COUNT(*) FROM attachments WHERE doc_type='letter' AND doc_id=? AND deleted_at IS NULL",
                      (L['id'],)).fetchone()[0]
-    return {'letter': {k: L[k] for k in ('id', 'kind', 'number', 'subject', 'counterpart', 'letter_date', 'body',
-                                         'signed_at', 'sig_name', 'sig_title', 'status')},
+    who = lambda i: one(c.execute('SELECT full_name, title FROM users WHERE id=?', (i,))) or {}
+    to = who(L['main_to_id']) if L['main_to_id'] else {}
+    cc = [('%s — %s' % (x.get('full_name', ''), x.get('title', ''))).strip(' —') for x in
+          (who(int(i)) for i in (L['cc_ids'] or '').split(',') if i.strip())]
+    cc += [t.strip() for t in (L['cc_text'] or '').splitlines() if t.strip()]
+    return {'letter': dict({k: L[k] for k in ('id', 'kind', 'number', 'subject', 'counterpart', 'letter_date', 'body',
+                                              'signed_at', 'sig_name', 'sig_title', 'status')},
+                           to_name=to.get('full_name', ''), to_title=to.get('title', ''), cc=cc),
             'letterhead': {'scope': lh['scope'], 'v': lh['updated_at']} if lh else None,
             'layout': (json.loads(lh['layout'] or '{}') if lh else {}) or LH_DEFAULT, 'project': pname, 'attachments': natt}
 
@@ -1064,6 +1142,11 @@ def api_ref_status(h, c, u, b, q, rid):
     if st in ('done', 'returned'):
         need(st == 'done' or (b.get('reply') or '').strip(), 'برای برگشت، علت را بنویسید', 400)
         c.execute('UPDATE referrals SET status=?, reply=?, done_at=? WHERE id=?', (st, b.get('reply') or '', now(), R['id']))
+        if st == 'returned' and R['from_id'] and R['from_id'] != u['id']:
+            # برگشت: از کارتابل برگشت‌دهنده خارج و به کارتابل ارجاع‌دهنده برمی‌گردد
+            c.execute('INSERT INTO referrals(doc_type,doc_id,parent_id,from_id,to_id,action,instruction,created_at) '
+                      'VALUES(?,?,?,?,?,?,?,?)', (R['doc_type'], R['doc_id'], R['id'], u['id'], R['from_id'], 'برگشت',
+                                                  (b.get('reply') or '').strip(), now()))
     else:
         c.execute("UPDATE referrals SET status='doing' WHERE id=?", (R['id'],))
     lbl = {'doing': 'در حال اقدام', 'done': 'انجام شد', 'returned': 'برگشت داده شد'}[st]
@@ -1109,8 +1192,7 @@ def api_attach(h, c, u, b, q):
     dt, did = q.get('doc_type'), int(q.get('doc_id') or 0)
     D = get_doc(c, u, dt, did)
     if dt == 'purchase':
-        need(D['holder_id'] == u['id'] and D['status'] in ('open', 'returned'),
-             'پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد')
+        need(can_attach_pur(c, u, D), 'پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد')
     name = urllib.parse.unquote(h.headers.get('X-Filename') or 'file')
     name = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(name))[:150] or 'file'
     raw = h.raw_body
@@ -1126,8 +1208,9 @@ def api_attach(h, c, u, b, q):
     if dt == 'purchase':
         fid = c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
                         (did, D['stage'], 'attach', 'پیوست ' + (kind or 'فایل'), u['id'], name, now())).lastrowid
-    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id) '
-              'VALUES(?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid))
+    hq_only = 1 if dt == 'purchase' and D['stage'] in HQ_ONLY_STAGES else 0  # مدارک قیمت برای کارگاه دیده نمی‌شود
+    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id,hq_only) '
+              'VALUES(?,?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid, hq_only))
     log(c, dt, did, u['id'], 'پیوست' + (' — ' + kind if kind else ''), name)
     return {'ok': True}
 
@@ -1350,7 +1433,7 @@ def stage_holder(c, P, stage):
         uid = pmembers(c, P['project_id']).get(key)
         need(uid, '«%s» برای این پروژه تعریف نشده؛ هیات مدیره باید ارکان پروژه را در صفحه پروژه تکمیل کند'
              % labels[key], 400)
-        if stage == 'pm_approve' and uid == P['requester_id']:
+        if stage in ('pm_approve', 'price_approve') and uid == P['requester_id']:
             # خودتأییدی ممنوع: درخواستِ خودِ مدیر پروژه به مدیرعامل می‌رود
             uid = int(settings(c).get('ceo_user') or 0)
             need(uid, 'درخواست‌کننده خود مدیر پروژه است و مدیرعامل در تنظیمات تعیین نشده', 400)
@@ -1362,16 +1445,62 @@ def stage_holder(c, P, stage):
     return uid
 
 
-def next_site_stage(c, P, stage, u, notes):
-    """مرحله‌هایی که بررسی‌کننده‌شان خودِ درخواست‌کننده است رد می‌شوند (تأیید به سطح بالاتر می‌رسد)."""
-    mem = pmembers(c, P['project_id'])
-    while stage in ('tech_review', 'supervisor_approve'):
-        key = 'tech' if stage == 'tech_review' else 'supervisor'
-        if mem.get(key) != P['requester_id']:
-            break
-        notes.append('%s رد شد؛ درخواست‌کننده خود %s است' % (P_STAGES[stage], dict(PROJECT_ROLES)[key]))
-        stage = 'supervisor_approve' if stage == 'tech_review' else 'pm_approve'
-    return stage
+def to_num(v):
+    """عدد مقدار (با ارقام فارسی و ممیز فارسی)؛ نامعتبر = None"""
+    s = str(v if v is not None else '').translate(FA2EN).replace('٫', '.').replace(',', '').strip()
+    try:
+        return float(s) if s else None
+    except ValueError:
+        return None
+
+
+def fmt_num(x):
+    return ('%g' % x) if x is not None else ''
+
+
+def compute_class(c, est):
+    """کلاس خرید از روی مبلغ برآوردی و سقف‌های تنظیمات؛ بدون سقف = نامعلوم (خرید از دفتر مرکزی)."""
+    S = settings(c)
+    lim = [to_int(S.get(k)) for k in ('class_a_max', 'class_b_max', 'class_c_max')]
+    if not lim[0] or est is None:
+        return ''
+    for cl, mx in zip('ABC', lim):
+        if mx is None or est <= mx:
+            return cl
+    return 'D'
+
+
+def tech_already(c, P):
+    """معاون فنی قبلاً در همین نوبت درخواست را ثبت یا تأیید کرده است (دوباره لازم نیست)."""
+    t = pmembers(c, P['project_id']).get('tech')
+    if not t:
+        return False
+    if t == P['requester_id']:
+        return True
+    last_ret = c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action='resubmit'",
+                         (P['id'],)).fetchone()[0]
+    return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND id>? AND "
+                     "action IN ('approve','submit') AND stage IN ('draft','unit_approval')",
+                     (P['id'], t, last_ret)).fetchone() is not None
+
+
+def after_supervisor(c, P, notes):
+    """پس از تأیید سرپرست کارگاه: معاون فنی (مصالح اصلی یا بالاتر از کلاس الف)، سپس خرید کارگاه یا مدیر پروژه."""
+    if P['category'] == 'main' or P['pclass'] != 'A':
+        if not tech_already(c, P):
+            return 'tech_review'
+        notes.append('بررسی معاون فنی لازم نبود؛ معاون فنی قبلاً درخواست را ثبت یا تأیید کرده است')
+    return after_tech(P)
+
+
+def after_tech(P):
+    return 'site_purchase' if P['pclass'] == 'A' else 'pm_approve'
+
+
+def purchase_stage_of(c, P):
+    """مرحله خریدِ این درخواست (برای برگشت از تحویل در صورت مغایرت)."""
+    return 'site_purchase' if c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND stage='site_purchase'",
+                                        (P['id'],)).fetchone() else 'hq_purchase'
 
 
 def pflow(c, pid, u, stage, action, label, note=''):
@@ -1404,8 +1533,9 @@ def pur_fields(c, u, b, pid_fixed=None):
         t = (it.get('title') or '').strip()
         if not t:
             continue
-        qty = (str(it.get('qty') or '')).translate(FA2EN).strip()
+        qty = (str(it.get('qty') or '')).translate(FA2EN).replace('٫', '.').strip()
         need(qty, 'مقدار کالای «%s» وارد نشده' % t, 400)
+        need(to_num(qty) is not None and to_num(qty) > 0, 'مقدار کالای «%s» باید عدد باشد (واحد را در ستون واحد بنویسید)' % t, 400)
         items.append((t, qty, (it.get('unit') or '').strip(), (it.get('spec') or '').strip(), (it.get('note') or '').strip()))
     need(items, 'حداقل یک ردیف کالا با شرح و مقدار وارد کنید', 400)
     return dict(project_id=pid, unit=unit, warehouse=(b.get('warehouse') or '').strip(), category=cat, urgency=urg,
@@ -1413,10 +1543,21 @@ def pur_fields(c, u, b, pid_fixed=None):
 
 
 def save_items(c, pid, items):
+    # موجودیِ ثبت‌شده انبار برای کالاهایی که در ویرایش باقی مانده‌اند حفظ می‌شود
+    stock = {r['title']: r['stock_qty'] for r in c.execute('SELECT title, stock_qty FROM purchase_items WHERE purchase_id=?',
+                                                           (pid,))}
     c.execute('DELETE FROM purchase_items WHERE purchase_id=?', (pid,))
     for i, it in enumerate(items, 1):
-        c.execute('INSERT INTO purchase_items(purchase_id,row_no,title,qty,unit,spec,note) VALUES(?,?,?,?,?,?,?)',
-                  (pid, i) + it)
+        st = stock.get(it[0]) or ''
+        if st and (to_num(st) or 0) > (to_num(it[1]) or 0):
+            st = it[1]
+        c.execute('INSERT INTO purchase_items(purchase_id,row_no,title,qty,unit,spec,note,stock_qty) VALUES(?,?,?,?,?,?,?,?)',
+                  (pid, i) + it + (st,))
+
+
+def remaining(it):
+    """مقدار مانده برای خرید = مقدار درخواست − تحویل از انبار"""
+    return max(0.0, (to_num(it['qty']) or 0) - (to_num(it['stock_qty']) or 0))
 
 
 def save_version(c, pid, u, note=''):
@@ -1464,6 +1605,8 @@ def pur_filter(c, u, q):
     for k in ('project_id', 'holder_id'):
         if q.get(k):
             w.append('x.%s=?' % k); p.append(int(q[k]))
+    if q.get('unsettled'):
+        w.append(PUR_PAY_SQL)
     for k in ('unit', 'stage', 'status', 'category', 'urgency'):
         if q.get(k):
             vals = q[k].split(',')
@@ -1486,13 +1629,20 @@ def pur_filter(c, u, q):
 @route('GET', '/api/purchases')
 def api_purchases(h, c, u, b, q):
     w, p = pur_filter(c, u, q)
-    return rows(c.execute(PUR_SEL + 'WHERE %s ORDER BY x.id DESC LIMIT %d' % (w, int(q.get('limit') or 500)), p))
+    res = rows(c.execute(PUR_SEL + 'WHERE %s ORDER BY x.id DESC LIMIT %d' % (w, int(q.get('limit') or 500)), p))
+    if is_site_only(c, u):  # قیمت‌ها برای کارکنان کارگاه نمایش داده نمی‌شود
+        for P in res:
+            for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no'):
+                P[k] = None
+    return res
 
 
 PUR_CSV_HEAD = ['شماره', 'تاریخ', 'پروژه', 'کد پروژه', 'واحد درخواست‌کننده', 'انبار محل درخواست', 'دسته', 'فوریت',
-                'تاریخ نیاز', 'جهت استفاده', 'درخواست‌کننده', 'نسخه', 'ردیف', 'شرح کالا', 'مقدار', 'واحد', 'مشخصات فنی',
-                'توضیحات', 'وضعیت', 'مرحله', 'در دست', 'تأمین‌کننده', 'مبلغ خرید (ریال)', 'مبلغ پرداختی (ریال)',
-                'تاریخ پرداخت', 'سند سپیدار', 'کد بایگانی', 'علت لغو']
+                'تاریخ نیاز', 'جهت استفاده', 'درخواست‌کننده', 'نسخه', 'کلاس خرید', 'مبلغ برآوردی (ریال)', 'ردیف',
+                'شرح کالا', 'مقدار', 'واحد', 'مشخصات فنی', 'توضیحات', 'تحویل از انبار', 'مانده برای خرید',
+                'مقدار خریداری‌شده', 'واحد خرید', 'وضعیت خرید', 'توضیح خرید', 'مقدار تحویل‌گرفته',
+                'وضعیت', 'مرحله', 'در دست', 'تأمین‌کننده', 'مبلغ خرید (ریال)', 'جمع پرداخت (ریال)',
+                'کد بایگانی', 'علت لغو']
 
 
 def pur_csv(c, lst, fname):
@@ -1504,10 +1654,14 @@ def pur_csv(c, lst, fname):
         for it in its:
             wr.writerow([P['number'], P['req_date'], P['project'] or '', P['project_code'] or '', units.get(P['unit'], ''),
                          P['warehouse'], cats.get(P['category'], ''), urgs.get(P['urgency'], ''), P['need_date'],
-                         P['purpose'], P['requester'] or '', P['version'], it.get('row_no', ''), it.get('title', ''),
+                         P['purpose'], P['requester'] or '', P['version'], CLASS_LABEL.get(P['pclass'] or '', ''),
+                         P['estimate'] or '', it.get('row_no', ''), it.get('title', ''),
                          it.get('qty', ''), it.get('unit', ''), it.get('spec', ''), it.get('note', ''),
+                         it.get('stock_qty', ''), fmt_num(remaining(it)) if it else '', it.get('bought_qty', ''),
+                         it.get('bought_unit', ''), BUY_STATUS.get(it.get('bought_status') or '', ''), it.get('bought_note', ''),
+                         it.get('recv_qty', ''),
                          P_STATUS.get(P['status'], P['status']), P_STAGES.get(P['stage'], P['stage']), P['holder'] or '',
-                         P['supplier'], P['amount'] or '', P['paid_amount'] or '', P['paid_at'], P['sepidar_no'],
+                         P['supplier'] or '', P['amount'] or '', P['paid_amount'] or '',
                          P['archive_code'], (P['cancel_reason'] or '') + (' — ' + P['cancel_note'] if P['cancel_note'] else '')])
     return ('csv', fname, out.getvalue())
 
@@ -1532,7 +1686,11 @@ def api_purchases_csv(h, c, u, b, q):
 @route('GET', r'/api/purchases/(\d+)\.csv')
 def api_purchase_csv(h, c, u, b, q, pid):
     get_doc(c, u, 'purchase', int(pid))
-    return pur_csv(c, rows(c.execute(PUR_SEL + 'WHERE x.id=?', (int(pid),))), 'material-request-%s.csv' % pid)
+    lst = rows(c.execute(PUR_SEL + 'WHERE x.id=?', (int(pid),)))
+    if is_site_only(c, u):
+        for k in ('supplier', 'amount', 'paid_amount'):
+            lst[0][k] = None
+    return pur_csv(c, lst, 'material-request-%s.csv' % pid)
 
 
 @route('POST', '/api/purchases')
@@ -1585,53 +1743,213 @@ def api_purchase_get(h, c, u, b, q, pid):
             c.execute('UPDATE referrals SET status=?, seen_at=?, done_at=? WHERE id=?',
                       (ns, now(), now() if ns == 'done' else None, r['id']))
             r['status'] = ns
-    acts = list(P_FLOW.get(P['stage'], {})) if P['holder_id'] == u['id'] and P['status'] == 'open' else []
+    site = is_site_only(c, u)
+    if site:  # قیمت‌ها و مدارک پس از مدیر پروژه برای کارکنان کارگاه نمایش داده نمی‌شود
+        att = [a for a in att if not a.get('hq_only')]
+        flow = [f for f in flow if not (f['stage'] in HQ_ONLY_STAGES and f['action'] in ('attach', 'delatt'))]
+        for f in flow:
+            if f['stage'] in HQ_ONLY_STAGES:
+                f['note'] = ''
+        for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no'):
+            P[k] = None
+    pays = [] if site else rows(c.execute('SELECT p.*, us.full_name user_name FROM purchase_payments p LEFT JOIN users us '
+                                          'ON us.id=p.user_id WHERE purchase_id=? ORDER BY p.id', (P['id'],)))
+    for it in items:
+        it['remaining'] = fmt_num(remaining(it))
     return {'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
-            'actions': acts, 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
-            'can_attach': P['status'] in ('open', 'returned') and P['holder_id'] == u['id']}
+            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
+            'can_attach': can_attach_pur(c, u, P), 'payments': pays, 'can_pay': can_pay(c, u, P),
+            'class_label': CLASS_LABEL.get(P['pclass'], ''), 'class_set': bool(to_int(settings(c).get('class_a_max'))),
+            'pay_methods': PAY_METHODS, 'buy_status': BUY_STATUS, 'site_view': site,
+            'hq_only_stages': HQ_ONLY_STAGES}
+
+
+def is_warehouse(c, u, P):
+    return pmembers(c, P['project_id']).get('warehouse') == u['id']
+
+
+def allowed_actions(c, u, P):
+    """اقدام‌هایی که این کاربر اکنون روی درخواست می‌تواند انجام دهد."""
+    if P['status'] != 'open':
+        return []
+    acts = list(P_FLOW.get(P['stage'], {}))
+    if P['stage'] == 'delivery':  # تحویل دوطرفه: درخواست‌کننده و انبار، هر کدام جدا
+        out = []
+        if P['holder_id'] == u['id'] and not P['recv_at']:
+            out += ['recv_ok', 'recv_bad']
+        if is_warehouse(c, u, P) and not P['wh_at']:
+            out += ['wh_ok', 'wh_bad']
+        return out
+    if P['stage'] == 'price_approve' and is_mgr(u):  # مدیر پروژه یا هر عضو هیات مدیره
+        return acts
+    return acts if P['holder_id'] == u['id'] else []
+
+
+def can_attach_pur(c, u, P):
+    if P['status'] not in ('open', 'returned'):
+        return False
+    if P['holder_id'] == u['id'] or (P['stage'] == 'delivery' and is_warehouse(c, u, P)):
+        return True
+    return P['stage'] == 'price_approve' and is_mgr(u)
+
+
+def is_finance(c, u):
+    return u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager') or u['role'] == 'admin'
+
+
+def can_pay(c, u, P):
+    """پرداخت (یک یا چند نوبت، نقد یا چک، قبل یا بعد از تحویل) پس از تأیید قیمت یا خرید کارگاه."""
+    return is_finance(c, u) and P['status'] == 'open' and P['stage'] in PAY_STAGES and not P['settled_at']
+
+
+def move(c, u, P, stage, label, note='', status='open'):
+    """انتقال درخواست به مرحله بعد و ثبت در گردش."""
+    holder = None if stage == 'done' else (P['requester_id'] if stage in ('returned', 'delivery') else stage_holder(c, P, stage))
+    if stage == 'returned':
+        status = 'returned'
+    c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
+              (status, stage, holder, now() if stage == 'done' else None, P['id']))
+    pflow(c, P['id'], u, P['stage'], label[0], label[1], note)
+
+
+def after_delivery(c, P):
+    return 'archive' if P['settled_at'] else 'finance_settle'
 
 
 @route('POST', r'/api/purchases/(\d+)/act')
 def api_purchase_act(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
-    need(P['status'] == 'open' and P['holder_id'] == u['id'], 'این درخواست در کارتابل شما نیست')
-    acts = P_FLOW.get(P['stage']) or {}
     a = b.get('action')
-    need(a in acts, 'اقدام نامعتبر', 400)
-    nxt, label = acts[a]
+    need(a in allowed_actions(c, u, P), 'این اقدام اکنون با شما نیست')
+    nxt, label = P_FLOW[P['stage']][a]
     note = (b.get('note') or '').strip()
     notes = []
-    if a == 'return':
-        need(note, 'علت برگشت را بنویسید', 400)
+    if a in ('return', 'requote', 'recv_bad', 'wh_bad'):
+        need(note, 'علت را بنویسید', 400)
+    its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],)))
+    posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
+
     if a == 'submit':
         nxt, label = start_stage(c, u, P)
-    if a == 'not_in_stock':
-        nxt = 'tech_review' if P['category'] == 'main' else 'supervisor_approve'
-    if nxt in ('tech_review', 'supervisor_approve', 'pm_approve'):
-        nxt = next_site_stage(c, P, nxt, u, notes)
-    if a == 'not_in_stock':
-        label += ' — ارسال به ' + ('معاون فنی (مصالح اصلی)' if nxt == 'tech_review' else P_STAGES[nxt])
-    if a == 'purchased':
-        c.execute('UPDATE purchases SET supplier=?, amount=? WHERE id=?',
-                  ((b.get('supplier') or '').strip(), to_int(b.get('amount')), P['id']))
-    elif a == 'paid':
+    elif a == 'stock':  # انبار موجودی هر قلم را ثبت می‌کند؛ مانده برای خرید می‌رود
+        full = part = 0
+        for it in its:
+            s = to_num((posted.get(it['id']) or {}).get('stock')) or 0
+            need(0 <= s <= (to_num(it['qty']) or 0), 'موجودیِ «%s» باید بین صفر و مقدار درخواست باشد' % it['title'], 400)
+            c.execute('UPDATE purchase_items SET stock_qty=? WHERE id=?', (fmt_num(s) if s else '', it['id']))
+            if s:
+                full, part = (full + 1, part) if s >= (to_num(it['qty']) or 0) else (full, part + 1)
+        left = sum(remaining(dict(it, stock_qty=fmt_num(to_num((posted.get(it['id']) or {}).get('stock')) or 0)))
+                   for it in its)
+        label = 'ثبت موجودی انبار: %d قلم کامل و %d قلم بخشی از انبار تحویل شد' % (full, part) if full or part \
+            else 'ثبت موجودی انبار: هیچ قلمی موجود نیست'
+        if left <= 0:
+            move(c, u, P, 'done', ('stock', label + ' — همه اقلام از انبار تحویل شد'), note, 'delivered')
+            return {'ok': True}
+        nxt = 'supervisor_approve'
+    elif a == 'approve' and P['stage'] == 'supervisor_approve':  # برآورد مبلغ و تعیین کلاس خرید
+        est = to_int(b.get('estimate'))
+        need(est or not to_int(settings(c).get('class_a_max')), 'مبلغ برآوردی خرید را وارد کنید', 400)
+        cl = compute_class(c, est)
+        c.execute('UPDATE purchases SET estimate=?, pclass=? WHERE id=?', (est, cl, P['id']))
+        P = dict(P, estimate=est, pclass=cl)
+        nxt = after_supervisor(c, P, notes)
+        label += (' — کلاس خرید %s' % CLASS_LABEL[cl]) if cl else ' — کلاس خرید نامعلوم (سقف‌ها تعیین نشده)'
+    elif a == 'approve' and P['stage'] == 'tech_review':
+        nxt = after_tech(P)
+    elif a == 'quoted':  # پیشنهاد قیمت و فروشنده با پیش‌فاکتور
+        sup, amt = (b.get('supplier') or '').strip(), to_int(b.get('amount'))
+        need(sup and amt, 'فروشنده پیشنهادی و مبلغ را وارد کنید', 400)
+        need(c.execute("SELECT 1 FROM attachments WHERE doc_type='purchase' AND doc_id=? AND kind='پیش‌فاکتور' "
+                       'AND deleted_at IS NULL', (P['id'],)).fetchone(), 'حداقل یک پیش‌فاکتور پیوست کنید', 400)
+        c.execute('UPDATE purchases SET proposed_supplier=?, proposed_amount=? WHERE id=?', (sup, amt, P['id']))
+    elif a == 'purchased':  # اعلام نهایی پشتیبانی: مقدار، واحد و وضعیت خرید هر قلم
+        for it in its:
+            if remaining(it) <= 0:
+                continue
+            x = posted.get(it['id']) or {}
+            stt = x.get('status')
+            need(stt in BUY_STATUS, 'وضعیت خرید «%s» را تعیین کنید' % it['title'], 400)
+            bq = to_num(x.get('qty'))
+            if stt != 'none':
+                need(bq and bq > 0, 'مقدار خریداری‌شده «%s» را وارد کنید' % it['title'], 400)
+            need(stt == 'bought' or (x.get('note') or '').strip(), 'برای «%s» علت خرید ناقص یا نشدن را بنویسید' % it['title'], 400)
+            c.execute('UPDATE purchase_items SET bought_qty=?, bought_unit=?, bought_status=?, bought_note=? WHERE id=?',
+                      (fmt_num(bq) if stt != 'none' else '0', (x.get('unit') or it['unit'] or '').strip(), stt,
+                       (x.get('note') or '').strip(), it['id']))
+        if P['stage'] == 'site_purchase':
+            need(c.execute("SELECT 1 FROM attachments WHERE doc_type='purchase' AND doc_id=? AND kind='فاکتور' "
+                           'AND deleted_at IS NULL', (P['id'],)).fetchone(), 'فاکتور خرید تنخواه را پیوست کنید', 400)
+        c.execute('UPDATE purchases SET supplier=?, amount=?, recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?',
+                  ((b.get('supplier') or P['proposed_supplier'] or '').strip(), to_int(b.get('amount')), P['id']))
+    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad'):
+        if a == 'recv_ok':
+            for it in its:
+                x = posted.get(it['id'])
+                if x is not None:
+                    c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(to_num(x.get('qty'))), it['id']))
+            c.execute('UPDATE purchases SET recv_by=?, recv_at=? WHERE id=?', (u['id'], now(), P['id']))
+            P = dict(P, recv_at=now())
+        elif a == 'wh_ok':
+            c.execute('UPDATE purchases SET wh_by=?, wh_at=? WHERE id=?', (u['id'], now(), P['id']))
+            P = dict(P, wh_at=now())
+        if a.endswith('_bad'):  # مغایرت: برمی‌گردد به خرید برای اصلاح
+            c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
+            nxt = purchase_stage_of(c, P)
+        elif P['recv_at'] and P['wh_at']:
+            nxt = after_delivery(c, P)
+            notes.append('تحویل کالا کامل شد (درخواست‌کننده و انبار)')
+        else:
+            pflow(c, P['id'], u, P['stage'], a, label, note)
+            return {'ok': True}
+    elif a == 'settled':
+        c.execute('UPDATE purchases SET settled_at=?, settled_by=? WHERE id=?', (now(), u['id'], P['id']))
+    elif a == 'paid':  # مرحله قدیمی
         amt = to_int(b.get('paid_amount'))
         need(amt is not None, 'مبلغ پرداختی را وارد کنید', 400)
         c.execute('UPDATE purchases SET paid_amount=?, paid_at=?, sepidar_no=? WHERE id=?',
                   (amt, (b.get('paid_at') or jstr(today())).translate(FA2EN), (b.get('sepidar_no') or '').strip(), P['id']))
     elif a == 'archived':
         c.execute('UPDATE purchases SET archive_code=? WHERE id=?', ((b.get('archive_code') or '').strip(), P['id']))
-    if nxt == 'done':
-        st, stage, holder = ('delivered' if a == 'in_stock' else 'closed'), 'done', None
-    elif nxt == 'returned':
-        st, stage, holder = 'returned', 'returned', P['requester_id']
-    else:
-        st, stage, holder = 'open', nxt, stage_holder(c, P, nxt)
-    c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
-              (st, stage, holder, now() if stage == 'done' else None, P['id']))
-    pflow(c, P['id'], u, P['stage'], a, label, '؛ '.join([note] + notes if note else notes))
+
+    label = label + (' — ارسال به ' + P_STAGES[nxt] if a in ('stock', 'approve') and nxt not in ('done', 'returned') else '')
+    move(c, u, P, nxt, (a, label), '؛ '.join([note] + notes if note else notes),
+         'closed' if nxt == 'done' else 'open')
     if (P['stage'] == 'unit_approval' and a == 'approve') or a == 'submit':
         cc_exec(c, u, P['id'], P)
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/payment')
+def api_purchase_payment(h, c, u, b, q, pid):
+    """ثبت یک نوبت پرداخت (نقد، حواله یا چک)؛ پرداخت می‌تواند چند نوبت و قبل یا بعد از تحویل باشد."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(can_pay(c, u, P), 'ثبت پرداخت برای این درخواست اکنون ممکن نیست')
+    amt = to_int(b.get('amount'))
+    need(amt, 'مبلغ پرداخت را وارد کنید', 400)
+    method = b.get('method') if b.get('method') in PAY_METHODS else PAY_METHODS[0]
+    if method == 'چک':
+        need((b.get('cheque_no') or '').strip() and (b.get('cheque_date') or '').strip(), 'شماره و تاریخ چک را وارد کنید', 400)
+    c.execute('INSERT INTO purchase_payments(purchase_id,amount,paid_at,method,cheque_no,cheque_date,sepidar_no,note,user_id,at) '
+              'VALUES(?,?,?,?,?,?,?,?,?,?)', (P['id'], amt, (b.get('paid_at') or jstr(today())).translate(FA2EN), method,
+                                              (b.get('cheque_no') or '').strip(), (b.get('cheque_date') or '').translate(FA2EN),
+                                              (b.get('sepidar_no') or '').strip(), (b.get('note') or '').strip(), u['id'], now()))
+    tot = c.execute('SELECT SUM(amount) FROM purchase_payments WHERE purchase_id=?', (P['id'],)).fetchone()[0]
+    c.execute('UPDATE purchases SET paid_amount=? WHERE id=?', (tot, P['id']))
+    pflow(c, P['id'], u, 'finance_settle', 'payment', 'ثبت پرداخت (%s)' % method, '%s ریال' % format(amt, ','))
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/settle')
+def api_purchase_settle(h, c, u, b, q, pid):
+    """اعلام تسویه کامل؛ اگر تحویل هم انجام شده باشد، درخواست برای بایگانی به دبیرخانه می‌رود."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(can_pay(c, u, P), 'تسویه برای این درخواست اکنون ممکن نیست')
+    c.execute('UPDATE purchases SET settled_at=?, settled_by=? WHERE id=?', (now(), u['id'], P['id']))
+    if P['stage'] == 'finance_settle':
+        move(c, u, P, 'archive', ('settled', 'تسویه کامل شد — ارسال به دبیرخانه برای بایگانی'), (b.get('note') or '').strip())
+    else:
+        pflow(c, P['id'], u, 'finance_settle', 'settle', 'اعلام تسویه کامل', (b.get('note') or '').strip())
     return {'ok': True}
 
 
