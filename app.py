@@ -27,7 +27,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.0'
+VERSION = '2.1'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -70,7 +70,9 @@ P_STAGES = {'draft': 'پیش‌نویس درخواست‌کننده', 'unit_appr
             'hq_quotes': 'استعلام و پیش‌فاکتور — پشتیبانی دفتر مرکزی',
             'price_approve': 'تأیید قیمت و فروشنده — مدیر پروژه / هیات مدیره',
             'hq_purchase': 'خرید — پشتیبانی دفتر مرکزی', 'delivery': 'تحویل کالا — درخواست‌کننده و انبار',
-            'finance_settle': 'تسویه — مالی دفتر مرکزی', 'finance_pay': 'پرداخت — مالی دفتر مرکزی',
+            'finance_settle': 'تطبیق سه‌طرفه و تسویه — مالی دفتر مرکزی', 'finance_pay': 'پرداخت — مالی دفتر مرکزی',
+            'discrepancy': 'تصمیم درباره مغایرت — مدیر پروژه / هیات مدیره',
+            'invoice_fix': 'اصلاح فاکتور یا خرید — پشتیبانی',
             'archive': 'بایگانی — دبیرخانه', 'returned': 'برگشت به درخواست‌کننده', 'done': 'پایان'}
 _RET = ('returned', 'برگشت به درخواست‌کننده برای اصلاح')
 # مرحله بعد با None یعنی سرور بر اساس موجودی، کلاس خرید یا وضعیت تحویل و پرداخت تعیینش می‌کند
@@ -89,13 +91,22 @@ P_FLOW = {
     'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای تحویل')},
     'delivery': {'recv_ok': (None, 'تأیید تحویل توسط درخواست‌کننده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
                  'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
-    'finance_settle': {'settled': ('archive', 'تسویه کامل شد — ارسال به دبیرخانه برای بایگانی')},
+    'finance_settle': {'settled': ('archive', 'تطبیق سه‌طرفه برقرار است؛ تسویه کامل شد — ارسال به دبیرخانه برای بایگانی'),
+                       'to_disc': ('discrepancy', 'مغایرت در تطبیق سه‌طرفه — ارسال برای تصمیم')},
+    'discrepancy': {'accept': ('finance_settle', 'پذیرش مغایرت و ادامه پرداخت'),
+                    'fix': ('invoice_fix', 'برگشت به پشتیبانی برای اصلاح فاکتور یا خرید')},
+    'invoice_fix': {'fixed': ('finance_settle', 'فاکتور یا خرید اصلاح شد — ارسال به مالی')},
     'finance_pay': {'paid': ('archive', 'پرداخت شد — ارسال به دبیرخانه برای بایگانی')},
     'archive': {'archived': ('done', 'بایگانی شد')},
 }
 # مدارکی که از مرحله استعلام قیمت به بعد پیوست می‌شوند و قیمت‌ها، برای کارکنان کارگاه نمایش داده نمی‌شوند
-HQ_ONLY_STAGES = ('hq_quotes', 'price_approve', 'hq_purchase', 'finance_settle', 'finance_pay', 'archive')
-PAY_STAGES = ('hq_purchase', 'site_purchase', 'delivery', 'finance_settle', 'finance_pay', 'archive')
+HQ_ONLY_STAGES = ('hq_quotes', 'price_approve', 'hq_purchase', 'finance_settle', 'finance_pay', 'archive',
+                  'discrepancy', 'invoice_fix')
+PAY_STAGES = ('hq_purchase', 'site_purchase', 'delivery', 'finance_settle', 'finance_pay', 'archive',
+              'discrepancy', 'invoice_fix')
+# کدگذاری اسناد: {کد پروژه}-{نوع سند}-{سریال ۴ رقمی}؛ سریال به‌ازای پروژه و نوع سند
+DOC_TYPES = {'MR': 'درخواست کالا', 'PO': 'سفارش خرید', 'GRN': 'رسید تحویل کالا', 'INV': 'فاکتور', 'PAY': 'پرداخت'}
+INVOICE_STAGES = ('hq_purchase', 'site_purchase', 'delivery', 'finance_settle', 'invoice_fix', 'discrepancy')
 PAY_METHODS = ['نقد / حواله بانکی', 'چک', 'تنخواه', 'سایر']
 CLASS_LABEL = {'A': 'الف', 'B': 'ب', 'C': 'ج', 'D': 'د'}
 BUY_STATUS = {'bought': 'خریداری شد', 'partial': 'بخشی خریداری شد', 'none': 'خریداری نشد'}
@@ -110,6 +121,7 @@ STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check'
                 'price_approve': ('member', 'pm'),
                 'hq_quotes': ('setting', 'support_manager'), 'hq_purchase': ('setting', 'support_manager'),
                 'finance_settle': ('setting', 'finance_manager'), 'finance_pay': ('setting', 'finance_manager'),
+                'discrepancy': ('member', 'pm'),
                 'archive': ('setting', 'archive_user')}
 UNIT_HEAD = {'tech': 'tech', 'exec': 'exec', 'support': 'supervisor', 'warehouse': 'supervisor'}  # رئیس هر واحد
 HEAD_ROLES = ('tech', 'exec', 'supervisor')  # درخواست این افراد، خودش تأیید رئیس واحد است
@@ -183,6 +195,14 @@ CREATE TABLE IF NOT EXISTS purchase_payments(id INTEGER PRIMARY KEY, purchase_id
   paid_at TEXT, method TEXT DEFAULT '', cheque_no TEXT DEFAULT '', cheque_date TEXT DEFAULT '', sepidar_no TEXT DEFAULT '',
   note TEXT DEFAULT '', user_id INTEGER, at TEXT);
 CREATE INDEX IF NOT EXISTS ix_pur_pay ON purchase_payments(purchase_id);
+CREATE TABLE IF NOT EXISTS doc_serials(project_id INTEGER NOT NULL, dtype TEXT NOT NULL, last INTEGER DEFAULT 0,
+  PRIMARY KEY(project_id, dtype));
+CREATE TABLE IF NOT EXISTS purchase_invoices(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, code TEXT,
+  inv_no TEXT DEFAULT '', inv_date TEXT DEFAULT '', supplier TEXT DEFAULT '', extra INTEGER DEFAULT 0, total INTEGER,
+  note TEXT DEFAULT '', user_id INTEGER, at TEXT);
+CREATE TABLE IF NOT EXISTS purchase_invoice_lines(id INTEGER PRIMARY KEY, invoice_id INTEGER NOT NULL, item_id INTEGER,
+  qty TEXT DEFAULT '', unit_price INTEGER);
+CREATE INDEX IF NOT EXISTS ix_pur_inv ON purchase_invoices(purchase_id);
 CREATE TABLE IF NOT EXISTS project_team(project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_key TEXT NOT NULL,
   PRIMARY KEY(project_id, user_id));
 CREATE TABLE IF NOT EXISTS purchase_versions(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, version INTEGER,
@@ -204,7 +224,9 @@ DEFAULT_SETTINGS = {'company': 'شرکت گسترش فناوری عمران زی
                     'support_manager': '', 'finance_manager': '', 'archive_user': '',
                     'cancel_reasons': DEFAULT_CANCEL_REASONS,
                     # سقف ریالی کلاس‌های خرید (هیات مدیره تعیین می‌کند)؛ خالی = همه خریدها از دفتر مرکزی
-                    'class_a_max': '', 'class_b_max': '', 'class_c_max': ''}
+                    'class_a_max': '', 'class_b_max': '', 'class_c_max': '',
+                    # تطبیق سه‌طرفه: درصد مجاز بیشتر بودن مبلغ فاکتور از سفارش خرید
+                    'match_tolerance': '0'}
 
 SEED_USERS = [  # (username, full_name, title, role)
     ('admin', 'مدیر سیستم', 'راهبر سامانه', 'admin'),
@@ -309,7 +331,11 @@ def add_columns(c):
                           ('estimate', 'INTEGER'), ('pclass', "TEXT DEFAULT ''"),
                           ('proposed_supplier', "TEXT DEFAULT ''"), ('proposed_amount', 'INTEGER'),
                           ('recv_by', 'INTEGER'), ('recv_at', 'TEXT'), ('wh_by', 'INTEGER'), ('wh_at', 'TEXT'),
-                          ('settled_at', 'TEXT'), ('settled_by', 'INTEGER')],
+                          ('settled_at', 'TEXT'), ('settled_by', 'INTEGER'),
+                          # ۲.۱: کدگذاری اسناد و تطبیق سه‌طرفه
+                          ('po_no', "TEXT DEFAULT ''"), ('grn_no', "TEXT DEFAULT ''"),
+                          ('disc_ok_by', 'INTEGER'), ('disc_ok_at', 'TEXT'), ('disc_note', "TEXT DEFAULT ''")],
+            'purchase_payments': [('code', "TEXT DEFAULT ''")],
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
                                ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''")],
@@ -797,7 +823,7 @@ PUR_HELD_SQL = ("((x.holder_id=? AND x.status IN ('open','returned') AND NOT (x.
                 "WHERE m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?)))")
 # منتظر پرداخت یا تسویه مالی (پس از تأیید قیمت یا خرید کارگاه)
 PUR_PAY_SQL = ("(x.status='open' AND x.settled_at IS NULL AND x.stage IN ('hq_purchase','site_purchase','delivery',"
-               "'finance_settle','finance_pay'))")
+               "'finance_settle','finance_pay','discrepancy','invoice_fix'))")
 
 
 # ---------- نامه‌ها
@@ -1423,6 +1449,8 @@ def stage_holder(c, P, stage):
     if stage == 'returned':
         return P['requester_id']
     labels = dict(PROJECT_ROLES)
+    if stage == 'invoice_fix':  # اصلاح با همان پشتیبانی که خرید را انجام داده (کارگاه یا دفتر مرکزی)
+        stage = purchase_stage_of(c, P)
     if stage == 'unit_approval':
         # تأیید بالادست مستقیم درخواست‌کننده (مهندس ← معاونش، پشتیبانی و انبار ← سرپرست کارگاه)؛ وگرنه رئیس واحد
         own = [k for _, k in user_project_roles(c, P['requester_id'], P['project_id']) if k in SUPERIOR]
@@ -1495,6 +1523,137 @@ def after_supervisor(c, P, notes):
 
 def after_tech(P):
     return 'site_purchase' if P['pclass'] == 'A' else 'pm_approve'
+
+
+def project_code(c, pid):
+    """کد لاتین پروژه برای کدگذاری اسناد (مثلاً MK)؛ اگر تعیین نشده باشد P{شناسه}"""
+    r = one(c.execute('SELECT code FROM projects WHERE id=?', (pid,))) or {}
+    return re.sub(r'[^A-Za-z0-9]+', '', r.get('code') or '').upper() or 'P%d' % pid
+
+
+def next_code(c, pid, dtype):
+    """کد سند بعدی: {کد پروژه}-{نوع سند}-{سریال ۴ رقمی}، مثل MK-MR-0042"""
+    c.execute('INSERT OR IGNORE INTO doc_serials(project_id,dtype,last) VALUES(?,?,0)', (pid, dtype))
+    c.execute('UPDATE doc_serials SET last=last+1 WHERE project_id=? AND dtype=?', (pid, dtype))
+    n = c.execute('SELECT last FROM doc_serials WHERE project_id=? AND dtype=?', (pid, dtype)).fetchone()[0]
+    return '%s-%s-%04d' % (project_code(c, pid), dtype, n)
+
+
+def po_amount(P):
+    """مبلغ سفارش خرید تأییدشده (پیشنهاد تأییدشده دفتر مرکزی، یا مبلغ خرید کارگاه)"""
+    return P['proposed_amount'] or P['amount']
+
+
+def match3(c, P):
+    """تطبیق سه‌طرفه: سفارش خرید (اعلام نهایی پشتیبانی و مبلغ تأییدشده) ↔ رسید تحویل ↔ فاکتور."""
+    its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],)))
+    invs = rows(c.execute('SELECT * FROM purchase_invoices WHERE purchase_id=? ORDER BY id', (P['id'],)))
+    inv_qty = {}
+    for r in c.execute('SELECT l.item_id, l.qty FROM purchase_invoice_lines l JOIN purchase_invoices i ON i.id=l.invoice_id '
+                       'WHERE i.purchase_id=?', (P['id'],)):
+        inv_qty[r[0]] = inv_qty.get(r[0], 0) + (to_num(r[1]) or 0)
+    lines, problems, missing = [], [], []
+    grn_done = bool(P['recv_at'] and P['wh_at'])
+    for it in its:
+        ordered = (to_num(it['bought_qty']) or 0) if it['bought_status'] and it['bought_status'] != 'none' else 0
+        received = to_num(it['recv_qty']) if it['recv_qty'] else (ordered if grn_done else 0)
+        invoiced = inv_qty.get(it['id'], 0)
+        if not ordered and not invoiced:
+            continue
+        ok = abs((received or 0) - invoiced) < 1e-9 and (received or 0) <= ordered + 1e-9
+        lines.append({'item_id': it['id'], 'title': it['title'], 'unit': it['bought_unit'] or it['unit'],
+                      'ordered': fmt_num(ordered), 'received': fmt_num(received), 'invoiced': fmt_num(invoiced), 'ok': ok})
+        if (received or 0) > ordered + 1e-9:
+            problems.append('رسید «%s» (%s) بیشتر از سفارش (%s) است' % (it['title'], fmt_num(received), fmt_num(ordered)))
+        elif invs and grn_done and not ok:
+            problems.append('مقدار فاکتور «%s» (%s) با رسید تحویل (%s) نمی‌خواند' % (it['title'], fmt_num(invoiced),
+                                                                               fmt_num(received)))
+    inv_total = sum(i['total'] or 0 for i in invs)
+    po = po_amount(P)
+    tol = to_num(settings(c).get('match_tolerance')) or 0
+    if invs and po and inv_total > po * (1 + tol / 100.0):
+        problems.append('مبلغ فاکتور (%s ریال) بیشتر از سفارش خرید (%s ریال) است' % (format(inv_total, ','), format(po, ',')))
+    warnings = []
+    sup = (P['supplier'] or P['proposed_supplier'] or '').replace(' ', '')
+    for i in invs:
+        if sup and i['supplier'] and i['supplier'].replace(' ', '') != sup:
+            warnings.append('فروشنده فاکتور %s («%s») با فروشنده سفارش («%s») فرق دارد' % (i['code'], i['supplier'],
+                                                                                   P['supplier'] or P['proposed_supplier']))
+    if not grn_done:
+        missing.append('رسید تحویل کالا (تأیید درخواست‌کننده و انبار) کامل نشده')
+    if not invs:
+        missing.append('فاکتور فروشنده ثبت نشده')
+    state = 'incomplete' if missing else ('mismatch' if problems else 'ok')
+    return {'state': state, 'lines': lines, 'problems': problems, 'missing': missing, 'warnings': warnings,
+            'po_amount': po, 'inv_total': inv_total, 'tolerance': tol, 'accepted': bool(P['disc_ok_at']),
+            'can_settle': state == 'ok' or (state == 'mismatch' and bool(P['disc_ok_at']))}
+
+
+def pay_cap(c, P):
+    """سقف جمع پرداخت‌ها: مبلغ سفارش خرید؛ اگر مغایرت مبلغ پذیرفته شده باشد، جمع فاکتورها"""
+    po = po_amount(P)
+    if not po:
+        return None
+    inv = c.execute('SELECT SUM(total) FROM purchase_invoices WHERE purchase_id=?', (P['id'],)).fetchone()[0] or 0
+    return max(po, inv) if P['disc_ok_at'] else po
+
+
+def can_invoice(c, u, P):
+    """ثبت فاکتور: پشتیبانی دفتر مرکزی، پشتیبانی کارگاه (خرید تنخواه)، مالی یا مدیر سیستم"""
+    if P['status'] != 'open' or P['stage'] not in INVOICE_STAGES or P['settled_at']:
+        return False
+    return (str(u['id']) == settings(c).get('support_manager') or is_finance(c, u)
+            or pmembers(c, P['project_id']).get('support') == u['id'])
+
+
+def reset_disc(c, P):
+    """با تغییر فاکتورها، پذیرش مغایرت قبلی باطل می‌شود و باید دوباره تصمیم گرفته شود"""
+    if P['disc_ok_at']:
+        c.execute("UPDATE purchases SET disc_ok_by=NULL, disc_ok_at=NULL WHERE id=?", (P['id'],))
+
+
+@route('POST', r'/api/purchases/(\d+)/invoice')
+def api_purchase_invoice(h, c, u, b, q, pid):
+    """ثبت فاکتور فروشنده با مقدار و قیمت واحد هر قلم (برای تطبیق سه‌طرفه)."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(can_invoice(c, u, P), 'ثبت فاکتور برای شما یا در این مرحله ممکن نیست')
+    its = {r['id']: r for r in rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))}
+    lines = []
+    for x in b.get('lines') or []:
+        iid, qty, price = int(x.get('item_id') or 0), to_num(x.get('qty')), to_int(x.get('unit_price'))
+        if iid not in its or not qty:
+            continue
+        need(price is not None, 'قیمت واحد «%s» را وارد کنید' % its[iid]['title'], 400)
+        lines.append((iid, qty, price))
+    need(lines, 'حداقل یک ردیف با مقدار و قیمت واحد وارد کنید', 400)
+    need((b.get('inv_no') or '').strip(), 'شماره فاکتور فروشنده را وارد کنید', 400)
+    extra = to_int(b.get('extra')) or 0
+    total = int(round(sum(q_ * p_ for _, q_, p_ in lines))) + extra
+    code = next_code(c, P['project_id'], 'INV')
+    iid = c.execute('INSERT INTO purchase_invoices(purchase_id,code,inv_no,inv_date,supplier,extra,total,note,user_id,at) '
+                    'VALUES(?,?,?,?,?,?,?,?,?,?)', (P['id'], code, b['inv_no'].strip(), (b.get('inv_date') or '').translate(FA2EN),
+                                                    (b.get('supplier') or P['supplier'] or '').strip(), extra, total,
+                                                    (b.get('note') or '').strip(), u['id'], now())).lastrowid
+    for it_id, qty, price in lines:
+        c.execute('INSERT INTO purchase_invoice_lines(invoice_id,item_id,qty,unit_price) VALUES(?,?,?,?)',
+                  (iid, it_id, fmt_num(qty), price))
+    reset_disc(c, P)
+    pflow(c, P['id'], u, 'finance_settle', 'invoice', 'ثبت فاکتور %s' % code, '%s ریال' % format(total, ','))
+    return {'ok': True, 'code': code}
+
+
+@route('POST', r'/api/purchases/invoices/(\d+)/delete')
+def api_purchase_invoice_delete(h, c, u, b, q, iid):
+    inv = one(c.execute('SELECT * FROM purchase_invoices WHERE id=?', (int(iid),)))
+    need(inv, 'فاکتور پیدا نشد', 404)
+    P = get_doc(c, u, 'purchase', inv['purchase_id'])
+    need(can_invoice(c, u, P) and (inv['user_id'] == u['id'] or is_finance(c, u)
+                                   or str(u['id']) == settings(c).get('support_manager')), 'حذف این فاکتور برای شما ممکن نیست')
+    c.execute('DELETE FROM purchase_invoice_lines WHERE invoice_id=?', (inv['id'],))
+    c.execute('DELETE FROM purchase_invoices WHERE id=?', (inv['id'],))
+    reset_disc(c, P)
+    pflow(c, P['id'], u, 'finance_settle', 'invoice', 'حذف فاکتور %s' % inv['code'], (b.get('note') or '').strip())
+    return {'ok': True}
 
 
 def purchase_stage_of(c, P):
@@ -1638,7 +1797,8 @@ def api_purchases(h, c, u, b, q):
 
 
 PUR_CSV_HEAD = ['شماره', 'تاریخ', 'پروژه', 'کد پروژه', 'واحد درخواست‌کننده', 'انبار محل درخواست', 'دسته', 'فوریت',
-                'تاریخ نیاز', 'جهت استفاده', 'درخواست‌کننده', 'نسخه', 'کلاس خرید', 'مبلغ برآوردی (ریال)', 'ردیف',
+                'تاریخ نیاز', 'جهت استفاده', 'درخواست‌کننده', 'نسخه', 'کلاس خرید', 'مبلغ برآوردی (ریال)',
+                'سفارش خرید', 'رسید تحویل', 'ردیف',
                 'شرح کالا', 'مقدار', 'واحد', 'مشخصات فنی', 'توضیحات', 'تحویل از انبار', 'مانده برای خرید',
                 'مقدار خریداری‌شده', 'واحد خرید', 'وضعیت خرید', 'توضیح خرید', 'مقدار تحویل‌گرفته',
                 'وضعیت', 'مرحله', 'در دست', 'تأمین‌کننده', 'مبلغ خرید (ریال)', 'جمع پرداخت (ریال)',
@@ -1655,7 +1815,7 @@ def pur_csv(c, lst, fname):
             wr.writerow([P['number'], P['req_date'], P['project'] or '', P['project_code'] or '', units.get(P['unit'], ''),
                          P['warehouse'], cats.get(P['category'], ''), urgs.get(P['urgency'], ''), P['need_date'],
                          P['purpose'], P['requester'] or '', P['version'], CLASS_LABEL.get(P['pclass'] or '', ''),
-                         P['estimate'] or '', it.get('row_no', ''), it.get('title', ''),
+                         P['estimate'] or '', P['po_no'] or '', P['grn_no'] or '', it.get('row_no', ''), it.get('title', ''),
                          it.get('qty', ''), it.get('unit', ''), it.get('spec', ''), it.get('note', ''),
                          it.get('stock_qty', ''), fmt_num(remaining(it)) if it else '', it.get('bought_qty', ''),
                          it.get('bought_unit', ''), BUY_STATUS.get(it.get('bought_status') or '', ''), it.get('bought_note', ''),
@@ -1698,7 +1858,7 @@ def api_purchase_new(h, c, u, b, q):
     f, items = pur_fields(c, u, b)
     y = jyear()
     seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchases WHERE year=?', (y,)).fetchone()[0]
-    number = 'ک %d/%04d' % (y, seq)
+    number = next_code(c, f['project_id'], 'MR')  # مثل MK-MR-0001 (درخواست‌های قبلی شماره قدیمی خود را نگه می‌دارند)
     cur = c.execute('INSERT INTO purchases(year,seq,number,project_id,unit,warehouse,category,urgency,need_date,purpose,'
                     'requester_id,req_date,stage,status,holder_id,version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)',
                     (y, seq, number, f['project_id'], f['unit'], f['warehouse'], f['category'], f['urgency'],
@@ -1756,7 +1916,17 @@ def api_purchase_get(h, c, u, b, q, pid):
                                           'ON us.id=p.user_id WHERE purchase_id=? ORDER BY p.id', (P['id'],)))
     for it in items:
         it['remaining'] = fmt_num(remaining(it))
-    return {'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
+    invs = [] if site else rows(c.execute('SELECT i.*, us.full_name user_name FROM purchase_invoices i LEFT JOIN users us '
+                                          'ON us.id=i.user_id WHERE purchase_id=? ORDER BY i.id', (P['id'],)))
+    for inv in invs:
+        inv['lines'] = rows(c.execute('SELECT l.*, it.title FROM purchase_invoice_lines l LEFT JOIN purchase_items it '
+                                      'ON it.id=l.item_id WHERE invoice_id=?', (inv['id'],)))
+        inv['can_delete'] = can_invoice(c, u, P) and (inv['user_id'] == u['id'] or is_finance(c, u))
+    Pfull = one(c.execute('SELECT * FROM purchases WHERE id=?', (P['id'],)))
+    m3 = None if site or not (P['po_no'] or P['stage'] in INVOICE_STAGES) else match3(c, Pfull)
+    return {'invoices': invs, 'match': m3, 'can_invoice': can_invoice(c, u, Pfull),
+            'pay_cap': None if site else pay_cap(c, Pfull),
+            'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
             'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
             'can_attach': can_attach_pur(c, u, P), 'payments': pays, 'can_pay': can_pay(c, u, P),
             'class_label': CLASS_LABEL.get(P['pclass'], ''), 'class_set': bool(to_int(settings(c).get('class_a_max'))),
@@ -1780,8 +1950,11 @@ def allowed_actions(c, u, P):
         if is_warehouse(c, u, P) and not P['wh_at']:
             out += ['wh_ok', 'wh_bad']
         return out
-    if P['stage'] == 'price_approve' and is_mgr(u):  # مدیر پروژه یا هر عضو هیات مدیره
+    if P['stage'] in ('price_approve', 'discrepancy') and is_mgr(u):  # مدیر پروژه یا هر عضو هیات مدیره
         return acts
+    if P['stage'] == 'finance_settle' and P['holder_id'] == u['id']:  # تسویه فقط با تطبیق سه‌طرفه
+        m = match3(c, P)
+        return (['settled'] if m['can_settle'] else []) + (['to_disc'] if m['state'] == 'mismatch' and not m['accepted'] else [])
     return acts if P['holder_id'] == u['id'] else []
 
 
@@ -1824,8 +1997,14 @@ def api_purchase_act(h, c, u, b, q, pid):
     nxt, label = P_FLOW[P['stage']][a]
     note = (b.get('note') or '').strip()
     notes = []
-    if a in ('return', 'requote', 'recv_bad', 'wh_bad'):
+    if a in ('return', 'requote', 'recv_bad', 'wh_bad', 'accept', 'fix'):
         need(note, 'علت را بنویسید', 400)
+    if a == 'approve' and P['stage'] == 'price_approve' and not P['po_no']:  # صدور سفارش خرید
+        c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
+    if a == 'purchased' and P['stage'] == 'site_purchase' and not P['po_no']:  # خرید کارگاه: سفارش همان خرید است
+        c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
+    if a == 'accept':
+        c.execute('UPDATE purchases SET disc_ok_by=?, disc_ok_at=?, disc_note=? WHERE id=?', (u['id'], now(), note, P['id']))
     its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],)))
     posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
 
@@ -1896,9 +2075,11 @@ def api_purchase_act(h, c, u, b, q, pid):
         if a.endswith('_bad'):  # مغایرت: برمی‌گردد به خرید برای اصلاح
             c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
             nxt = purchase_stage_of(c, P)
-        elif P['recv_at'] and P['wh_at']:
+        elif P['recv_at'] and P['wh_at']:  # رسید تحویل کالا صادر می‌شود
             nxt = after_delivery(c, P)
-            notes.append('تحویل کالا کامل شد (درخواست‌کننده و انبار)')
+            grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
+            c.execute('UPDATE purchases SET grn_no=? WHERE id=?', (grn, P['id']))
+            notes.append('تحویل کالا کامل شد (درخواست‌کننده و انبار) — رسید %s' % grn)
         else:
             pflow(c, P['id'], u, P['stage'], a, label, note)
             return {'ok': True}
@@ -1927,11 +2108,16 @@ def api_purchase_payment(h, c, u, b, q, pid):
     need(can_pay(c, u, P), 'ثبت پرداخت برای این درخواست اکنون ممکن نیست')
     amt = to_int(b.get('amount'))
     need(amt, 'مبلغ پرداخت را وارد کنید', 400)
+    cap = pay_cap(c, P)
+    paid = c.execute('SELECT COALESCE(SUM(amount),0) FROM purchase_payments WHERE purchase_id=?', (P['id'],)).fetchone()[0]
+    need(cap is None or paid + amt <= cap,
+         'جمع پرداخت‌ها از مبلغ سفارش خرید (%s ریال) بیشتر می‌شود؛ مانده مجاز %s ریال است. برای پرداخت بیشتر، '
+         'مغایرت باید توسط مدیر پروژه یا هیات مدیره پذیرفته شود' % (format(cap or 0, ','), format(max(0, (cap or 0) - paid), ',')), 400)
     method = b.get('method') if b.get('method') in PAY_METHODS else PAY_METHODS[0]
     if method == 'چک':
         need((b.get('cheque_no') or '').strip() and (b.get('cheque_date') or '').strip(), 'شماره و تاریخ چک را وارد کنید', 400)
-    c.execute('INSERT INTO purchase_payments(purchase_id,amount,paid_at,method,cheque_no,cheque_date,sepidar_no,note,user_id,at) '
-              'VALUES(?,?,?,?,?,?,?,?,?,?)', (P['id'], amt, (b.get('paid_at') or jstr(today())).translate(FA2EN), method,
+    c.execute('INSERT INTO purchase_payments(code,purchase_id,amount,paid_at,method,cheque_no,cheque_date,sepidar_no,note,user_id,at) '
+              'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (next_code(c, P['project_id'], 'PAY'), P['id'], amt, (b.get('paid_at') or jstr(today())).translate(FA2EN), method,
                                               (b.get('cheque_no') or '').strip(), (b.get('cheque_date') or '').translate(FA2EN),
                                               (b.get('sepidar_no') or '').strip(), (b.get('note') or '').strip(), u['id'], now()))
     tot = c.execute('SELECT SUM(amount) FROM purchase_payments WHERE purchase_id=?', (P['id'],)).fetchone()[0]
@@ -1945,6 +2131,9 @@ def api_purchase_settle(h, c, u, b, q, pid):
     """اعلام تسویه کامل؛ اگر تحویل هم انجام شده باشد، درخواست برای بایگانی به دبیرخانه می‌رود."""
     P = get_doc(c, u, 'purchase', int(pid))
     need(can_pay(c, u, P), 'تسویه برای این درخواست اکنون ممکن نیست')
+    m = match3(c, P)
+    need(m['can_settle'], 'تسویه کامل فقط با برقرار بودن تطبیق سه‌طرفه (سفارش، رسید تحویل و فاکتور) یا پذیرش مغایرت '
+         'ممکن است: ' + '؛ '.join(m['missing'] + m['problems']), 400)
     c.execute('UPDATE purchases SET settled_at=?, settled_by=? WHERE id=?', (now(), u['id'], P['id']))
     if P['stage'] == 'finance_settle':
         move(c, u, P, 'archive', ('settled', 'تسویه کامل شد — ارسال به دبیرخانه برای بایگانی'), (b.get('note') or '').strip())
