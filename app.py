@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.3'
+VERSION = '2.4'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -60,7 +60,7 @@ ROLE_UNIT = {'pm': 'exec', 'supervisor': 'exec', 'exec': 'exec', 'tech': 'tech',
 SUPERIOR = {'exec_eng': 'exec', 'tech_eng': 'tech', 'support': 'supervisor', 'warehouse': 'supervisor',
             'exec': 'supervisor', 'tech': 'supervisor', 'supervisor': 'pm'}
 HQ_ROLES = {'support_manager': 'مدیر پشتیبانی دفتر مرکزی', 'finance_manager': 'مدیر مالی دفتر مرکزی',
-            'archive_user': 'منشی (بایگانی)'}
+            }  # بایگانی درخواست کالا از نسخه ۲.۴ خودکار است (نقش منشی بایگانی حذف شد)
 
 # گردش درخواست کالا: مرحله ← {اقدام: (مرحله بعد، شرح)}
 P_STAGES = {'draft': 'پیش‌نویس درخواست‌کننده', 'unit_approval': 'تأیید رئیس واحد',
@@ -71,10 +71,10 @@ P_STAGES = {'draft': 'پیش‌نویس درخواست‌کننده', 'unit_appr
             'hq_quotes': 'استعلام و پیش‌فاکتور — پشتیبانی دفتر مرکزی',
             'price_approve': 'تأیید قیمت و فروشنده — مدیر پروژه / هیات مدیره',
             'hq_purchase': 'خرید — پشتیبانی دفتر مرکزی', 'delivery': 'اعلام وصول — تحویل‌گیرنده و انباردار',
-            'finance_settle': 'تطبیق مدارک و تسویه — مالی دفتر مرکزی', 'finance_pay': 'پرداخت — مالی دفتر مرکزی',
+            'finance_settle': 'کنترل مدارک — امور مالی', 'finance_pay': 'پرداخت — مالی دفتر مرکزی',
             'discrepancy': 'تصمیم درباره مغایرت — مدیر پروژه / هیات مدیره',
             'invoice_fix': 'تکمیل مدارک (فاکتور) — پشتیبانی',
-            'archive': 'بایگانی — دبیرخانه', 'returned': 'برگشت به درخواست‌کننده', 'done': 'پایان'}
+            'archive': 'بایگانی — دبیرخانه', 'returned': 'برگشت به درخواست‌کننده', 'done': 'پایان و بایگانی خودکار'}
 _RET = ('returned', 'برگشت به درخواست‌کننده برای اصلاح')
 # مرحله بعد با None یعنی سرور بر اساس موجودی، کلاس خرید یا وضعیت تحویل و پرداخت تعیینش می‌کند
 P_FLOW = {
@@ -92,23 +92,19 @@ P_FLOW = {
     'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول')},
     'delivery': {'recv_ok': (None, 'تأیید تحویل توسط درخواست‌کننده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
                  'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
-    'finance_settle': {'settled': ('archive', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور)؛ تسویه کامل شد — ارسال به دبیرخانه برای بایگانی'),
+    'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
                        'to_disc': ('discrepancy', 'مغایرت — ارسال برای تصمیم')},  # to_disc فقط برای درخواست‌های نسخه ۲.۱
-    'discrepancy': {'accept': ('finance_settle', 'پذیرش مغایرت و ادامه پرداخت'),
+    'discrepancy': {'accept': ('finance_settle', 'پذیرش مغایرت و ادامه'),
                     'fix': ('invoice_fix', 'برگشت به پشتیبانی برای اصلاح فاکتور یا خرید')},
     'invoice_fix': {'fixed': ('finance_settle', 'فاکتور بارگذاری شد — ارسال به مالی')},
-    'finance_pay': {'paid': ('archive', 'پرداخت شد — ارسال به دبیرخانه برای بایگانی')},
-    'archive': {'archived': ('done', 'بایگانی شد')},
+
 }
 # مدارکی که از مرحله استعلام قیمت به بعد پیوست می‌شوند و قیمت‌ها، برای کارکنان کارگاه نمایش داده نمی‌شوند
 HQ_ONLY_STAGES = ('hq_quotes', 'price_approve', 'hq_purchase', 'finance_settle', 'finance_pay', 'archive',
                   'discrepancy', 'invoice_fix')
-PAY_STAGES = ('hq_purchase', 'site_purchase', 'delivery', 'finance_settle', 'finance_pay', 'archive',
-              'discrepancy', 'invoice_fix')
 # کدگذاری اسناد: {نوع سند}-{سریال ۴ رقمی}، مثل MR-0012 (بدون کد پروژه؛ سریال سراسری برای هر نوع سند)
 DOC_TYPES = {'MR': 'درخواست کالا', 'PO': 'سفارش خرید', 'GRN': 'اعلام وصول کالا', 'PAY': 'پرداخت'}
-PAY_METHODS = ['نقد / حواله بانکی', 'چک', 'تنخواه', 'سایر']
 BUY_STATUS = {'bought': 'خریداری شد', 'partial': 'بخشی خریداری شد', 'none': 'خریداری نشد'}
 LH_DIR, SIG_DIR, SIG_COPY_DIR = 'سربرگ', 'کلیشه امضا', os.path.join('کلیشه امضا', 'نامه‌ها')
 # جای شماره، تاریخ، پیوست، نام پروژه و متن روی سربرگ (میلی‌متر از لبه‌های A4)؛ برای هر سربرگ قابل تنظیم است
@@ -120,9 +116,9 @@ STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check'
                 'site_purchase': ('member', 'support'), 'pm_approve': ('member', 'pm'),
                 'price_approve': ('member', 'pm'),
                 'hq_quotes': ('setting', 'support_manager'), 'hq_purchase': ('setting', 'support_manager'),
-                'finance_settle': ('setting', 'finance_manager'), 'finance_pay': ('setting', 'finance_manager'),
+                'finance_settle': ('setting', 'finance_manager'),
                 'discrepancy': ('member', 'pm'),
-                'archive': ('setting', 'archive_user')}
+                }
 UNIT_HEAD = {'tech': 'tech', 'exec': 'exec', 'support': 'supervisor', 'warehouse': 'supervisor'}  # رئیس هر واحد
 HEAD_ROLES = ('tech', 'exec', 'supervisor')  # درخواست این افراد، خودش تأیید رئیس واحد است
 # تا پیش از رسیدن به مدیر پروژه ویرایش و لغو ممکن است؛ مدیر پروژه فقط لغو (ابطال) می‌کند
@@ -136,7 +132,7 @@ URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
 ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
 DEFAULT_CANCEL_REASONS = 'نیاز نیست\nبودجه تأمین نیست\nتکراری است\nزمان‌بندی اجازه نمی‌دهد\nسایر'
 P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل کامل از موجودی انبار',
-            'closed': 'تحویل، تسویه و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
+            'closed': 'پایان یافت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
 SEED_PROJECTS = ['موادکاران', 'پروژه بدون نام ۱', 'پروژه بدون نام ۲']
 # حساب‌های سمت‌های پروژه موادکاران (موقت؛ مدیر سیستم بعداً نام، شخص یا حساب را عوض می‌کند)
 # چارت سازمانی کارگاه موادکاران (۱۴۰۵/۰۷): (نام کاربری، نام، سمت، کلید سمت)
@@ -224,10 +220,10 @@ CREATE TABLE IF NOT EXISTS notify_devices(token TEXT PRIMARY KEY, user_id INTEGE
 
 DEFAULT_SETTINGS = {'company': 'شرکت گسترش فناوری عمران زیست', 'ceo_threshold': '1000000000',
                     'ceo_user': '', 'office_approver': '', 'warehouse_user': '', 'default_due_days': '3',
-                    'support_manager': '', 'finance_manager': '', 'archive_user': '',
+                    'support_manager': '', 'finance_manager': '',
                     'cancel_reasons': DEFAULT_CANCEL_REASONS,
                     # خروج خودکار پس از چند دقیقه بی‌فعالیتی؛ اعلان‌ها روی موبایل و پورت HTTPS
-                    'idle_minutes': '5', 'notify_enabled': '1', 'notify_interval': '30', 'https_port': '8443'}
+                    'idle_minutes': '15', 'notify_enabled': '1', 'notify_interval': '30', 'https_port': '8443'}
 
 SEED_USERS = [  # (username, full_name, title, role)
     ('admin', 'مدیر سیستم', 'راهبر سامانه', 'admin'),
@@ -349,6 +345,7 @@ def init_db():
     migrate_v13(c)
     migrate_v15(c)
     migrate_v16(c)
+    migrate_v24(c)
     # نام کامل دو مهندس دفتر فنی موادکاران (فقط اگر هنوز نام قبلی ثبت است)
     for un, old, new in (('mk-bajelani', 'خانم مهندس باجلانی', 'دینا باجلانی'),
                          ('mk-hosseini', 'خانم مهندس حسینی', 'سارینا حسینی')):
@@ -369,13 +366,16 @@ def add_columns(c):
                           ('settled_at', 'TEXT'), ('settled_by', 'INTEGER'),
                           # ۲.۱: کدگذاری اسناد و تطبیق سه‌طرفه
                           ('po_no', "TEXT DEFAULT ''"), ('grn_no', "TEXT DEFAULT ''"),
-                          ('disc_ok_by', 'INTEGER'), ('disc_ok_at', 'TEXT'), ('disc_note', "TEXT DEFAULT ''")],
+                          ('disc_ok_by', 'INTEGER'), ('disc_ok_at', 'TEXT'), ('disc_note', "TEXT DEFAULT ''"),
+                          # ۲.۴: پیش‌فاکتور منتخب و کنترل مدارک مالی (فاکتور رسمی، مدارک ارزش افزوده)
+                          ('chosen_att', 'INTEGER'), ('official_inv', 'INTEGER'), ('vat_docs', 'INTEGER'),
+                          ('docs_by', 'INTEGER'), ('docs_at', 'TEXT')],
             'purchase_payments': [('code', "TEXT DEFAULT ''")],
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
                                ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''")],
             'attachments': [('kind', "TEXT DEFAULT ''"), ('deleted_at', 'TEXT'), ('deleted_by', 'INTEGER'),
-                            ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0')],
+                            ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0'), ('archived', 'INTEGER DEFAULT 0')],
             'letters': [('body', "TEXT DEFAULT ''"), ('signer_id', 'INTEGER'), ('signed_at', 'TEXT'),
                         ('sig_name', "TEXT DEFAULT ''"), ('sig_title', "TEXT DEFAULT ''"), ('sig_file', "TEXT DEFAULT ''"),
                         ('registered_at', 'TEXT'), ('main_to_id', 'INTEGER'), ('cc_text', "TEXT DEFAULT ''"),
@@ -397,7 +397,7 @@ def migrate(c):
     if settings(c).get('seed_v12'):
         return
     ids = {r['username']: r['id'] for r in c.execute('SELECT id,username FROM users')}
-    for key, un in (('support_manager', 'support'), ('finance_manager', 'finance'), ('archive_user', 'secretary')):
+    for key, un in (('support_manager', 'support'), ('finance_manager', 'finance')):
         if un in ids:
             c.execute("UPDATE settings SET value=? WHERE key=? AND value=''", (str(ids[un]), key))
     for name in SEED_PROJECTS:
@@ -407,6 +407,18 @@ def migrate(c):
         pid = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (name, '', mid)).lastrowid
         sync_pm(c, pid, mid)
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v12','1')")
+
+
+def migrate_v24(c):
+    """نسخه ۲.۴: خروج خودکار ۱۵ دقیقه؛ بایگانی خودکار؛ مالی فقط کنترل مدارک (پرداخت و تسویه حذف شد)."""
+    if settings(c).get('seed_v24'):
+        return
+    c.execute("UPDATE settings SET value='15' WHERE key='idle_minutes' AND value='5'")
+    c.execute("UPDATE purchases SET stage='done', status='closed', holder_id=NULL, closed_at=COALESCE(closed_at,?) "
+              "WHERE stage='archive' AND status='open'", (now(),))
+    fin = int(settings(c).get('finance_manager') or 0) or None
+    c.execute("UPDATE purchases SET stage='finance_settle', holder_id=? WHERE stage='finance_pay' AND status='open'", (fin,))
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v24','1')")
 
 
 def migrate_v13(c):
@@ -549,7 +561,7 @@ def is_broad(c, u):
     return can_report(c, u) or u['role'] in ('finance', 'secretariat')
 
 
-HQ_SETTING_USERS = ('support_manager', 'finance_manager', 'archive_user', 'ceo_user', 'office_approver', 'warehouse_user')
+HQ_SETTING_USERS = ('support_manager', 'finance_manager', 'ceo_user', 'office_approver', 'warehouse_user')
 
 
 def is_site_only(c, u):
@@ -847,7 +859,7 @@ def api_cartable(h, c, u, b, q):
         desk += rows(c.execute(
             "SELECT l.* FROM letters l WHERE l.status='open' AND NOT EXISTS (SELECT 1 FROM referrals r WHERE "
             "r.doc_type='letter' AND r.doc_id=l.id AND r.status IN %s) ORDER BY l.id DESC LIMIT 200" % str(OPEN)))
-    pur_held = rows(c.execute(PUR_SEL + "WHERE " + PUR_HELD_SQL + " ORDER BY x.id", (u['id'], u['id'])))
+    pur_held = rows(c.execute(PUR_SEL + "WHERE " + PUR_HELD_SQL + " ORDER BY x.id", held_args(u)))
     pur_pay = rows(c.execute(PUR_SEL + "WHERE " + PUR_PAY_SQL + " ORDER BY x.id")) if is_finance(c, u) else []
     pur_mine = rows(c.execute(PUR_SEL + "WHERE x.requester_id=? AND x.status IN ('open','returned') ORDER BY x.id DESC",
                               (u['id'],)))
@@ -867,21 +879,25 @@ def cart_count(c, u):
                    "AND s.status='pending' AND q.status='pending'", (u['id'],)).fetchone()[0]
     if u['role'] in ('finance',):
         n += c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]
-    n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_HELD_SQL, (u['id'], u['id'])).fetchone()[0]
-    if is_finance(c, u):
-        n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_PAY_SQL).fetchone()[0]
+    n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_HELD_SQL, held_args(u)).fetchone()[0]
     return n
 
 
 # درخواست‌های کالای در کارتابل: دارنده (جز درخواست‌کننده‌ای که تحویل را تأیید کرده) و انباردارِ منتظر تأیید تحویل
+# مرحله‌های مدیر پروژه / هیات مدیره در کارتابل همه اعضای هیات مدیره و مدیر پروژه است (پارامتر چهارم: عضو هیات مدیره هست یا نه)
 PUR_HELD_SQL = ("((x.holder_id=? AND x.status IN ('open','returned') AND NOT (x.stage='delivery' AND x.recv_at IS NOT NULL)) "
                 "OR (x.stage='delivery' AND x.status='open' AND x.wh_at IS NULL AND EXISTS(SELECT 1 FROM project_members m "
-                "WHERE m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?)))")
+                "WHERE m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?)) "
+                "OR (x.status='open' AND x.stage IN ('pm_approve','price_approve','discrepancy') AND x.requester_id!=? AND (?=1 "
+                "OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=x.project_id AND m.role_key='pm' AND m.user_id=?))))")
+
+
+def held_args(u):
+    return (u['id'], u['id'], u['id'], 1 if u['role'] == 'manager' else 0, u['id'])
 # منتظر پرداخت یا تسویه مالی (پس از تأیید قیمت یا خرید کارگاه)
 # خریدهای کارگاه (عمومی و مصرفی) به مالی دفتر مرکزی نمی‌آیند
-PUR_PAY_SQL = ("(x.status='open' AND x.settled_at IS NULL AND x.stage IN ('hq_purchase','delivery',"
-               "'finance_settle','finance_pay','discrepancy','invoice_fix') AND NOT EXISTS(SELECT 1 FROM purchase_flow sf "
-               "WHERE sf.purchase_id=x.id AND sf.stage='site_purchase'))")
+# منتظر کنترل مدارک امور مالی (پرداخت و تسویه در سامانه نیست)
+PUR_PAY_SQL = "(x.status='open' AND x.stage='finance_settle')"
 
 
 # ---------- نامه‌ها
@@ -1614,8 +1630,8 @@ def next_code(c, pid, dtype):
 def invoice_doc(c, P):
     """فاکتور خرید: فاکتور اصلی؛ تا وقتی بارگذاری نشده، پیش‌فاکتور به‌جای فاکتور حساب می‌شود."""
     for kind in ('فاکتور', 'پیش‌فاکتور'):
-        if c.execute("SELECT 1 FROM attachments WHERE doc_type='purchase' AND doc_id=? AND kind=? AND deleted_at IS NULL",
-                     (P['id'], kind)).fetchone():
+        if c.execute("SELECT 1 FROM attachments WHERE doc_type='purchase' AND doc_id=? AND kind=? AND deleted_at IS NULL "
+                     "AND archived=0", (P['id'], kind)).fetchone():
             return kind
     return ''
 
@@ -1671,10 +1687,13 @@ def pur_fields(c, u, b, pid_fixed=None, req_date=None):
     for it in b.get('items') or []:
         t = (it.get('title') or '').strip()
         if not t:
+            need(not any((it.get(k) or '').strip() for k in ('qty', 'unit', 'spec', 'note')),
+                 'شرح کالا در ردیفی که مقدار یا واحد دارد خالی است', 400)
             continue
         qty = (str(it.get('qty') or '')).translate(FA2EN).replace('٫', '.').strip()
         need(qty, 'مقدار کالای «%s» وارد نشده' % t, 400)
         need(to_num(qty) is not None and to_num(qty) > 0, 'مقدار کالای «%s» باید عدد باشد (واحد را در ستون واحد بنویسید)' % t, 400)
+        need((it.get('unit') or '').strip(), 'واحد کالای «%s» را وارد کنید' % t, 400)
         items.append((t, qty, (it.get('unit') or '').strip(), (it.get('spec') or '').strip(), (it.get('note') or '').strip()))
     need(items, 'حداقل یک ردیف کالا با شرح و مقدار وارد کنید', 400)
     return dict(project_id=pid, unit=unit, warehouse=(b.get('warehouse') or '').strip(), category=cat, urgency=urg,
@@ -1894,8 +1913,13 @@ def api_purchase_get(h, c, u, b, q, pid):
                 f['note'] = ''
         for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no'):
             P[k] = None
-    pays = [] if site else rows(c.execute('SELECT p.*, us.full_name user_name FROM purchase_payments p LEFT JOIN users us '
-                                          'ON us.id=p.user_id WHERE purchase_id=? ORDER BY p.id', (P['id'],)))
+    # نظر مدیر پروژه و هیات مدیره هنگام تأیید یا برگشت (برای پشتیبانی به رنگ قرمز)
+    mgmt = []
+    for f in ([] if site else flow):  # فقط متن خودِ تأییدکننده (نه یادداشت خودکار سامانه)
+        if f['stage'] in GROUP_STAGES and f['action'] in ('approve', 'requote', 'accept', 'fix', 'return'):
+            txt = '؛ '.join(p for p in (f['note'] or '').split('؛ ') if p.strip() and not p.startswith('پیش‌فاکتور منتخب'))
+            if txt:
+                mgmt.append(dict(f, note=txt))
     for it in items:
         it['remaining'] = fmt_num(remaining(it))
     bought = c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased'", (P['id'],)).fetchone()
@@ -1905,8 +1929,8 @@ def api_purchase_get(h, c, u, b, q, pid):
             'site_path': site_path(c, P), 'is_admin': u['role'] == 'admin',
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
             'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
-            'can_attach': can_attach_pur(c, u, P), 'payments': pays, 'can_pay': can_pay(c, u, P),
-            'pay_methods': PAY_METHODS, 'buy_status': BUY_STATUS, 'site_view': site,
+            'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
+            'buy_status': BUY_STATUS, 'site_view': site,
             'hq_only_stages': HQ_ONLY_STAGES}
 
 
@@ -1926,11 +1950,22 @@ def allowed_actions(c, u, P):
         if is_warehouse(c, u, P) and not P['wh_at']:
             out += ['wh_ok', 'wh_bad']
         return out
-    if P['stage'] in ('price_approve', 'discrepancy') and is_mgr(u):  # مدیر پروژه یا هر عضو هیات مدیره
-        return acts
-    if P['stage'] == 'finance_settle' and P['holder_id'] == u['id']:  # تسویه فقط با کامل بودن سه مدرک
-        return ['settled'] if docs_check(c, P)['ok'] else ['need_docs']
+    if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
+        return acts if in_group(c, u, P) else []
+    if P['stage'] == 'finance_settle' and P['holder_id'] == u['id']:  # پایان فقط با کامل بودن سه مدرک
+        return ['docs_ok', 'need_docs'] if docs_check(c, P)['ok'] else ['need_docs']
     return acts if P['holder_id'] == u['id'] else []
+
+
+# مرحله‌هایی که در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یکی از آن‌ها کار را جلو می‌برد
+GROUP_STAGES = ('pm_approve', 'price_approve', 'discrepancy')
+
+
+def in_group(c, u, P):
+    if P['requester_id'] == u['id'] and P['holder_id'] != u['id']:  # خودتأییدی ممنوع
+        return False
+    return (u['role'] == 'manager' or P['holder_id'] == u['id']
+            or pmembers(c, P['project_id']).get('pm') == u['id'])
 
 
 def can_attach_pur(c, u, P):
@@ -1938,17 +1973,11 @@ def can_attach_pur(c, u, P):
         return False
     if P['holder_id'] == u['id'] or (P['stage'] == 'delivery' and is_warehouse(c, u, P)):
         return True
-    return P['stage'] == 'price_approve' and is_mgr(u)
+    return P['stage'] in GROUP_STAGES and in_group(c, u, P)
 
 
 def is_finance(c, u):
     return u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager') or u['role'] == 'admin'
-
-
-def can_pay(c, u, P):
-    """پرداخت (یک یا چند نوبت، نقد یا چک، قبل یا بعد از تحویل) پس از تأیید قیمت یا خرید کارگاه."""
-    return (is_finance(c, u) and P['status'] == 'open' and P['stage'] in PAY_STAGES and not P['settled_at']
-            and P['stage'] != 'site_purchase' and not site_path(c, P))
 
 
 def move(c, u, P, stage, label, note='', status='open'):
@@ -1962,8 +1991,8 @@ def move(c, u, P, stage, label, note='', status='open'):
 
 
 def after_delivery(c, P):
-    """پس از اعلام وصول: خرید کارگاه (عمومی و مصرفی) مستقیم به بایگانی؛ خرید دفتر مرکزی به مالی (مگر تسویه شده باشد)."""
-    return 'archive' if P['settled_at'] or site_path(c, P) else 'finance_settle'
+    """پس از اعلام وصول: خرید کارگاه (عمومی و مصرفی) پایان و بایگانی خودکار؛ خرید دفتر مرکزی به کنترل مدارک مالی."""
+    return 'done' if site_path(c, P) else 'finance_settle'
 
 
 @route('POST', r'/api/purchases/(\d+)/act')
@@ -1976,8 +2005,18 @@ def api_purchase_act(h, c, u, b, q, pid):
     notes = []
     if a in ('return', 'requote', 'recv_bad', 'wh_bad', 'accept', 'fix'):
         need(note, 'علت را بنویسید', 400)
-    if a == 'approve' and P['stage'] == 'price_approve' and not P['po_no']:  # صدور سفارش خرید
-        c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
+    if a == 'approve' and P['stage'] == 'price_approve':  # انتخاب یک پیش‌فاکتور؛ بقیه بایگانی می‌شوند
+        pfs = [r[0] for r in c.execute("SELECT id FROM attachments WHERE doc_type='purchase' AND doc_id=? AND "
+                                       "kind='پیش‌فاکتور' AND deleted_at IS NULL AND archived=0", (P['id'],))]
+        ch = int(b.get('chosen_att') or (pfs[0] if len(pfs) == 1 else 0))
+        need(ch in pfs, 'یکی از پیش‌فاکتورها را انتخاب کنید', 400)
+        c.execute("UPDATE attachments SET archived=1 WHERE doc_type='purchase' AND doc_id=? AND kind='پیش‌فاکتور' AND id!=?",
+                  (P['id'], ch))
+        c.execute('UPDATE purchases SET chosen_att=? WHERE id=?', (ch, P['id']))
+        nm = c.execute('SELECT name FROM attachments WHERE id=?', (ch,)).fetchone()[0]
+        notes.append('پیش‌فاکتور منتخب: %s%s' % (nm, (' — %s پیش‌فاکتور دیگر بایگانی شد' % fa_num(len(pfs) - 1)) if len(pfs) > 1 else ''))
+        if not P['po_no']:  # صدور سفارش خرید
+            c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
     if a == 'purchased' and P['stage'] == 'site_purchase' and not P['po_no']:  # خرید کارگاه: سفارش همان خرید است
         c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
     if a == 'accept':
@@ -2046,66 +2085,31 @@ def api_purchase_act(h, c, u, b, q, pid):
             nxt = after_delivery(c, P)
             grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
             c.execute('UPDATE purchases SET grn_no=? WHERE id=?', (grn, P['id']))
-            notes.append('تحویل کالا کامل شد (درخواست‌کننده و انبار) — رسید %s' % grn)
+            notes.append('اعلام وصول کامل شد (تحویل‌گیرنده و انباردار) — %s' % grn)
+            if nxt == 'done':
+                notes.append('پایان و بایگانی خودکار')
         else:
             pflow(c, P['id'], u, P['stage'], a, label, note)
             return {'ok': True}
-    elif a == 'settled':
-        c.execute('UPDATE purchases SET settled_at=?, settled_by=? WHERE id=?', (now(), u['id'], P['id']))
-    elif a == 'paid':  # مرحله قدیمی
-        amt = to_int(b.get('paid_amount'))
-        need(amt is not None, 'مبلغ پرداختی را وارد کنید', 400)
-        c.execute('UPDATE purchases SET paid_amount=?, paid_at=?, sepidar_no=? WHERE id=?',
-                  (amt, (b.get('paid_at') or jstr(today())).translate(FA2EN), (b.get('sepidar_no') or '').strip(), P['id']))
-    elif a == 'archived':
-        c.execute('UPDATE purchases SET archive_code=? WHERE id=?', ((b.get('archive_code') or '').strip(), P['id']))
+    elif a == 'docs_ok':  # امور مالی: کنترل مدارک؛ پرداخت و تسویه در سامانه نیست
+        oi, vd = str(b.get('official_inv', '')), str(b.get('vat_docs', ''))
+        need(oi in ('0', '1') and vd in ('0', '1'), 'مشخص کنید فاکتور رسمی و مدارک ارزش افزوده دریافت شده‌اند یا نه', 400)
+        c.execute('UPDATE purchases SET official_inv=?, vat_docs=?, docs_by=?, docs_at=? WHERE id=?',
+                  (int(oi), int(vd), u['id'], now(), P['id']))
+        notes.append('فاکتور رسمی: %s — مدارک ارزش افزوده: %s — بایگانی خودکار' % ('دریافت شد' if oi == '1' else 'دریافت نشد',
+                                                                          'دریافت شد' if vd == '1' else 'دریافت نشد'))
 
     label = label + (' — ارسال به ' + P_STAGES[nxt] if a in ('stock', 'approve') and nxt not in ('done', 'returned') else '')
     move(c, u, P, nxt, (a, label), '؛ '.join([note] + notes if note else notes),
          'closed' if nxt == 'done' else 'open')
     if (P['stage'] == 'unit_approval' and a == 'approve') or a == 'submit':
         cc_exec(c, u, P['id'], P)
-    return {'ok': True}
-
-
-@route('POST', r'/api/purchases/(\d+)/payment')
-def api_purchase_payment(h, c, u, b, q, pid):
-    """ثبت یک نوبت پرداخت (نقد، حواله یا چک)؛ پرداخت می‌تواند چند نوبت و قبل یا بعد از تحویل باشد."""
-    P = get_doc(c, u, 'purchase', int(pid))
-    need(can_pay(c, u, P), 'ثبت پرداخت برای این درخواست اکنون ممکن نیست')
-    amt = to_int(b.get('amount'))
-    need(amt, 'مبلغ پرداخت را وارد کنید', 400)
-    pd = need_jdate(b.get('paid_at') or jtoday(), 'تاریخ پرداخت', max_=jtoday(),
-                    max_msg='تاریخ پرداخت نمی‌تواند بعد از امروز باشد')
-    method = b.get('method') if b.get('method') in PAY_METHODS else PAY_METHODS[0]
-    if method == 'چک':
-        need((b.get('cheque_no') or '').strip(), 'شماره چک را وارد کنید', 400)
-        cd = need_jdate(b.get('cheque_date'), 'تاریخ سررسید چک', min_=pd, min_msg='سررسید چک نمی‌تواند قبل از تاریخ پرداخت باشد')
-    else:
-        cd = ''
-    c.execute('INSERT INTO purchase_payments(code,purchase_id,amount,paid_at,method,cheque_no,cheque_date,sepidar_no,note,user_id,at) '
-              'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (next_code(c, P['project_id'], 'PAY'), P['id'], amt, pd, method,
-                                              (b.get('cheque_no') or '').strip(), cd,
-                                              (b.get('sepidar_no') or '').strip(), (b.get('note') or '').strip(), u['id'], now()))
-    tot = c.execute('SELECT SUM(amount) FROM purchase_payments WHERE purchase_id=?', (P['id'],)).fetchone()[0]
-    c.execute('UPDATE purchases SET paid_amount=? WHERE id=?', (tot, P['id']))
-    pflow(c, P['id'], u, 'finance_settle', 'payment', 'ثبت پرداخت (%s)' % method, '%s ریال' % format(amt, ','))
-    return {'ok': True}
-
-
-@route('POST', r'/api/purchases/(\d+)/settle')
-def api_purchase_settle(h, c, u, b, q, pid):
-    """اعلام تسویه کامل؛ اگر تحویل هم انجام شده باشد، درخواست برای بایگانی به دبیرخانه می‌رود."""
-    P = get_doc(c, u, 'purchase', int(pid))
-    need(can_pay(c, u, P), 'تسویه برای این درخواست اکنون ممکن نیست')
-    m = docs_check(c, P)
-    need(m['ok'], 'تسویه کامل فقط وقتی ممکن است که درخواست کالا، اعلام وصول و فاکتور همه موجود باشند: ' +
-         '؛ '.join(m['missing']), 400)
-    c.execute('UPDATE purchases SET settled_at=?, settled_by=? WHERE id=?', (now(), u['id'], P['id']))
-    if P['stage'] == 'finance_settle':
-        move(c, u, P, 'archive', ('settled', 'تسویه کامل شد — ارسال به دبیرخانه برای بایگانی'), (b.get('note') or '').strip())
-    else:
-        pflow(c, P['id'], u, 'finance_settle', 'settle', 'اعلام تسویه کامل', (b.get('note') or '').strip())
+    if note and P['stage'] in GROUP_STAGES and nxt in ('hq_quotes', 'hq_purchase'):
+        # نظر مدیر پروژه یا هیات مدیره به مدیر پشتیبانی گوشزد می‌شود
+        sm = int(settings(c).get('support_manager') or 0)
+        if sm and sm != u['id']:
+            c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
+                      ('purchase', P['id'], u['id'], sm, 'جهت اطلاع', 'نظر %s: %s' % (u['full_name'], note), now()))
     return {'ok': True}
 
 
@@ -2504,16 +2508,54 @@ def api_admin_notify_revoke(h, c, u, b, q):
 
 
 def https_files():
-    return os.path.join(HTTPS_DIR, 'cert.pem'), os.path.join(HTTPS_DIR, 'key.pem')
+    """گواهی و کلید HTTPS در data\\https: یا cert.pem و key.pem (بارگذاری در مدیریت سامانه)، یا فایل‌های
+    Let's Encrypt که برنامه win-acme با گزینه PEM در همین پوشه می‌سازد (‎*-chain.pem و ‎*-key.pem)؛ جدیدترین به کار می‌رود."""
+    cert, key = os.path.join(HTTPS_DIR, 'cert.pem'), os.path.join(HTTPS_DIR, 'key.pem')
+    try:
+        names = os.listdir(HTTPS_DIR)
+    except OSError:
+        return cert, key
+    newest = lambda fs: max(fs, key=os.path.getmtime) if fs else None
+    le_cert = newest([os.path.join(HTTPS_DIR, n) for n in names if n.endswith('-chain.pem') and not n.endswith('-chain-only.pem')])
+    le_key = newest([os.path.join(HTTPS_DIR, n) for n in names if n.endswith('-key.pem')])
+    if le_cert and le_key and (not os.path.exists(cert) or os.path.getmtime(le_cert) >= os.path.getmtime(cert)):
+        return le_cert, le_key
+    return cert, key
 
 
 def https_status(c):
     cert, key = https_files()
-    return {'cert': os.path.exists(cert), 'key': os.path.exists(key), 'port': int(settings(c).get('https_port') or 8443),
-            'running': HTTPS_RUNNING[0]}
+    info = {'cert': os.path.exists(cert), 'key': os.path.exists(key), 'port': int(settings(c).get('https_port') or 8443),
+            'running': HTTPS_RUNNING[0], 'file': os.path.basename(cert) if os.path.exists(cert) else ''}
+    if info['cert']:  # تاریخ انقضا و نام دامنه گواهی (برای نمایش در مدیریت سامانه)
+        try:
+            d = ssl._ssl._test_decode_cert(cert)
+            info['until'] = d.get('notAfter', '')
+            info['names'] = [v for k, v in d.get('subjectAltName', ()) if k == 'DNS'] or \
+                [v for t in d.get('subject', ()) for k, v in t if k == 'commonName']
+        except Exception:
+            pass
+    return info
 
 
 HTTPS_RUNNING = [0]  # پورت HTTPS در حال اجرا (۰ = خاموش)
+HTTPS_CTX = [None, 0]  # [زمینه SSL در حال اجرا، زمان آخرین بارگذاری گواهی]
+
+
+def https_reload():
+    """گواهی تمدیدشده بدون راه‌اندازی مجدد سرور به کار می‌رود (اتصال‌های جدید با گواهی جدید)."""
+    ctx = HTTPS_CTX[0]
+    if not ctx:
+        return
+    cert, key = https_files()
+    try:
+        mt = max(os.path.getmtime(cert), os.path.getmtime(key))
+        if mt > HTTPS_CTX[1]:
+            ctx.load_cert_chain(cert, key)
+            HTTPS_CTX[1] = mt
+            print('گواهی HTTPS دوباره بارگذاری شد')
+    except (OSError, ssl.SSLError) as e:
+        print('بارگذاری دوباره گواهی HTTPS ناموفق بود:', e)
 
 
 @route('POST', r'/api/admin/https/(cert|key)')
@@ -2532,6 +2574,7 @@ def api_admin_https_upload(h, c, u, b, q, which):
         except (ssl.SSLError, OSError) as e:
             raise ApiError('گواهی و کلید با هم نمی‌خوانند یا نامعتبرند: %s' % e)
     log(c, 'admin', 0, u['id'], 'بارگذاری ' + ('گواهی' if which == 'cert' else 'کلید') + ' HTTPS')
+    https_reload()
     return {'ok': True, 'status': https_status(c)}
 
 
@@ -2780,7 +2823,14 @@ def start_https():
         print('HTTPS راه‌اندازی نشد (%s)' % e)
         return
     HTTPS_RUNNING[0] = port
+    HTTPS_CTX[0], HTTPS_CTX[1] = ctx, max(os.path.getmtime(cert), os.path.getmtime(key))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def watch():  # تمدید خودکار گواهی (مثلاً win-acme هر ۶۰ روز)
+        while True:
+            time.sleep(600)
+            https_reload()
+    threading.Thread(target=watch, daemon=True).start()
     print('HTTPS هم روی پورت %d فعال است  —  آدرس برای گوشی: https://<نام یا IP این کامپیوتر>:%d' % (port, port))
 
 
