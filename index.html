@@ -178,6 +178,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
+const PAGE_VERSION='2.3'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -282,7 +283,7 @@ async function boot(){
   $('#login').style.display='none';$('#app').style.display='block';
   $('#coName').innerHTML=esc(M.company)+' — اتوماسیون اداری <span class="ver">نسخه '+fa(M.version)+'</span>';$('#meName').textContent=M.me.full_name+' ('+M.roles[M.me.role]+')';
   document.title='اتوماسیون — '+M.company;
-  if(!M.my_roles||!M.p_stages){$('#nav').innerHTML='';$('#view').innerHTML=`<div class="card" style="border-color:var(--bad)"><h1>سرور هنوز نسخه قدیمی (${esc(M.version||'?')}) را اجرا می‌کند</h1>
+  if(!M.my_roles||!M.p_stages||M.version!==PAGE_VERSION){$('#nav').innerHTML='';$('#view').innerHTML=`<div class="card" style="border-color:var(--bad)"><h1>سرور هنوز نسخه قدیمی (${esc(M.version||'?')}) را اجرا می‌کند</h1>
    <div style="line-height:2.1">فایل صفحه (index.html) نسخه جدید است، ولی برنامه سرور (app.py) هنوز نسخه قبلی است و باید دوباره راه‌اندازی شود.<br>
    ۱. مطمئن شوید app.py جدید در همان پوشه‌ای است که index.html جدید را گذاشتید.<br>
    ۲. روی کامپیوتر سرور فایل <b>4-restart.bat</b> را با «Run as administrator» اجرا کنید (یا کامپیوتر سرور را یک بار ری‌استارت کنید).<br>

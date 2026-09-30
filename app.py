@@ -2561,6 +2561,13 @@ def png_icon(size=192):
 
 
 ICON = png_icon()
+OLD_PAGE = """<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>به‌روزرسانی ناقص</title></head><body style="font-family:Tahoma,sans-serif;background:#f4f5f7;padding:20px;line-height:2.2">
+<div style="max-width:640px;margin:8vh auto;background:#fff;border:2px solid #b42318;border-radius:10px;padding:18px 22px">
+<h2 style="color:#b42318;margin-top:0">فایل index.html با برنامه سرور هم‌نسخه نیست</h2>
+برنامه سرور (app.py) نسخه %s است، ولی فایل صفحه (index.html) کنار آن از نسخه دیگری است.<br>
+۱. فایل <b>index.html</b> نسخه %s را از فایل ZIP در همان پوشه‌ای که app.py هست کپی و جایگزین کنید.<br>
+۲. این صفحه را با <b>Ctrl+F5</b> دوباره باز کنید (نیازی به راه‌اندازی مجدد سرور نیست).</div></body></html>"""
 SW_JS = """// سرویس‌ورکر اتوماسیون عمران زیست: نمایش اعلان و باز کردن کارتابل با لمس اعلان
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
@@ -2634,7 +2641,10 @@ class H(BaseHTTPRequestHandler):
         q = {k: v[0].translate(FA2EN).translate(AR2FA) for k, v in urllib.parse.parse_qs(url.query).items()}
         if method == 'GET' and path in ('/', '/index.html'):
             with open(os.path.join(BASE, 'index.html'), 'rb') as f:
-                return self.send(200, f.read(), 'text/html; charset=utf-8')
+                page = f.read()
+            if ("PAGE_VERSION='%s'" % VERSION).encode() not in page:  # index.html با app.py هم‌نسخه نیست
+                return self.send(200, OLD_PAGE % (VERSION, VERSION), 'text/html; charset=utf-8')
+            return self.send(200, page, 'text/html; charset=utf-8')
         if method == 'GET' and path == '/logo.png':  # آرم شرکت (اختیاری): فایل logo.png کنار app.py
             lp = os.path.join(BASE, 'logo.png')
             if os.path.exists(lp):
