@@ -181,7 +181,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='2.4'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='2.5'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -712,7 +712,7 @@ const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval
   supervisor_approve:[['approve','تأیید سرپرست کارگاه و ارسال','ok'],RET],
   tech_review:[['approve','تأیید معاون فنی و ارسال','ok'],RET],
   site_purchase:[['purchased','خرید انجام شد — ارسال برای اعلام وصول','ok']],
-  pm_approve:[['approve','تأیید و ارسال به پشتیبانی برای استعلام قیمت','ok'],RET],
+  pm_approve:[['approve','تأیید و ارسال به پشتیبانی برای استعلام قیمت','ok'],['direct','دستور خرید مستقیم (بدون استعلام)','ok'],RET],
   hq_quotes:[['quoted','ارسال پیش‌فاکتورها برای تأیید قیمت','ok']],
   price_approve:[['approve','تأیید قیمت — ارسال برای خرید','ok'],['requote','برگشت برای استعلام مجدد','l']],
   hq_purchase:[['purchased','خرید انجام شد — ارسال برای اعلام وصول','ok']],
@@ -725,13 +725,14 @@ function purSeq(P,seen,legacy){ // مراحل: عمومی و مصرفی در ک�
   const site=seen.has('site_purchase')||P.stage=='site_purchase'||(P.category!='main'&&!HQS.some(k=>seen.has(k)||P.stage==k));
   const tech=seen.has('tech_review')||P.stage=='tech_review'||!site;
   const s=['draft','unit_approval','warehouse_check'].concat(legacy?['supervisor_approve'].concat(tech?['tech_review']:[]):(tech?['tech_review']:[]).concat(['supervisor_approve']));
-  s.push(...(site?['site_purchase','delivery']:['pm_approve','hq_quotes','price_approve','hq_purchase','delivery','finance_settle']));
+  const direct=seen.has('__direct')&&!seen.has('hq_quotes');
+  s.push(...(site?['site_purchase','delivery']:['pm_approve'].concat(direct?[]:['hq_quotes','price_approve'],['hq_purchase','delivery','finance_settle'])));
   if(site&&seen.has('finance_settle'))s.push('finance_settle');
   ['discrepancy','invoice_fix'].forEach(k=>{if(seen.has(k)||P.stage==k)s.push(k)});
   if(seen.has('archive')||P.stage=='archive')s.push('archive');
   return s.concat(['done'])}
 function purChain(P,flow){
-  const seen=new Set(flow.map(f=>f.stage)),iS=flow.findIndex(f=>f.stage=='supervisor_approve'),iT=flow.findIndex(f=>f.stage=='tech_review');
+  const seen=new Set(flow.map(f=>f.stage));if(flow.some(f=>f.action=='direct'))seen.add('__direct');const iS=flow.findIndex(f=>f.stage=='supervisor_approve'),iT=flow.findIndex(f=>f.stage=='tech_review');
   const seq=purSeq(P,seen,iS>=0&&(iT<0?P.stage=='tech_review':iS<iT));let cur=seq.indexOf(P.stage);
   if(P.status=='closed'||P.stage=='done')cur=seq.length;if(P.status=='returned')cur=1;
   return `<div class="chain">${seq.map((k,i)=>{let c='';if(P.status=='delivered')c=i<=2?'approved':'skipped';else if(P.status=='open'||P.status=='returned')c=i<cur?(seen.has(k)?'approved':'skipped'):i==cur?'pending':'';else if(P.status=='closed')c=seen.has(k)||k=='done'?'approved':'skipped';else c=seen.has(k)?'approved':'skipped';
@@ -787,7 +788,7 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   if(st=='price_approve'){const pf=d.attachments.filter(a=>a.kind=='پیش‌فاکتور'&&!a.archived);
     x=`<div><label>یکی از پیش‌فاکتورها را انتخاب کنید *</label>${pf.map((a,i)=>`<label style="display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px;margin:6px 0"><input type="radio" name="pfSel" value="${a.id}" style="width:auto" ${pf.length==1?'checked':''}> <a href="/files/${a.id}" target="_blank">${esc(a.name)}</a> <span class="mut">${esc(a.uploader)} — ${jd(a.created_at,1)}</span></label>`).join('')||'<div class="tag bad">پیش‌فاکتوری پیوست نشده</div>'}</div>`;
     hint='این درخواست در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یک نفر کافی است. پیش‌فاکتور منتخب برای خرید می‌رود و بقیه بایگانی می‌شوند. نظر شما در «توضیح» برای مدیر پشتیبانی به رنگ قرمز نمایش داده می‌شود.'}
-  if(st=='pm_approve')hint='این درخواست در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یک نفر کافی است. نظر شما در «توضیح» برای مدیر پشتیبانی به رنگ قرمز نمایش داده می‌شود.';
+  if(st=='pm_approve')hint='این درخواست در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یک نفر کافی است. اگر منبع خرید و قیمت از قبل معلوم است، «دستور خرید مستقیم» را بزنید و منبع و قیمت را در «توضیح» بنویسید (الزامی)؛ درخواست بدون استعلام و تأیید قیمت مستقیم به خرید پشتیبانی می‌رود. می‌توانید پیش‌فاکتور را هم در بخش پیوست‌ها بگذارید. نظر شما برای مدیر پشتیبانی به رنگ قرمز نمایش داده می‌شود.';
   if(['hq_quotes','hq_purchase'].includes(st))x=mgmtNotes(d)+x;
   if(st=='hq_purchase'||st=='site_purchase'){const buy=rows.filter(i=>+en(i.remaining)>0);
     x=`<table><tr><th>شرح کالا</th><th>مقدار</th><th>مقدار خریداری‌شده</th><th>واحد</th><th>وضعیت</th><th>توضیح (برای ناقص یا نشده الزامی)</th></tr>${buy.map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.remaining)} ${esc(i.unit)}</td><td>${numIn('bq'+i.id,fa(i.bought_qty||i.remaining),90)}</td><td><input id="bu${i.id}" value="${esc(i.bought_unit||i.unit)}" style="max-width:100px"></td><td><select id="bs${i.id}">${opts(Object.entries(d.buy_status),i.bought_status||'bought')}</select></td><td><input id="bn${i.id}" value="${esc(i.bought_note||'')}"></td></tr>`).join('')}</table>`;
@@ -812,6 +813,7 @@ function printPur(num){const t=document.title;document.title=num.replace(/\//g,'
 const radio=n=>(document.querySelector(`input[name="${n}"]:checked`)||{}).value||'';
 const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action:a,note:val('paN'),archive_code:val('paC'),chosen_att:radio('pfSel'),official_inv:radio('oiSel'),vat_docs:radio('vtSel')};
   if(a=='approve'&&d.doc.stage=='price_approve'&&!b.chosen_att)throw new Error('یکی از پیش‌فاکتورها را انتخاب کنید');
+  if(a=='direct'&&!b.note.trim())throw new Error('منبع خرید و قیمت را در «توضیح» بنویسید');
   if(a=='docs_ok'&&(b.official_inv===''||b.vat_docs===''))throw new Error('مشخص کنید فاکتور رسمی و مدارک ارزش افزوده دریافت شده‌اند یا نه');
   if(a=='stock')b.items=its.map(i=>({id:i.id,stock:en(val('stk'+i.id))}));
   if(a=='purchased')b.items=its.filter(i=>$('#bs'+i.id)).map(i=>({id:i.id,qty:en(val('bq'+i.id)),unit:val('bu'+i.id),status:val('bs'+i.id),note:val('bn'+i.id)}));
@@ -928,7 +930,7 @@ function help(){$('#pg').innerHTML=`<h1>راهنمای کوتاه</h1><div class
 <b>تأیید دومرحله‌ای:</b> هر تأیید، ارسال، ارجاع یا امضا یک بار دیگر با «آیا مطمئن هستید؟» پرسیده می‌شود.<br>
 <b>خروج خودکار:</b> اگر چند دقیقه (پیش‌فرض ۱۵ دقیقه، قابل تنظیم توسط مدیر سیستم) با سامانه کار نکنید، از سامانه خارج می‌شوید و باید دوباره رمز را وارد کنید.<br>
 <b>اعلان روی موبایل:</b> در گوشی روی 🔔 بالای صفحه بزنید و اجازه اعلان بدهید؛ کارهای جدید کارتابل روی گوشی اعلام می‌شود (نیاز به نشانی امن HTTPS دارد).<br>
-<b>درخواست کالا (نسخه ۲.۳):</b> دسته کالا مسیر را تعیین می‌کند. <b>عمومی و مصرفی:</b> درخواست‌کننده ← بالادستش (رئیس واحد) ← انبار کارگاه ← سرپرست کارگاه ← خرید در کارگاه توسط پشتیبانی کارگاه (پیوست فاکتور یا پیش‌فاکتور) ← اعلام وصول (تحویل‌گیرنده و انباردار) ← پایان و بایگانی خودکار. <b>مصالح، تجهیزات و ابزار اصلی:</b> درخواست‌کننده ← رئیس واحد ← انبار کارگاه ← معاون فنی ← سرپرست کارگاه ← مدیر پروژه ← پشتیبانی دفتر مرکزی (استعلام و پیش‌فاکتور) ← تأیید قیمت (مدیر پروژه یا یکی از اعضای هیات مدیره) ← خرید و اعلام نهایی اقلام ← اعلام وصول ← امور مالی (کنترل مدارک: تطبیق سه‌گانه، فاکتور رسمی و مدارک ارزش افزوده) ← پایان و بایگانی خودکار. مراحل «مدیر پروژه» و «تأیید قیمت» در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یک نفر کافی است؛ در تأیید قیمت یکی از پیش‌فاکتورها انتخاب می‌شود و بقیه بایگانی می‌شوند. نظر مدیر پروژه یا هیات مدیره برای مدیر پشتیبانی به رنگ قرمز نمایش و به کارتابل او فرستاده می‌شود. شرح کالا، مقدار، واحد و «جهت استفاده» الزامی است و تاریخ نیاز از تقویم انتخاب می‌شود و نمی‌تواند قبل از تاریخ درخواست باشد. پس از انبار، در فرم فقط مانده هر قلم (درخواست منهای موجودی انبار) دیده می‌شود. پس از خرید، فرم به «اعلام وصول کالا» تبدیل می‌شود و تحویل‌گیرنده و انباردار آن را تأیید می‌کنند. بخش پیوست‌ها در هر مرحله بالای «اقدام شما» است. تا مرحله مدیر پروژه، فقط کسی که درخواست در کارتابل اوست می‌تواند ویرایش یا لغو کند.<br>
+<b>درخواست کالا (نسخه ۲.۳):</b> دسته کالا مسیر را تعیین می‌کند. <b>عمومی و مصرفی:</b> درخواست‌کننده ← بالادستش (رئیس واحد) ← انبار کارگاه ← سرپرست کارگاه ← خرید در کارگاه توسط پشتیبانی کارگاه (پیوست فاکتور یا پیش‌فاکتور) ← اعلام وصول (تحویل‌گیرنده و انباردار) ← پایان و بایگانی خودکار. <b>مصالح، تجهیزات و ابزار اصلی:</b> درخواست‌کننده ← رئیس واحد ← انبار کارگاه ← معاون فنی ← سرپرست کارگاه ← مدیر پروژه ← پشتیبانی دفتر مرکزی (استعلام و پیش‌فاکتور) ← تأیید قیمت (مدیر پروژه یا یکی از اعضای هیات مدیره) ← خرید و اعلام نهایی اقلام ← اعلام وصول ← امور مالی (کنترل مدارک: تطبیق سه‌گانه، فاکتور رسمی و مدارک ارزش افزوده) ← پایان و بایگانی خودکار. مراحل «مدیر پروژه» و «تأیید قیمت» در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یک نفر کافی است؛ اگر منبع خرید و قیمت معلوم باشد، مدیر پروژه یا هیات مدیره با «دستور خرید مستقیم» (و نوشتن منبع و قیمت) درخواست را بدون استعلام مستقیم به خرید می‌فرستد؛ در تأیید قیمت یکی از پیش‌فاکتورها انتخاب می‌شود و بقیه بایگانی می‌شوند. نظر مدیر پروژه یا هیات مدیره برای مدیر پشتیبانی به رنگ قرمز نمایش و به کارتابل او فرستاده می‌شود. شرح کالا، مقدار، واحد و «جهت استفاده» الزامی است و تاریخ نیاز از تقویم انتخاب می‌شود و نمی‌تواند قبل از تاریخ درخواست باشد. پس از انبار، در فرم فقط مانده هر قلم (درخواست منهای موجودی انبار) دیده می‌شود. پس از خرید، فرم به «اعلام وصول کالا» تبدیل می‌شود و تحویل‌گیرنده و انباردار آن را تأیید می‌کنند. بخش پیوست‌ها در هر مرحله بالای «اقدام شما» است. تا مرحله مدیر پروژه، فقط کسی که درخواست در کارتابل اوست می‌تواند ویرایش یا لغو کند.<br>
 <b>کدگذاری و تطبیق سه‌طرفه:</b> MR درخواست کالا، PO سفارش خرید، GRN اعلام وصول، PAY پرداخت (مثل MR-0012). پیش از تسویه فقط وجود سه مدرک بررسی می‌شود: درخواست کالا، اعلام وصول و فاکتور؛ تا فاکتور اصلی بارگذاری نشده، پیش‌فاکتور به‌جای آن حساب می‌شود. مقدار، مبلغ و شماره فاکتور کنترل نمی‌شود.<br>
 <b>مدیر سیستم:</b> می‌تواند کاربر و پروژه را حذف یا ویرایش کند، هر سند (نامه، درخواست کالا، درخواست مالی) را حذف کند، و درخواست کالا و محل بایگانی را در هر مرحله، حتی پس از بایگانی، اصلاح کند.<br>
 <b>چارت کارگاه:</b> مهندسان اجرایی زیر نظر معاون اجرایی و مهندسان دفتر فنی زیر نظر معاون فنی هستند؛ پشتیبانی و انبار زیر نظر سرپرست کارگاه، معاونان زیر نظر سرپرست کارگاه و او زیر نظر مدیر پروژه. درخواست کالای هر نفر را بالادست مستقیمش تأیید می‌کند. مهندسان فقط درخواست‌های واحد خودشان را می‌بینند. کارکنان کارگاه نامه داخلی را فقط برای همکاران پروژه می‌فرستند و بالادستشان به‌طور پیش‌فرض گیرنده است.<br>
