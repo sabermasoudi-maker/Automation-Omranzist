@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.5'
+VERSION = '2.6'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -92,7 +92,8 @@ P_FLOW = {
     'hq_quotes': {'quoted': ('price_approve', 'استعلام و پیش‌فاکتورها آماده شد — ارسال برای تأیید قیمت')},
     'price_approve': {'approve': ('hq_purchase', 'تأیید قیمت و فروشنده — ارسال برای خرید'),
                       'requote': ('hq_quotes', 'برگشت برای استعلام مجدد')},
-    'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول')},
+    # خرید دفتر مرکزی: همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود
+    'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول و پرداخت مالی')},
     'delivery': {'recv_ok': (None, 'تأیید تحویل توسط درخواست‌کننده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
                  'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
@@ -132,6 +133,9 @@ CANCEL_STAGES = EDIT_STAGES
 # دسته کالا تعیین‌کننده مسیر است: عمومی و مصرفی در کارگاه با پشتیبانی کارگاه؛ اصلی با روال کامل دفتر مرکزی
 CATEGORIES = [('main', 'مصالح، تجهیزات و ابزار اصلی'), ('general', 'عمومی و مصرفی')]
 URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
+# رویدادهای جانبی گردش که درخواست را جابه‌جا نمی‌کنند (پیوست، ویرایش، پرداخت، اصلاح اعلام وصول، فاکتور رسمی)
+SIDE_ACTIONS = ('attach', 'edit', 'delatt', 'pay_done', 'grn_edit', 'official_inv')
+INV_KINDS = ('فاکتور', 'پیش‌فاکتور')
 ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
 DEFAULT_CANCEL_REASONS = 'نیاز نیست\nبودجه تأمین نیست\nتکراری است\nزمان‌بندی اجازه نمی‌دهد\nسایر'
 P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل کامل از موجودی انبار',
@@ -372,7 +376,10 @@ def add_columns(c):
                           ('disc_ok_by', 'INTEGER'), ('disc_ok_at', 'TEXT'), ('disc_note', "TEXT DEFAULT ''"),
                           # ۲.۴: پیش‌فاکتور منتخب و کنترل مدارک مالی (فاکتور رسمی، مدارک ارزش افزوده)
                           ('chosen_att', 'INTEGER'), ('official_inv', 'INTEGER'), ('vat_docs', 'INTEGER'),
-                          ('docs_by', 'INTEGER'), ('docs_at', 'TEXT')],
+                          ('docs_by', 'INTEGER'), ('docs_at', 'TEXT'),
+                          # ۲.۶: ارسال همزمان به مالی برای پرداخت پس از خرید
+                          ('pay_req_at', 'TEXT'), ('pay_done_at', 'TEXT'), ('pay_done_by', 'INTEGER'),
+                          ('pay_note', "TEXT DEFAULT ''")],
             'purchase_payments': [('code', "TEXT DEFAULT ''")],
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
@@ -883,6 +890,8 @@ def cart_count(c, u):
     if u['role'] in ('finance',):
         n += c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]
     n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_HELD_SQL, held_args(u)).fetchone()[0]
+    if u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager'):
+        n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_PAYWAIT_SQL).fetchone()[0]
     return n
 
 
@@ -897,10 +906,14 @@ PUR_HELD_SQL = ("((x.holder_id=? AND x.status IN ('open','returned') AND NOT (x.
 
 def held_args(u):
     return (u['id'], u['id'], u['id'], 1 if u['role'] == 'manager' else 0, u['id'])
+# منتظر پرداخت امور مالی: خرید دفتر مرکزی انجام شده و پرداختش ثبت نشده (همزمان با اعلام وصول، نسخه ۲.۶)
+PUR_PAYWAIT_SQL = "(x.pay_req_at IS NOT NULL AND x.pay_done_at IS NULL AND x.status NOT IN ('cancelled','rejected'))"
+# فاکتور رسمی (ارزش افزوده) هنگام کنترل مدارک دریافت نشده
+PUR_NOINV_SQL = "(x.docs_at IS NOT NULL AND COALESCE(x.official_inv,0)=0)"
 # منتظر پرداخت یا تسویه مالی (پس از تأیید قیمت یا خرید کارگاه)
 # خریدهای کارگاه (عمومی و مصرفی) به مالی دفتر مرکزی نمی‌آیند
 # منتظر کنترل مدارک امور مالی (پرداخت و تسویه در سامانه نیست)
-PUR_PAY_SQL = "(x.status='open' AND x.stage='finance_settle')"
+PUR_PAY_SQL = "((x.status='open' AND x.stage='finance_settle') OR " + PUR_PAYWAIT_SQL + ")"
 
 
 # ---------- نامه‌ها
@@ -1272,15 +1285,18 @@ def pur_folder(P):
 
 def handover_id(c, P):
     """شماره آخرین رویداد گردش که درخواست را به کارتابل دارنده فعلی رساند."""
-    r = c.execute("SELECT MAX(id) FROM purchase_flow WHERE purchase_id=? AND action NOT IN ('attach','edit','delatt')",
-                  (P['id'],)).fetchone()
+    r = c.execute('SELECT MAX(id) FROM purchase_flow WHERE purchase_id=? AND action NOT IN (%s)'
+                  % ','.join('?' * len(SIDE_ACTIONS)), (P['id'],) + SIDE_ACTIONS).fetchone()
     return r[0] or 0
 
 
 def can_del_att(c, u, P, a):
     """پیوست را فقط خودِ بارگذارنده حذف می‌کند، آن هم فقط در همان نوبتی که درخواست در کارتابلش است."""
-    return (a['uploaded_by'] == u['id'] and P['holder_id'] == u['id'] and P['status'] in ('open', 'returned')
-            and (a.get('flow_id') or 0) > handover_id(c, P))
+    if a['uploaded_by'] != u['id'] or (a.get('flow_id') or 0) <= handover_id(c, P):
+        return False
+    if P['holder_id'] == u['id'] and P['status'] in ('open', 'returned'):
+        return True
+    return a.get('kind') in INV_KINDS and post_purchase_support(c, u, P)  # فاکتوری که پشتیبانی پس از خرید گذاشته
 
 
 @route('POST', r'/api/attachments/(\d+)/delete')
@@ -1301,8 +1317,12 @@ def api_att_delete(h, c, u, b, q, aid):
 def api_attach(h, c, u, b, q):
     dt, did = q.get('doc_type'), int(q.get('doc_id') or 0)
     D = get_doc(c, u, dt, did)
+    kind = urllib.parse.unquote(h.headers.get('X-Kind') or '')
+    kind = kind if kind in ATT_KINDS else ''
     if dt == 'purchase':
         need(can_attach_pur(c, u, D), 'پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد')
+        if not can_attach_turn(c, u, D):  # پشتیبانی پس از خرید: فقط فاکتور یا پیش‌فاکتور
+            need(kind in INV_KINDS, 'پس از خرید، پشتیبانی فقط فاکتور یا پیش‌فاکتور پیوست می‌کند', 400)
     name = urllib.parse.unquote(h.headers.get('X-Filename') or 'file')
     name = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(name))[:150] or 'file'
     raw = h.raw_body
@@ -1312,13 +1332,13 @@ def api_attach(h, c, u, b, q):
     rel = os.path.join(sub, '%s_%s' % (secrets.token_hex(6), name))
     with open(os.path.join(FILES, rel), 'wb') as f:
         f.write(raw)
-    kind = urllib.parse.unquote(h.headers.get('X-Kind') or '')
-    kind = kind if kind in ATT_KINDS else ''
     fid = None
     if dt == 'purchase':
         fid = c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
                         (did, D['stage'], 'attach', 'پیوست ' + (kind or 'فایل'), u['id'], name, now())).lastrowid
-    hq_only = 1 if dt == 'purchase' and D['stage'] in HQ_ONLY_STAGES else 0  # مدارک قیمت برای کارگاه دیده نمی‌شود
+    # مدارک قیمت برای کارگاه دیده نمی‌شود؛ فاکتور خرید دفتر مرکزی هم که پس از خرید پیوست شود
+    hq_only = 1 if dt == 'purchase' and (D['stage'] in HQ_ONLY_STAGES or (
+        kind in INV_KINDS and not site_path(c, D) and is_bought(c, D))) else 0
     c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id,hq_only) '
               'VALUES(?,?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid, hq_only))
     log(c, dt, did, u['id'], 'پیوست' + (' — ' + kind if kind else ''), name)
@@ -1679,8 +1699,8 @@ def pur_fields(c, u, b, pid_fixed=None, req_date=None):
         need(is_mgr(u) or is_member(c, u, pid), 'فقط ارکان پروژه «%s» می‌توانند برای آن درخواست کالا ثبت کنند' % pr['name'])
     unit = b.get('unit')
     need(unit in dict(UNITS), 'واحد درخواست‌کننده را انتخاب کنید', 400)
-    cat = b.get('category') or 'general'
-    need(cat in dict(CATEGORIES), 'دسته کالا نامعتبر', 400)
+    cat = b.get('category') or ''
+    need(cat in dict(CATEGORIES), 'دسته کالا (دسته خرید) را انتخاب کنید', 400)
     urg = b.get('urgency') or 'normal'
     need(urg in dict(URGENCIES), 'فوریت نامعتبر', 400)
     rd = jnorm(req_date) or jtoday()
@@ -1768,6 +1788,10 @@ def pur_filter(c, u, q):
             w.append('x.%s=?' % k); p.append(int(q[k]))
     if q.get('unsettled'):
         w.append(PUR_PAY_SQL)
+    if q.get('pay_wait'):
+        w.append(PUR_PAYWAIT_SQL)
+    if q.get('no_official'):
+        w.append(PUR_NOINV_SQL)
     for k in ('unit', 'stage', 'status', 'category', 'urgency'):
         if q.get(k):
             vals = q[k].split(',')
@@ -1909,12 +1933,16 @@ def api_purchase_get(h, c, u, b, q, pid):
             r['status'] = ns
     site = is_site_only(c, u)
     if site:  # قیمت‌ها و مدارک پس از مدیر پروژه برای کارکنان کارگاه نمایش داده نمی‌شود
+        hid = {a['flow_id'] for a in att if a.get('hq_only') and a.get('flow_id')}
+        hq_inv = not site_path(c, P)  # فاکتور خرید دفتر مرکزی که پس از خرید پیوست یا حذف شده
         att = [a for a in att if not a.get('hq_only')]
-        flow = [f for f in flow if not (f['stage'] in HQ_ONLY_STAGES and f['action'] in ('attach', 'delatt'))]
+        flow = [f for f in flow if not (f['stage'] in HQ_ONLY_STAGES and f['action'] in ('attach', 'delatt'))
+                and f['id'] not in hid and f['action'] not in ('pay_done', 'official_inv')
+                and not (hq_inv and f['action'] == 'delatt' and f['label'].endswith(INV_KINDS))]
         for f in flow:
             if f['stage'] in HQ_ONLY_STAGES:
                 f['note'] = ''
-        for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no'):
+        for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no', 'pay_note'):
             P[k] = None
     # نظر مدیر پروژه و هیات مدیره هنگام تأیید یا برگشت (برای پشتیبانی به رنگ قرمز)
     mgmt = []
@@ -1925,7 +1953,8 @@ def api_purchase_get(h, c, u, b, q, pid):
                 mgmt.append(dict(f, note=txt))
     for it in items:
         it['remaining'] = fmt_num(remaining(it))
-    bought = c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased'", (P['id'],)).fetchone()
+    bought = is_bought(c, P)
+    fin = is_finance(c, u) and not site
     mem = pmembers(c, P['project_id'])
     wh = one(c.execute('SELECT full_name FROM users WHERE id=?', (P['wh_by'] or mem.get('warehouse') or 0,))) or {}
     return {'docs': docs_check(c, P) if bought else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
@@ -1933,7 +1962,10 @@ def api_purchase_get(h, c, u, b, q, pid):
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
             'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
             'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
-            'buy_status': BUY_STATUS, 'site_view': site,
+            'buy_status': BUY_STATUS, 'site_view': site, 'can_edit_grn': can_edit_grn(c, u, P),
+            'support_attach': not can_attach_turn(c, u, P) and post_purchase_support(c, u, P),
+            'can_pay': fin and bool(P['pay_req_at']) and not P['pay_done_at'] and P['status'] not in ('cancelled', 'rejected'),
+            'can_official': fin and bool(P['docs_at']) and not P['official_inv'],
             'hq_only_stages': HQ_ONLY_STAGES}
 
 
@@ -1971,12 +2003,42 @@ def in_group(c, u, P):
             or pmembers(c, P['project_id']).get('pm') == u['id'])
 
 
-def can_attach_pur(c, u, P):
+def can_attach_turn(c, u, P):
+    """پیوست در نوبت خودِ کاربر: درخواست در کارتابل اوست."""
     if P['status'] not in ('open', 'returned'):
         return False
     if P['holder_id'] == u['id'] or (P['stage'] == 'delivery' and is_warehouse(c, u, P)):
         return True
     return P['stage'] in GROUP_STAGES and in_group(c, u, P)
+
+
+def can_attach_pur(c, u, P):
+    return can_attach_turn(c, u, P) or post_purchase_support(c, u, P)
+
+
+def is_bought(c, P):
+    return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased'", (P['id'],)).fetchone() is not None
+
+
+def post_purchase_support(c, u, P):
+    """پشتیبانی‌ای که خرید را انجام داده (کارگاه یا دفتر مرکزی)، در همه مراحل پس از خرید، حتی پس از بایگانی،
+    فاکتور یا پیش‌فاکتور پیوست می‌کند."""
+    if P['status'] not in ('open', 'returned', 'closed') or P['stage'] in ('site_purchase', 'hq_purchase') \
+            or not is_bought(c, P):
+        return False
+    if site_path(c, P):
+        return pmembers(c, P['project_id']).get('support') == u['id']
+    return str(u['id']) == settings(c).get('support_manager')
+
+
+def can_edit_grn(c, u, P):
+    """ویرایش اعلام وصول (مقدار تحویل‌گرفته) با تحویل‌گیرنده و انباردار، پس از خرید و تا پیش از کنترل مدارک مالی."""
+    if P['status'] not in ('open', 'closed') or P['stage'] not in ('delivery', 'finance_settle', 'invoice_fix',
+                                                                   'discrepancy', 'done') or P['docs_at']:
+        return False
+    if not is_bought(c, P):
+        return False
+    return u['id'] == P['requester_id'] or is_warehouse(c, u, P) or u['role'] == 'admin'
 
 
 def is_finance(c, u):
@@ -2073,6 +2135,9 @@ def api_purchase_act(h, c, u, b, q, pid):
                        (x.get('note') or '').strip(), it['id']))
         if P['stage'] == 'site_purchase':
             need(invoice_doc(c, P), 'فاکتور (یا پیش‌فاکتور) خرید را پیوست کنید', 400)
+        elif not P['pay_req_at']:  # خرید دفتر مرکزی: همزمان با اعلام وصول، به امور مالی برای پرداخت
+            c.execute('UPDATE purchases SET pay_req_at=? WHERE id=?', (now(), P['id']))
+            notes.append('همزمان برای پرداخت به امور مالی ارسال شد')
         c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
     elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad'):
         if a == 'recv_ok':
@@ -2099,12 +2164,13 @@ def api_purchase_act(h, c, u, b, q, pid):
             pflow(c, P['id'], u, P['stage'], a, label, note)
             return {'ok': True}
     elif a == 'docs_ok':  # امور مالی: کنترل مدارک؛ پرداخت و تسویه در سامانه نیست
-        oi, vd = str(b.get('official_inv', '')), str(b.get('vat_docs', ''))
-        need(oi in ('0', '1') and vd in ('0', '1'), 'مشخص کنید فاکتور رسمی و مدارک ارزش افزوده دریافت شده‌اند یا نه', 400)
+        # فاکتور رسمی و مدارک ارزش افزوده یک مدرک‌اند (نسخه ۲.۶)
+        oi = str(b.get('official_inv', ''))
+        need(oi in ('0', '1'), 'مشخص کنید فاکتور رسمی (ارزش افزوده) دریافت شده یا نه', 400)
         c.execute('UPDATE purchases SET official_inv=?, vat_docs=?, docs_by=?, docs_at=? WHERE id=?',
-                  (int(oi), int(vd), u['id'], now(), P['id']))
-        notes.append('فاکتور رسمی: %s — مدارک ارزش افزوده: %s — بایگانی خودکار' % ('دریافت شد' if oi == '1' else 'دریافت نشد',
-                                                                          'دریافت شد' if vd == '1' else 'دریافت نشد'))
+                  (int(oi), int(oi), u['id'], now(), P['id']))
+        notes.append('فاکتور رسمی و ارزش افزوده: %s — بایگانی خودکار' % ('دریافت شد' if oi == '1' else
+                                                                       'دریافت نشد (در فهرست فاکتورهای رسمی دریافت‌نشده)'))
 
     label = label + (' — ارسال به ' + P_STAGES[nxt] if a in ('stock', 'approve') and nxt not in ('done', 'returned') else '')
     move(c, u, P, nxt, (a, label), '؛ '.join([note] + notes if note else notes),
@@ -2167,6 +2233,56 @@ def api_purchase_cancel(h, c, u, b, q, pid):
     return {'ok': True}
 
 
+@route('POST', r'/api/purchases/(\d+)/receipt')
+def api_purchase_receipt(h, c, u, b, q, pid):
+    """ویرایش اعلام وصول: مقدار تحویل‌گرفته هر قلم، توسط تحویل‌گیرنده یا انباردار."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(can_edit_grn(c, u, P), 'ویرایش اعلام وصول فقط با تحویل‌گیرنده و انباردار و تا پیش از کنترل مدارک مالی است')
+    posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
+    ch = []
+    for it in rows(c.execute("SELECT * FROM purchase_items WHERE purchase_id=? AND bought_status IN ('bought','partial') "
+                             'ORDER BY row_no', (P['id'],))):
+        x = posted.get(it['id'])
+        if x is None:
+            continue
+        v = to_num(x.get('qty'))
+        need(v is not None and v >= 0, 'مقدار تحویل‌گرفته «%s» باید عدد باشد' % it['title'], 400)
+        if fmt_num(v) != (it['recv_qty'] or ''):
+            c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(v), it['id']))
+            ch.append('%s: %s ← %s' % (it['title'], it['recv_qty'] or '—', fmt_num(v)))
+    note = (b.get('note') or '').strip()
+    need(ch or note, 'تغییری ثبت نشد', 400)
+    who = 'انباردار' if is_warehouse(c, u, P) and u['id'] != P['requester_id'] else \
+        ('تحویل‌گیرنده' if u['id'] == P['requester_id'] else 'مدیر سیستم')
+    pflow(c, P['id'], u, P['stage'], 'grn_edit', 'ویرایش اعلام وصول (%s)' % who, fa_num('؛ '.join(ch + ([note] if note else []))))
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/paid')
+def api_purchase_paid(h, c, u, b, q, pid):
+    """امور مالی پرداخت خریدی را که پشتیبانی دفتر مرکزی انجام داده ثبت می‌کند (همزمان با اعلام وصول)."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(is_finance(c, u), 'فقط امور مالی')
+    need(P['pay_req_at'] and not P['pay_done_at'] and P['status'] not in ('cancelled', 'rejected'),
+         'این خرید منتظر پرداخت نیست')
+    note = (b.get('note') or '').strip()
+    c.execute('UPDATE purchases SET pay_done_at=?, pay_done_by=?, pay_note=? WHERE id=?', (now(), u['id'], note, P['id']))
+    pflow(c, P['id'], u, P['stage'], 'pay_done', 'پرداخت انجام شد — امور مالی', note)
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/official_inv')
+def api_purchase_official(h, c, u, b, q, pid):
+    """فاکتور رسمی (ارزش افزوده) که هنگام کنترل مدارک دریافت نشده بود، بعداً رسید."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(is_finance(c, u), 'فقط امور مالی')
+    need(P['docs_at'] and not P['official_inv'], 'این خرید در فهرست فاکتورهای رسمی دریافت‌نشده نیست')
+    c.execute('UPDATE purchases SET official_inv=1, vat_docs=1 WHERE id=?', (P['id'],))
+    pflow(c, P['id'], u, P['stage'], 'official_inv', 'فاکتور رسمی و ارزش افزوده دریافت شد — امور مالی',
+          (b.get('note') or '').strip())
+    return {'ok': True}
+
+
 # ---------- گزارش‌ها
 @route('GET', '/api/reports')
 def api_reports(h, c, u, b, q):
@@ -2197,7 +2313,8 @@ def api_reports(h, c, u, b, q):
     no_sep = c.execute("SELECT COUNT(*) FROM requests WHERE status='paid' AND sepidar_no=''").fetchone()[0]
     # مدت ماندن درخواست کالا در هر مرحله (از ورود تا اقدام)
     dur, prev = {}, {}
-    for f in c.execute("SELECT purchase_id, stage, at FROM purchase_flow WHERE action!='attach' ORDER BY purchase_id, id"):
+    for f in c.execute("SELECT purchase_id, stage, at FROM purchase_flow WHERE action NOT IN (%s) ORDER BY purchase_id, id"
+                       % ','.join("'%s'" % a for a in SIDE_ACTIONS)):
         pv = prev.get(f['purchase_id'])
         if pv and f['stage'] in P_STAGES:
             h_ = (datetime.datetime.fromisoformat(f['at']) - datetime.datetime.fromisoformat(pv)).total_seconds() / 3600

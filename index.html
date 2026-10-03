@@ -79,6 +79,7 @@ tr.late td{background:var(--badb)}
 .modal .card{width:min(520px,94vw);max-height:90vh;overflow:auto}
 .num{direction:ltr;unicode-bidi:isolate;display:inline-block}
 .print-only{display:none}
+@media print{#pg.purpg>:not(.sheet){display:none!important}} /* خروجی PDF درخواست کالا: فقط فرم درخواست یا اعلام وصول */
 nav .grp{padding:10px 18px 2px;font-weight:bold;color:#17344d;font-size:13px;border-top:1px solid var(--line);margin-top:6px}
 nav .grp:first-child{border-top:none;margin-top:0}
 nav a.sub{padding:5px 32px 5px 18px;font-size:13.5px}
@@ -181,7 +182,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='2.5'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='2.6'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -298,7 +299,7 @@ async function boot(){
 const isTop=()=>['admin','manager'].includes(M.me.role); // مدیر سیستم و هیات مدیره: بالاترین سطح
 // تب‌های دفتر مرکزی: [کلید، عنوان، مسیر پیش‌فرض، زیرتب‌ها]
 const HQ=[['hq-support','پشتیبانی','hq-support',[['hq-support','منتظر خرید'],['purchases','همه درخواست‌های کالا']]],
-  ['hq-finance','مالی','hq-finance',[['hq-finance','کنترل مدارک خریدها'],['requests','درخواست‌های مالی'],['request-new','درخواست پرداخت / تنخواه جدید']]],
+  ['hq-finance','مالی','hq-finance',[['hq-finance','پرداخت و کنترل مدارک خریدها'],['hq-noinv','فاکتورهای رسمی دریافت‌نشده'],['requests','درخواست‌های مالی'],['request-new','درخواست پرداخت / تنخواه جدید']]],
   ['hq-office','اداری','letters',[['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['hq-office','بایگانی درخواست‌های کالا (خودکار)']]],
   ['hq-reports','گزارش‌ها','reports',[['reports','خلاصه و عملکرد'],['report-purchases','همه درخواست‌های کالا'],['report-requests','همه درخواست‌های مالی'],['report-letters','همه مکاتبات']]]];
 const REPORT_PAGES=HQ[3][3].map(t=>t[0]); // فقط هیات مدیره، مدیر سیستم، مدیر پشتیبانی و مدیر مالی
@@ -320,7 +321,7 @@ async function route(){
   if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
   toggleNav(0);try{drawNav(p=='project'?'project/'+id:M.site_only?({letter:'letters','letter-edit':'letters'}[p]||p):(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
   const V={search:()=>searchPage(id),'letter-print':()=>letterPrint(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
-    'hq-support':()=>hqStage('hq_quotes,hq_purchase','درخواست‌های کالا منتظر استعلام قیمت یا خرید (پشتیبانی دفتر مرکزی)'),'hq-finance':()=>hqStage('finance_settle','خریدهای منتظر کنترل مدارک (امور مالی)'),'hq-office':()=>hqStage('','',1),
+    'hq-support':()=>hqStage('hq_quotes,hq_purchase','درخواست‌های کالا منتظر استعلام قیمت یا خرید (پشتیبانی دفتر مرکزی)'),'hq-finance':hqFinance,'hq-noinv':()=>hqStage('','فاکتور رسمی و ارزش افزوده دریافت‌نشده (پس از کنترل مدارک)',0,'no_official=1'),'hq-office':()=>hqStage('','',1),
     'report-purchases':()=>purchasesPage(),'report-requests':requestsList,'report-letters':lettersList,
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
   const SITE_OK=['letters','letter-new','letter','letter-edit','letter-print'];
@@ -374,7 +375,7 @@ const docLink=r=>`#/${r.doc_type}/${r.doc_id}`;
 async function cartable(){
   const d=await api('GET','/api/cartable');M.today=d.today;
   const sec=[['in','نامه‌های من',d.inbox.length],['pur','درخواست‌های کالای من',d.pur_held.length],['ap','درخواست‌های مالی منتظر تأیید',d.approvals.length],['sent','پیگیری نامه‌های ارسالی',d.sent.length],['mine','درخواست‌های ثبت‌شده من',d.mine.length+d.pur_mine.length]];
-  if(d.pur_pay.length)sec.splice(2,0,['ppay','کنترل مدارک خریدها',d.pur_pay.length]);
+  if(d.pur_pay.length)sec.splice(2,0,['ppay','مالی: پرداخت و کنترل مدارک خریدها',d.pur_pay.length]);
   if(M.me.role=='finance'||isTop())sec.push(['pay','مالی: پرداخت و سند سپیدار',d.pay.length]);
   if(M.me.role=='secretariat'||isTop())sec.push(['desk','دبیرخانه: نامه‌های بدون ارجاع',d.desk.length]);
   let h=`<h1>کارتابل ${esc(M.me.full_name)}</h1><div class="tabs">${sec.map((s,i)=>`<a data-t="${s[0]}" class="${i?'':'on'}">${s[1]} (${fa(s[2])})</a>`).join('')}</div>`;
@@ -561,8 +562,11 @@ const pay=id=>run(async()=>{if(!await ask('پرداخت / سند سپیدار ا
 // ---------------------------------------------------------------- درخواست کالا و پروژه‌ها
 const unitName=k=>(M.units.find(u=>u[0]==k)||[])[1]||'';
 const P_ST={open:'warn',returned:'bad',delivered:'ok',closed:'ok',rejected:'bad',cancelled:''};
-const pTag=P=>`<span class="tag ${P_ST[P.status]||''}">${esc(P.status=='open'?M.p_stages[P.stage]:M.p_status[P.status])}</span>`;
+const pTag=P=>`<span class="tag ${P_ST[P.status]||''}">${esc(P.status=='open'?M.p_stages[P.stage]:M.p_status[P.status])}</span>`+(P.pay_req_at&&!P.pay_done_at&&!['cancelled','rejected'].includes(P.status)?' <span class="tag warn">منتظر پرداخت مالی</span>':'')+(P.docs_at&&!P.official_inv?' <span class="tag bad">فاکتور رسمی دریافت نشده</span>':'');
 function purTable(rs,noProj){return rs.length?`<table><tr><th>شماره</th><th>تاریخ</th>${noProj?'<th>پروژه</th>':''}<th>واحد</th><th>اقلام</th><th>درخواست‌کننده</th><th>وضعیت / مرحله</th><th>در دست</th></tr>${rs.map(r=>`<tr class="cl" onclick="location='#/purchase/${r.id}'"><td>${dn(r.number)}</td><td class="mut">${fa(r.req_date)}</td>${noProj?`<td>${esc(r.project||'')}</td>`:''}<td>${esc(unitName(r.unit))}</td><td>${esc(r.items_text||'')}</td><td>${esc(r.requester||'')}</td><td>${pTag(r)}</td><td>${esc(r.holder||'')}</td></tr>`).join('')}</table>`:'<div class="mut">موردی نیست.</div>'}
+async function hqFinance(){ // خریدهای منتظر پرداخت (همزمان با اعلام وصول) و منتظر کنترل مدارک
+  const[pw,fs]=await Promise.all([api('GET','/api/purchases?pay_wait=1'),api('GET','/api/purchases?status=open&stage=finance_settle')]);
+  $('#pg').innerHTML=`<div class="card"><h2>خریدهای منتظر پرداخت (${fa(pw.length)})</h2>${purTable(pw,1)}</div><div class="card"><h2>خریدهای منتظر کنترل مدارک (${fa(fs.length)})</h2>${purTable(fs,1)}</div>`}
 async function hqStage(stage,title,withDone,qs){
   const rs=title?await api('GET','/api/purchases?'+(qs||'status=open&stage='+stage)):[];
   let h=title?`<div class="card"><h2>${title} (${fa(rs.length)})</h2>${purTable(rs,1)}</div>`:'';
@@ -642,7 +646,10 @@ function purSheet(P,items,edit,flow,d){
   if(!edit&&d&&d.receipt&&!purView.showReq)return receiptSheet(P,items,flow,d);
   const projs=M.projects.filter(p=>p.code!='HQ'&&(isTop()||M.my_roles.some(r=>r.project_id==p.id)));
   const sig=(sts)=>{const f=[...flow].reverse().find(x=>sts.includes(x.stage)&&['submit','resubmit'].includes(x.action));return f?`<div class="sg">${esc(f.user_name)} — ${jd(f.at,1)}</div>`:''};
-  const pmSig=[['unit_approval','رئیس واحد'],['tech_review','معاون فنی'],['supervisor_approve','سرپرست کارگاه'],['pm_approve','مدیر پروژه']].map(([st,t])=>{const f=[...flow].reverse().find(x=>x.stage==st&&x.action=='approve');return f?`<div class="sg">${t}: ${esc(f.user_name)} — ${jd(f.at,1)}</div>`:''}).join('');
+  // درخواست‌کننده «واحد» است نه شخص: امضای رئیس واحد در بخش درخواست‌کننده (اگر خودِ رئیس واحد ثبت کرده، ثبتش همان تأیید است)
+  const headSig=(()=>{const f=[...flow].reverse().find(x=>x.stage=='unit_approval'&&x.action=='approve');if(f)return `<div class="sg">رئیس واحد: ${esc(f.user_name)} — ${jd(f.at,1)}</div>`;
+    const s=[...flow].reverse().find(x=>['submit','resubmit'].includes(x.action)&&/تأیید رئیس واحد و ارسال استعلام/.test(x.label||''));return s?`<div class="sg">رئیس واحد: ${esc(s.user_name)} — ${jd(s.at,1)}</div>`:''})();
+  const pmSig=[['tech_review','معاون فنی'],['supervisor_approve','سرپرست کارگاه'],['pm_approve','مدیر پروژه']].map(([st,t])=>{const f=[...flow].reverse().find(x=>x.stage==st&&x.action=='approve');return f?`<div class="sg">${t}: ${esc(f.user_name)} — ${jd(f.at,1)}</div>`:''}).join('');
   const sel=(id,arr,v)=>`<select id="${id}">${opts(arr,v)}</select>`;
   let rows=items,note='';
   if(!edit&&items.some(i=>i.stock_qty)){const left=items.filter(i=>+en(i.remaining)>0);
@@ -653,7 +660,7 @@ function purSheet(P,items,edit,flow,d){
   <table><tr><td><div class="hd"><img src="/logo.png" class="logo" onerror="this.remove()"><div><div class="co">${esc(M.company)}</div><div class="ttl">درخواست کالا</div></div></div></td>
    <td class="meta"><div><label>تاریخ:</label>${fa(P.req_date||todayJ())}</div><div><label>شماره:</label>${P.number?`<span>${dn(P.number)}</span>${P.version>1?` <span class="mut">(نسخه ${fa(P.version)})</span>`:''}`:'<span class="mut">پس از ثبت، خودکار</span>'}</div></td></tr></table>
   <table><tr><td><label>نام پروژه:</label>${edit&&!fixedProj?`<select id="puP" onchange="purProj()">${opts(projs.map(p=>[p.id,p.name]),P.project_id,'— انتخاب کنید —')}</select>`:e(P.project)+(edit?`<input type="hidden" id="puP" value="${P.project_id}">`:'')}</td>
-   <td><label>دسته کالا:</label>${edit?sel('puK',M.categories,P.category||'general'):e(catName(P.category))}</td>
+   <td><label>دسته کالا (دسته خرید)${edit?' *':''}:</label>${edit?`<select id="puK">${opts(M.categories,P.category||'','— انتخاب کنید —')}</select>`:e(catName(P.category))}</td>
    <td rowspan="3" class="w35"><label>جهت استفاده${edit?' *':''}:</label>${edit?`<textarea id="puU" style="min-height:96px" placeholder="الزامی — مثلاً: اجرای سقف طبقه سوم بلوک B">${e(P.purpose)}</textarea>`:`<div style="white-space:pre-wrap">${e(P.purpose)}</div>`}</td></tr>
    <tr><td><label>واحد درخواست کننده:</label>${edit?`<select id="puN">${opts(M.units,P.unit,'—')}</select>`:e(unitName(P.unit))}</td>
    <td><label>انبار محل درخواست:</label>${edit?`<input id="puW" value="${e(P.warehouse)}">`:e(P.warehouse)}</td></tr>
@@ -664,7 +671,7 @@ function purSheet(P,items,edit,flow,d){
    <tbody id="puItems">${Array.from({length:Math.max(edit&&matchMedia('(max-width:760px)').matches?2:edit?7:0,rows.length)},(_,i)=>purRow(i+1,rows[i],edit)).join('')}</tbody></table>
   ${note?`<div class="mut" style="margin-top:4px">${note}</div>`:''}
   ${edit?`<div class="noprint" style="margin-top:6px"><button class="btn l sm" onclick="addPurRow()">+ ردیف</button></div><datalist id="purUnits">${PUR_UNITS.map(u=>`<option value="${u}">`).join('')}</datalist>`:''}
-  <table class="sign"><tr><td><label>درخواست کننده:</label>${e(P.requester||M.me.full_name)}${sig(['draft','returned'])}</td><td><label>مدیریت پروژه / سرپرست کارگاه:</label>${pmSig}</td></tr></table></div>`}
+  <table class="sign"><tr><td><label>درخواست کننده:</label>${P.unit?'واحد '+e(unitName(P.unit)):''}${sig(['draft','returned']).replace('<div class="sg">','<div class="sg">تنظیم: ')||`<div class="sg">تنظیم: ${e(P.requester||M.me.full_name)}</div>`}${headSig}</td><td><label>مدیریت پروژه / سرپرست کارگاه:</label>${pmSig}</td></tr></table></div>`}
 function receiptSheet(P,items,flow,d){const e=v=>esc(v||'');
   const bought=items.filter(i=>i.bought_status&&i.bought_status!='none');
   const conf=(at,who)=>at?`<div class="sg">${esc(who)} — ${jd(at,1)}</div>`:'<div class="sg mut">منتظر تأیید</div>';
@@ -687,6 +694,7 @@ function purVals(){return{project_id:val('puP'),unit:val('puN'),warehouse:val('p
   items:[...document.querySelectorAll('#puItems tr')].map(tr=>{const o={};tr.querySelectorAll('input').forEach(i=>o[i.dataset.k]=(i.dataset.k=='qty'?en(i.value):i.value).trim());return o}).filter(o=>o.title||o.qty)}}
 function purCheck(v){if(!v.items.length)throw new Error('حداقل یک ردیف کالا وارد کنید');
   v.items.forEach((o,i)=>{const r='ردیف '+fa(i+1)+': ';if(!o.title)throw new Error(r+'شرح کالا را بنویسید');if(!o.qty)throw new Error(r+'مقدار را بنویسید');if(!o.unit)throw new Error(r+'واحد را بنویسید')});
+  if(!v.category)throw new Error('دسته کالا (دسته خرید) را انتخاب کنید');
   if(!v.purpose.trim())throw new Error('کادر «جهت استفاده» را پر کنید');if(!v.need_date)throw new Error('تاریخ نیاز را از تقویم انتخاب کنید')}
 function kindSel(id,def){return `<select id="${id}" style="max-width:170px">${opts(M.att_kinds.map(k=>[k,k]),def||'مشخصات فنی')}</select>`}
 function purchaseForm(pid){
@@ -715,7 +723,7 @@ const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval
   pm_approve:[['approve','تأیید و ارسال به پشتیبانی برای استعلام قیمت','ok'],['direct','دستور خرید مستقیم (بدون استعلام)','ok'],RET],
   hq_quotes:[['quoted','ارسال پیش‌فاکتورها برای تأیید قیمت','ok']],
   price_approve:[['approve','تأیید قیمت — ارسال برای خرید','ok'],['requote','برگشت برای استعلام مجدد','l']],
-  hq_purchase:[['purchased','خرید انجام شد — ارسال برای اعلام وصول','ok']],
+  hq_purchase:[['purchased','خرید انجام شد — ارسال به انبار (اعلام وصول) و مالی (پرداخت)','ok']],
   delivery:[['recv_ok','کالا را تحویل گرفتم (تحویل‌گیرنده)','ok'],['recv_bad','مغایرت دارد','bad'],['wh_ok','دریافت در انبار تأیید شد (انباردار)','ok'],['wh_bad','مغایرت دارد (انبار)','bad']],
   finance_settle:[['docs_ok','مدارک کامل است — پایان و بایگانی خودکار','ok'],['need_docs','برگشت به پشتیبانی برای بارگذاری فاکتور','l'],['to_disc','ارسال مغایرت برای تصمیم','bad']],
   discrepancy:[['accept','پذیرش مغایرت و ادامه','ok'],['fix','برگشت به پشتیبانی برای اصلاح','l']],
@@ -745,9 +753,10 @@ function verDiff(a,b){ // تفاوت اقلام دو نسخه
   for(const f in hd)if((a[f]||'')!=(b[f]||''))out.push(`<span class="tag">${hd[f]} تغییر کرد</span>`);
   return out.join(' ')||'<span class="mut">بدون تغییر در اقلام</span>'}
 const hrs=(a,b)=>{const h=(new Date(b.replace(' ','T'))-new Date(a.replace(' ','T')))/36e5;return h<1?fa(Math.round(h*60))+' دقیقه':h<48?fa(h.toFixed(1))+' ساعت':fa((h/24).toFixed(1))+' روز'};
+const SIDE_ACT=['attach','delatt','payment','archive_code','edit','pay_done','grn_edit','official_inv']; // رویدادهای جانبی گردش
 const numIn=(id,v,w)=>`<input id="${id}" value="${esc(v??'')}" class="num" style="max-width:${w||110}px">`;
 async function purchaseView(id,editing){
-  const d=await api('GET','/api/purchases/'+id);const P=d.doc;const fl=d.flow.filter(f=>!['attach','delatt','payment','archive_code'].includes(f.action));
+  const d=await api('GET','/api/purchases/'+id);const P=d.doc;const fl=d.flow.filter(f=>!SIDE_ACT.includes(f.action));
   if(purView.id!=P.id){purView.id=P.id;purView.showReq=0}
   const title=d.receipt&&!purView.showReq&&!editing?'اعلام وصول کالا':'درخواست کالا';
   let h=`<div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">${title} <span>${dn(d.receipt&&!purView.showReq&&P.grn_no?P.grn_no:P.number)}</span> ${pTag(P)}${P.urgency=='emergency'?' <span class="tag bad">اضطراری</span>':''} <span class="tag">${esc(catName(P.category))}</span></h1>
@@ -761,23 +770,28 @@ async function purchaseView(id,editing){
   else h+=purSheet(P,d.items,0,fl,d);
   const kv=[],chosen=d.attachments.find(a=>a.id==P.chosen_att);if(P.po_no)kv.push(['سفارش خرید',dn(P.po_no)]);
   if(chosen)kv.push(['پیش‌فاکتور منتخب',`<a href="/files/${chosen.id}" target="_blank">${esc(chosen.name)}</a>`]);if(P.grn_no)kv.push(['اعلام وصول',dn(P.grn_no)]);
-  if(P.docs_at)kv.push(['کنترل مدارک مالی',`<span class="tag ok">تکمیل — ${jd(P.docs_at,1)}</span> فاکتور رسمی: <b>${P.official_inv?'دریافت شد':'دریافت نشد'}</b> — مدارک ارزش افزوده: <b>${P.vat_docs?'دریافت شد':'دریافت نشد'}</b>`]);
+  if(P.pay_req_at)kv.push(['پرداخت مالی',P.pay_done_at?`<span class="tag ok">پرداخت شد — ${jd(P.pay_done_at,1)}</span>${P.pay_note?' '+esc(P.pay_note):''}`:`<span class="tag warn">منتظر پرداخت — ارسال ${jd(P.pay_req_at,1)}</span>`]);
+  if(P.docs_at)kv.push(['کنترل مدارک مالی',`<span class="tag ok">تکمیل — ${jd(P.docs_at,1)}</span> فاکتور رسمی و ارزش افزوده: <b>${P.official_inv?'دریافت شد':'<span style="color:var(--bad)">دریافت نشد</span>'}</b>`]);
   if(P.archive_code)kv.push(['محل بایگانی',esc(P.archive_code)]);
   const mg=mgmtNotes(d);
   if(kv.length||mg)h+=`<div class="card"><h2>سفارش خرید</h2>${mg}<div class="kv">${kv.map(([a,b])=>`<div>${a}</div><div>${b}</div>`).join('')}</div></div>`;
   // بخش مدارک و پیوست‌ها بالای «اقدام شما»؛ پیش‌فرض نوع پیوست برای پشتیبانی: پیش‌فاکتور یا فاکتور
-  const defKind={hq_quotes:'پیش‌فاکتور',site_purchase:'فاکتور',hq_purchase:'فاکتور',invoice_fix:'فاکتور',finance_settle:'فاکتور'}[P.stage];
-  h+=`<div class="noprint">${attachBlock('purchase',P.id,d.attachments,d.can_attach,defKind,P.chosen_att)}</div>`;
+  const defKind=d.support_attach?'فاکتور':{hq_quotes:'پیش‌فاکتور',site_purchase:'فاکتور',hq_purchase:'فاکتور',invoice_fix:'فاکتور',finance_settle:'فاکتور'}[P.stage];
+  h+=`<div class="noprint">${attachBlock('purchase',P.id,d.attachments,d.can_attach,defKind,P.chosen_att)}${d.support_attach?'<div class="mut" style="margin:-8px 0 14px">پشتیبانی پس از خرید در همه مراحل (حتی پس از بایگانی) می‌تواند فاکتور یا پیش‌فاکتور پیوست کند.</div>':''}</div>`;
+  if(d.can_pay&&!editing)h+=`<div class="card noprint" style="border-color:var(--warn)"><h2>پرداخت — امور مالی</h2><div class="mut" style="margin-bottom:8px">خرید انجام شده و همزمان با اعلام وصول در انبار، برای پرداخت به امور مالی آمده است. پس از پرداخت، آن را ثبت کنید.</div><label>توضیح پرداخت (اختیاری — مثلاً نحوه پرداخت یا شماره سند)</label><input id="payN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purPaid(${P.id})">پرداخت انجام شد</button></div></div>`;
+  if(d.can_official&&!editing)h+=`<div class="card noprint" style="border-color:var(--bad)"><h2>فاکتور رسمی و ارزش افزوده دریافت نشده</h2><div class="mut" style="margin-bottom:8px">فاکتور رسمی را در بخش پیوست‌ها بارگذاری کنید و پس از دریافت، ثبت کنید تا از فهرست «فاکتورهای رسمی دریافت‌نشده» خارج شود.</div><label>توضیح (اختیاری)</label><input id="oiN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purOfficial(${P.id})">فاکتور رسمی و ارزش افزوده دریافت شد</button></div></div>`;
+  if(d.can_edit_grn&&!editing&&!d.actions.includes('recv_ok')){const bi=d.items.filter(i=>i.bought_status&&i.bought_status!='none');
+    h+=`<div class="card noprint"><details><summary style="cursor:pointer;font-weight:bold">ویرایش اعلام وصول (تحویل‌گیرنده / انباردار)</summary><table style="margin-top:8px"><tr><th>شرح کالا</th><th>مقدار خریداری‌شده</th><th>مقدار تحویل‌گرفته</th></tr>${bi.map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit||i.unit)}</td><td>${numIn('ge'+i.id,fa(i.recv_qty||(P.recv_at?'':i.bought_qty)),100)}</td></tr>`).join('')}</table><label style="margin-top:8px">شرح ویرایش</label><input id="geN"><div class="row" style="margin-top:8px"><button class="btn" onclick="purGrnEdit(${P.id})">ذخیره ویرایش اعلام وصول</button></div><div class="mut" style="margin-top:6px">تا پیش از کنترل مدارک امور مالی ممکن است؛ هر ویرایش در گردش درخواست ثبت می‌شود.</div></details></div>`}
   if(d.actions.length&&!editing)h+=actionCard(d);
   else if(d.can_edit&&!editing&&!ret&&!d.is_admin)h+=`<div class="noprint" style="margin-bottom:14px"><button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button></div>`;
   if(d.docs&&!d.site_path)h+=docsCard(d);
   if(d.can_cancel&&!editing)h+=`<div class="card noprint"><details><summary style="cursor:pointer;font-weight:bold;color:var(--bad)">لغو درخواست (در بایگانی می‌ماند)</summary><div class="grid" style="margin-top:8px"><div><label>علت لغو *</label><select id="cxR">${opts(M.cancel_reasons.map(r=>[r,r]),'','— انتخاب کنید —')}</select></div><div class="full"><label>توضیح (برای «سایر» الزامی است)</label><input id="cxN"></div></div><button class="btn bad" style="margin-top:8px" onclick="purCancel(${P.id})">لغو و بایگانی</button></details></div>`;
-  h+=`<div class="card"><h2>گردش درخواست</h2><table><tr><th>تاریخ</th><th>مرحله</th><th>اقدام</th><th>توسط</th><th>مدت در مرحله</th><th>توضیح</th></tr>${d.flow.map((f,i)=>{const pv=[...d.flow.slice(0,i)].reverse().find(x=>!['attach','delatt','payment','archive_code'].includes(x.action));const main=!['attach','delatt','payment','archive_code'].includes(f.action);return `<tr><td class="mut" style="width:130px">${jd(f.at,1)}</td><td>${esc(M.p_stages[f.stage]||'')}</td><td>${esc(f.label)}</td><td>${esc(f.user_name)}</td><td class="mut">${pv&&main?hrs(pv.at,f.at):''}</td><td class="cmt">${esc(f.note)}</td></tr>`}).join('')}</table></div>`;
+  h+=`<div class="card"><h2>گردش درخواست</h2><table><tr><th>تاریخ</th><th>مرحله</th><th>اقدام</th><th>توسط</th><th>مدت در مرحله</th><th>توضیح</th></tr>${d.flow.map((f,i)=>{const pv=[...d.flow.slice(0,i)].reverse().find(x=>!SIDE_ACT.includes(x.action));const main=!SIDE_ACT.includes(f.action);return `<tr><td class="mut" style="width:130px">${jd(f.at,1)}</td><td>${esc(M.p_stages[f.stage]||'')}</td><td>${esc(f.label)}</td><td>${esc(f.user_name)}</td><td class="mut">${pv&&main?hrs(pv.at,f.at):''}</td><td class="cmt">${esc(f.note)}</td></tr>`}).join('')}</table></div>`;
   if(d.versions.length>1)h+=`<div class="card noprint"><h2>نسخه‌ها (${fa(d.versions.length)})</h2><table><tr><th>نسخه</th><th>تاریخ</th><th>توسط</th><th>شرح</th><th>تغییر نسبت به نسخه قبل</th></tr>${d.versions.map((v,i)=>`<tr><td>${fa(v.version)}</td><td class="mut">${jd(v.at,1)}</td><td>${esc(v.user_name)}</td><td>${esc(v.note)}</td><td>${i?verDiff(d.versions[i-1].data,v.data):'<span class="mut">نسخه اصلی</span>'}</td></tr>`).join('')}</table></div>`;
   if(d.is_admin&&!editing)h+=`<div class="card noprint" style="border-color:var(--bad)"><h2>مدیر سیستم</h2><div class="row"><button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button>
     <div><label>کد / محل بایگانی</label><input id="admArc" value="${esc(P.archive_code||'')}"></div><button class="btn l" onclick="purArcCode(${P.id})">ذخیره محل بایگانی</button>
     <button class="btn bad" onclick="adminDel('purchase',${P.id},'${esc(P.number)}')">حذف کامل این درخواست</button></div><div class="mut" style="margin-top:6px">ویرایش مدیر سیستم در هر مرحله (حتی پس از بایگانی) ممکن است و به‌صورت نسخه جدید ثبت می‌شود.</div></div>`;
-  $('#pg').innerHTML=h;purView.d=d}
+  $('#pg').innerHTML=h;$('#pg').classList.add('purpg');purView.d=d}
 function purView(){}
 function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   const rows=d.items;
@@ -792,12 +806,12 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   if(['hq_quotes','hq_purchase'].includes(st))x=mgmtNotes(d)+x;
   if(st=='hq_purchase'||st=='site_purchase'){const buy=rows.filter(i=>+en(i.remaining)>0);
     x=`<table><tr><th>شرح کالا</th><th>مقدار</th><th>مقدار خریداری‌شده</th><th>واحد</th><th>وضعیت</th><th>توضیح (برای ناقص یا نشده الزامی)</th></tr>${buy.map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.remaining)} ${esc(i.unit)}</td><td>${numIn('bq'+i.id,fa(i.bought_qty||i.remaining),90)}</td><td><input id="bu${i.id}" value="${esc(i.bought_unit||i.unit)}" style="max-width:100px"></td><td><select id="bs${i.id}">${opts(Object.entries(d.buy_status),i.bought_status||'bought')}</select></td><td><input id="bn${i.id}" value="${esc(i.bought_note||'')}"></td></tr>`).join('')}</table>`;
-    hint=(st=='site_purchase'?'فاکتور (یا پیش‌فاکتور) خرید را در بخش پیوست‌ها بارگذاری کنید (الزامی). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود.'}
+    hint=(st=='site_purchase'?'فاکتور (یا پیش‌فاکتور) خرید را در بخش پیوست‌ها بارگذاری کنید (الزامی). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود'+(st=='hq_purchase'?'؛ همزمان برای پرداخت به امور مالی ارسال می‌شود.':'.')+' پس از خرید هم می‌توانید فاکتور یا پیش‌فاکتور پیوست کنید.'}
   if(st=='delivery'){const rq=A.includes('recv_ok');x=rq?`<table><tr><th>شرح کالا</th><th>مقدار اعلام‌شده</th><th>مقدار تحویل‌گرفته</th></tr>${rows.filter(i=>i.bought_status&&i.bought_status!='none').map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit)}</td><td>${numIn('rq'+i.id,fa(i.recv_qty||i.bought_qty),100)}</td></tr>`).join('')}</table>`:'';
     hint='اعلام وصول وقتی کامل است که هم تحویل‌گیرنده (مقدار، نوع و کیفیت) و هم انباردار دریافت را تأیید کنند. با «مغایرت دارد» درخواست برای اصلاح به خرید برمی‌گردد.'}
   if(st=='finance_settle'){const yn=(n,t)=>`<div><label>${t} *</label><label style="display:inline-flex;gap:6px;color:var(--ink);font-size:14px;margin-left:18px"><input type="radio" name="${n}" value="1" style="width:auto"> دریافت شد</label><label style="display:inline-flex;gap:6px;color:var(--ink);font-size:14px"><input type="radio" name="${n}" value="0" style="width:auto"> دریافت نشد</label></div>`;
-    x=d.docs&&d.docs.ok?`<div class="grid">${yn('oiSel','فاکتور رسمی')}${yn('vtSel','مدارک مالیات بر ارزش افزوده')}</div>`:'';
-    hint=d.docs&&d.docs.ok?'امور مالی فقط مدارک را کنترل می‌کند (پرداخت و تسویه در سامانه نیست). هر سه مدرک (درخواست کالا، اعلام وصول و فاکتور یا پیش‌فاکتور) موجود است؛ وضعیت فاکتور رسمی و مدارک ارزش افزوده را مشخص کنید و «مدارک کامل است» را بزنید تا کار پایان یابد و خودکار بایگانی شود.':'فاکتور (یا پیش‌فاکتور) بارگذاری نشده؛ آن را خودتان در بخش پیوست‌ها بارگذاری کنید یا درخواست را برای بارگذاری فاکتور به پشتیبانی برگردانید.'}
+    x=d.docs&&d.docs.ok?`<div class="grid">${yn('oiSel','فاکتور رسمی و مدارک ارزش افزوده')}</div>`:'';
+    hint=d.docs&&d.docs.ok?'امور مالی فقط مدارک را کنترل می‌کند (پرداخت و تسویه در سامانه نیست). هر سه مدرک (درخواست کالا، اعلام وصول و فاکتور یا پیش‌فاکتور) موجود است؛ وضعیت فاکتور رسمی (ارزش افزوده) را مشخص کنید و «مدارک کامل است» را بزنید تا کار پایان یابد و خودکار بایگانی شود. اگر دریافت نشده، درخواست در فهرست «فاکتورهای رسمی دریافت‌نشده» می‌ماند.':'فاکتور (یا پیش‌فاکتور) بارگذاری نشده؛ آن را خودتان در بخش پیوست‌ها بارگذاری کنید یا درخواست را برای بارگذاری فاکتور به پشتیبانی برگردانید.'}
   if(st=='invoice_fix')hint='فاکتور خرید را در بخش پیوست‌ها (بالا) با نوع «فاکتور» بارگذاری کنید، سپس «فاکتور بارگذاری شد» را بزنید.';
   if(st=='archive')x=`<div><label>کد / محل بایگانی فیزیکی</label><input id="paC" placeholder="مثلاً کلاسور خرید — موادکاران"></div>`;
   return `<div class="card noprint" style="border-color:var(--warn)"><h2>اقدام شما — ${esc(M.p_stages[st])}</h2>${hint?`<div class="mut" style="margin-bottom:8px">${hint}</div>`:''}${x}
@@ -811,10 +825,10 @@ function docsCard(d){const m=d.docs,P=d.doc;const row=(t,ok,v)=>`<tr><td>${t}</t
 function mgmtNotes(d){return (d.mgmt_notes||[]).length?`<div class="mgmt"><b>نظر مدیر پروژه / هیات مدیره:</b>${d.mgmt_notes.map(f=>`<div>• ${esc(f.user_name)} (${esc(M.p_stages[f.stage]||'')} — ${jd(f.at,1)}): ${esc(f.note)}</div>`).join('')}</div>`:''}
 function printPur(num){const t=document.title;document.title=num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
 const radio=n=>(document.querySelector(`input[name="${n}"]:checked`)||{}).value||'';
-const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action:a,note:val('paN'),archive_code:val('paC'),chosen_att:radio('pfSel'),official_inv:radio('oiSel'),vat_docs:radio('vtSel')};
+const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action:a,note:val('paN'),archive_code:val('paC'),chosen_att:radio('pfSel'),official_inv:radio('oiSel')};
   if(a=='approve'&&d.doc.stage=='price_approve'&&!b.chosen_att)throw new Error('یکی از پیش‌فاکتورها را انتخاب کنید');
   if(a=='direct'&&!b.note.trim())throw new Error('منبع خرید و قیمت را در «توضیح» بنویسید');
-  if(a=='docs_ok'&&(b.official_inv===''||b.vat_docs===''))throw new Error('مشخص کنید فاکتور رسمی و مدارک ارزش افزوده دریافت شده‌اند یا نه');
+  if(a=='docs_ok'&&b.official_inv==='')throw new Error('مشخص کنید فاکتور رسمی (ارزش افزوده) دریافت شده یا نه');
   if(a=='stock')b.items=its.map(i=>({id:i.id,stock:en(val('stk'+i.id))}));
   if(a=='purchased')b.items=its.filter(i=>$('#bs'+i.id)).map(i=>({id:i.id,qty:en(val('bq'+i.id)),unit:val('bu'+i.id),status:val('bs'+i.id),note:val('bn'+i.id)}));
   if(a=='recv_ok')b.items=its.filter(i=>$('#rq'+i.id)).map(i=>({id:i.id,qty:en(val('rq'+i.id))}));
@@ -823,6 +837,10 @@ const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action
   await api('POST',`/api/purchases/${id}/act`,b);flash('ثبت شد');refreshCount();route()});
 const purResub=id=>run(async()=>{const v=purVals();purCheck(v);if(!await ask('درخواست اصلاح‌شده دوباره ارسال می‌شود.'))return;await api('POST',`/api/purchases/${id}/resubmit`,Object.assign(v,{note:val('puRN')}));flash('ارسال شد');route()});
 const purEdit=id=>run(async()=>{const v=purVals();purCheck(v);await api('POST',`/api/purchases/${id}/edit`,Object.assign(v,{note:val('puRN')}));flash('نسخه جدید ذخیره شد');route()});
+const purPaid=id=>run(async()=>{if(!await ask('پرداخت این خرید ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/paid`,{note:val('payN')});flash('پرداخت ثبت شد');refreshCount();route()});
+const purOfficial=id=>run(async()=>{if(!await ask('دریافت فاکتور رسمی و ارزش افزوده ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/official_inv`,{note:val('oiN')});flash('ثبت شد');route()});
+const purGrnEdit=id=>run(async()=>{const its=purView.d.items.filter(i=>$('#ge'+i.id));if(!await ask('اعلام وصول ویرایش شود؟'))return;
+  await api('POST',`/api/purchases/${id}/receipt`,{items:its.map(i=>({id:i.id,qty:en(val('ge'+i.id))})),note:val('geN')});flash('اعلام وصول ویرایش شد');route()});
 const purArcCode=id=>run(async()=>{await api('POST',`/api/purchases/${id}/archive_code`,{archive_code:val('admArc')});flash('محل بایگانی ذخیره شد');route()});
 const purCancel=id=>run(async()=>{if(!val('cxR'))throw new Error('علت لغو را انتخاب کنید');if(!await ask('درخواست کالا لغو و بایگانی شود؟'))return;await api('POST',`/api/purchases/${id}/cancel`,{reason:val('cxR'),note:val('cxN')});flash('لغو و بایگانی شد');refreshCount();route()});
 
@@ -931,6 +949,7 @@ function help(){$('#pg').innerHTML=`<h1>راهنمای کوتاه</h1><div class
 <b>خروج خودکار:</b> اگر چند دقیقه (پیش‌فرض ۱۵ دقیقه، قابل تنظیم توسط مدیر سیستم) با سامانه کار نکنید، از سامانه خارج می‌شوید و باید دوباره رمز را وارد کنید.<br>
 <b>اعلان روی موبایل:</b> در گوشی روی 🔔 بالای صفحه بزنید و اجازه اعلان بدهید؛ کارهای جدید کارتابل روی گوشی اعلام می‌شود (نیاز به نشانی امن HTTPS دارد).<br>
 <b>درخواست کالا (نسخه ۲.۳):</b> دسته کالا مسیر را تعیین می‌کند. <b>عمومی و مصرفی:</b> درخواست‌کننده ← بالادستش (رئیس واحد) ← انبار کارگاه ← سرپرست کارگاه ← خرید در کارگاه توسط پشتیبانی کارگاه (پیوست فاکتور یا پیش‌فاکتور) ← اعلام وصول (تحویل‌گیرنده و انباردار) ← پایان و بایگانی خودکار. <b>مصالح، تجهیزات و ابزار اصلی:</b> درخواست‌کننده ← رئیس واحد ← انبار کارگاه ← معاون فنی ← سرپرست کارگاه ← مدیر پروژه ← پشتیبانی دفتر مرکزی (استعلام و پیش‌فاکتور) ← تأیید قیمت (مدیر پروژه یا یکی از اعضای هیات مدیره) ← خرید و اعلام نهایی اقلام ← اعلام وصول ← امور مالی (کنترل مدارک: تطبیق سه‌گانه، فاکتور رسمی و مدارک ارزش افزوده) ← پایان و بایگانی خودکار. مراحل «مدیر پروژه» و «تأیید قیمت» در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یک نفر کافی است؛ اگر منبع خرید و قیمت معلوم باشد، مدیر پروژه یا هیات مدیره با «دستور خرید مستقیم» (و نوشتن منبع و قیمت) درخواست را بدون استعلام مستقیم به خرید می‌فرستد؛ در تأیید قیمت یکی از پیش‌فاکتورها انتخاب می‌شود و بقیه بایگانی می‌شوند. نظر مدیر پروژه یا هیات مدیره برای مدیر پشتیبانی به رنگ قرمز نمایش و به کارتابل او فرستاده می‌شود. شرح کالا، مقدار، واحد و «جهت استفاده» الزامی است و تاریخ نیاز از تقویم انتخاب می‌شود و نمی‌تواند قبل از تاریخ درخواست باشد. پس از انبار، در فرم فقط مانده هر قلم (درخواست منهای موجودی انبار) دیده می‌شود. پس از خرید، فرم به «اعلام وصول کالا» تبدیل می‌شود و تحویل‌گیرنده و انباردار آن را تأیید می‌کنند. بخش پیوست‌ها در هر مرحله بالای «اقدام شما» است. تا مرحله مدیر پروژه، فقط کسی که درخواست در کارتابل اوست می‌تواند ویرایش یا لغو کند.<br>
+<b>نسخه ۲.۶:</b> دسته کالا اجباری است. پس از خرید دفتر مرکزی، درخواست همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود. پشتیبانی پس از خرید در همه مراحل فاکتور یا پیش‌فاکتور پیوست می‌کند. تحویل‌گیرنده و انباردار اعلام وصول را تا پیش از کنترل مدارک مالی ویرایش می‌کنند. فاکتور رسمی و ارزش افزوده یک مدرک است و موارد دریافت‌نشده در «مالی › فاکتورهای رسمی دریافت‌نشده» می‌آیند. خروجی PDF فقط فرم درخواست یا اعلام وصول است.<br>
 <b>کدگذاری و تطبیق سه‌طرفه:</b> MR درخواست کالا، PO سفارش خرید، GRN اعلام وصول، PAY پرداخت (مثل MR-0012). پیش از تسویه فقط وجود سه مدرک بررسی می‌شود: درخواست کالا، اعلام وصول و فاکتور؛ تا فاکتور اصلی بارگذاری نشده، پیش‌فاکتور به‌جای آن حساب می‌شود. مقدار، مبلغ و شماره فاکتور کنترل نمی‌شود.<br>
 <b>مدیر سیستم:</b> می‌تواند کاربر و پروژه را حذف یا ویرایش کند، هر سند (نامه، درخواست کالا، درخواست مالی) را حذف کند، و درخواست کالا و محل بایگانی را در هر مرحله، حتی پس از بایگانی، اصلاح کند.<br>
 <b>چارت کارگاه:</b> مهندسان اجرایی زیر نظر معاون اجرایی و مهندسان دفتر فنی زیر نظر معاون فنی هستند؛ پشتیبانی و انبار زیر نظر سرپرست کارگاه، معاونان زیر نظر سرپرست کارگاه و او زیر نظر مدیر پروژه. درخواست کالای هر نفر را بالادست مستقیمش تأیید می‌کند. مهندسان فقط درخواست‌های واحد خودشان را می‌بینند. کارکنان کارگاه نامه داخلی را فقط برای همکاران پروژه می‌فرستند و بالادستشان به‌طور پیش‌فرض گیرنده است.<br>
