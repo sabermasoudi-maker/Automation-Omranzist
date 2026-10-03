@@ -87,7 +87,7 @@ P_FLOW = {
     'site_purchase': {'purchased': ('delivery', 'خرید در کارگاه انجام شد — ارسال برای اعلام وصول')},
     'pm_approve': {'approve': ('hq_quotes', 'تأیید مدیر پروژه — ارسال به پشتیبانی برای استعلام قیمت'),
                    # منبع و قیمت معلوم است: بدون استعلام و تأیید قیمت، مستقیم به خرید
-                   'direct': ('hq_purchase', 'دستور خرید مستقیم (منبع و قیمت معلوم) — ارسال به پشتیبانی برای خرید'),
+                   'direct': ('hq_purchase', 'دستور خرید مستقیم — ارسال به پشتیبانی برای خرید'),
                    'return': _RET},
     'hq_quotes': {'quoted': ('price_approve', 'استعلام و پیش‌فاکتورها آماده شد — ارسال برای تأیید قیمت')},
     'price_approve': {'approve': ('hq_purchase', 'تأیید قیمت و فروشنده — ارسال برای خرید'),
@@ -2070,8 +2070,7 @@ def api_purchase_act(h, c, u, b, q, pid):
     notes = []
     if a in ('return', 'requote', 'recv_bad', 'wh_bad', 'accept', 'fix'):
         need(note, 'علت را بنویسید', 400)
-    if a == 'direct':
-        need(note, 'برای دستور خرید مستقیم، منبع خرید و قیمت را در توضیح بنویسید', 400)
+    if a == 'direct':  # توضیح (منبع و قیمت) اختیاری است (نسخه ۲.۶)
         if not P['po_no']:  # صدور سفارش خرید
             c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
     if a == 'approve' and P['stage'] == 'price_approve':  # انتخاب یک پیش‌فاکتور؛ بقیه بایگانی می‌شوند
