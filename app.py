@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.8'
+VERSION = '2.9'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -1658,9 +1658,9 @@ def done_this_round(c, P, stage):
 
 
 def is_general(P):
-    """کالای عمومی و مصرفی، و هر درخواست واحد پشتیبانی کارگاه (نسخه ۲.۸): در کارگاه و با پشتیبانی کارگاه تأمین
-    می‌شود و به پشتیبانی دفتر مرکزی نمی‌رود."""
-    return (P['category'] or 'general') != 'main' or P['unit'] == 'support'
+    """کالای عمومی و مصرفی: در کارگاه و با پشتیبانی کارگاه تأمین می‌شود و به پشتیبانی دفتر مرکزی نمی‌رود
+    (مگر خود پشتیبانی کارگاه آن را واگذار کند)."""
+    return (P['category'] or 'general') != 'main'
 
 
 def after_stock(c, P, notes):
@@ -1977,7 +1977,11 @@ def api_purchase_get(h, c, u, b, q, pid):
             c.execute('UPDATE referrals SET status=?, seen_at=?, done_at=? WHERE id=?',
                       (ns, now(), now() if ns == 'done' else None, r['id']))
             r['status'] = ns
-    site = is_site_only(c, u)
+    # کارمند کارگاه مدارک دفتر مرکزی را نمی‌بیند، مگر کار دفتر مرکزی به او واگذار شده باشد
+    site = is_site_only(c, u) and not ((P['holder_id'] == u['id'] and P['stage'] in HQ_ONLY_STAGES) or c.execute(
+        'SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND stage IN (%s) AND action NOT IN (%s)' % (
+            ','.join('?' * len(HQ_ONLY_STAGES)), ','.join('?' * len(SIDE_ACTIONS))),
+        (P['id'], u['id']) + HQ_ONLY_STAGES + SIDE_ACTIONS).fetchone())
     if site:  # قیمت‌ها و مدارک پس از مدیر پروژه برای کارکنان کارگاه نمایش داده نمی‌شود
         hid = {a['flow_id'] for a in att if a.get('hq_only') and a.get('flow_id')}
         hq_inv = not site_path(c, P)  # فاکتور خرید دفتر مرکزی که پس از خرید پیوست یا حذف شده
@@ -2006,7 +2010,7 @@ def api_purchase_get(h, c, u, b, q, pid):
     return {'docs': docs_check(c, P) if bought else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
             'site_path': site_path(c, P), 'is_admin': u['role'] == 'admin',
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
-            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in allowed_actions(c, u, P) else [],
+            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in allowed_actions(c, u, P) else [],
             'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
             'buy_status': BUY_STATUS, 'site_view': site, 'can_edit_grn': can_edit_grn(c, u, P),
             'support_attach': not can_attach_turn(c, u, P) and post_purchase_support(c, u, P),
@@ -2072,9 +2076,40 @@ def post_purchase_support(c, u, P):
     if P['status'] not in ('open', 'returned', 'closed') or P['stage'] in ('site_purchase', 'hq_purchase') \
             or not is_bought(c, P):
         return False
+    if c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased' AND user_id=?",
+                 (P['id'], u['id'])).fetchone():  # کسی که خرید را انجام داده (حتی پس از واگذاری)
+        return True
     if site_path(c, P):
         return pmembers(c, P['project_id']).get('support') == u['id']
     return str(u['id']) == settings(c).get('support_manager')
+
+
+# مراحل پشتیبانی که پشتیبانی دفتر مرکزی و کارگاه می‌توانند به یکدیگر واگذار کنند (نسخه ۲.۹)
+SUPPORT_STAGES = ('site_purchase', 'hq_quotes', 'hq_purchase', 'invoice_fix')
+
+
+def handover_target(c, u, P):
+    """همکارِ پشتیبانی که کار را می‌توان به او واگذار کرد: پشتیبانی کارگاه ↔ پشتیبانی دفتر مرکزی."""
+    if P['status'] != 'open' or P['stage'] not in SUPPORT_STAGES or P['holder_id'] != u['id']:
+        return None
+    site_sup = pmembers(c, P['project_id']).get('support')
+    hq_sup = int(settings(c).get('support_manager') or 0)
+    tid, lbl = (site_sup, 'پشتیبانی کارگاه') if u['id'] != site_sup else (hq_sup, 'پشتیبانی دفتر مرکزی')
+    if not tid or tid == u['id']:
+        return None
+    r = c.execute('SELECT full_name FROM users WHERE id=? AND active=1', (tid,)).fetchone()
+    return {'id': tid, 'name': r[0], 'label': lbl} if r else None
+
+
+@route('POST', r'/api/purchases/(\d+)/handover')
+def api_purchase_handover(h, c, u, b, q, pid):
+    """واگذاری کارِ پشتیبانی (استعلام، خرید، تکمیل فاکتور) به پشتیبانی دیگر؛ مرحله همان می‌ماند."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    t = handover_target(c, u, P)
+    need(t, 'واگذاری فقط در مراحل پشتیبانی و توسط کسی که کار در کارتابل اوست ممکن است')
+    c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (t['id'], P['id']))
+    pflow(c, P['id'], u, P['stage'], 'handover', 'واگذاری به %s (%s)' % (t['name'], t['label']), (b.get('note') or '').strip())
+    return {'ok': True}
 
 
 def can_edit_grn(c, u, P):

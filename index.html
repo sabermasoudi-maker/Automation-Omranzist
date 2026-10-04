@@ -182,7 +182,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='2.8'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='2.9'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -690,7 +690,7 @@ function purSheet(P,items,edit,flow,d){
    <td><label>انبار محل درخواست:</label>${edit?`<input id="puW" value="${e(P.warehouse)}">`:e(P.warehouse)}</td></tr>
    <tr><td><label>فوریت:</label>${edit?sel('puE',M.urgencies,P.urgency||'normal'):(P.urgency=='emergency'?'<b style="color:#b42318">اضطراری</b>':'عادی')}</td>
    <td><label>تاریخ نیاز:</label>${edit?dIn('puD',P.need_date,{min:minNeed,w:170}):e(fa(P.need_date))}</td></tr></table>
-  ${edit?`<div class="mut noprint" style="margin:4px 0">«عمومی و مصرفی» و همه درخواست‌های واحد پشتیبانی در کارگاه و با پشتیبانی کارگاه تأمین می‌شود؛ «مصالح، تجهیزات و ابزار اصلی» روال کامل (معاون فنی، مدیر پروژه و دفتر مرکزی) را طی می‌کند.</div>`:''}
+  ${edit?`<div class="mut noprint" style="margin:4px 0">«عمومی و مصرفی» در کارگاه و با پشتیبانی کارگاه تأمین می‌شود؛ «مصالح، تجهیزات و ابزار اصلی» روال کامل (معاون فنی، مدیر پروژه و دفتر مرکزی) را طی می‌کند.</div>`:''}
   <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا${edit?' *':''}</th><th style="width:90px">مقدار${edit?' *':''}</th><th style="width:105px">واحد${edit?' *':''}</th><th>مشخصات فنی</th><th>توضیحات</th></tr></thead>
    <tbody id="puItems">${Array.from({length:Math.max(edit&&matchMedia('(max-width:760px)').matches?2:edit?7:0,rows.length)},(_,i)=>purRow(i+1,rows[i],edit)).join('')}</tbody></table>
   ${note?`<div class="mut" style="margin-top:4px">${note}</div>`:''}
@@ -754,7 +754,7 @@ const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval
   invoice_fix:[['fixed','فاکتور بارگذاری شد — ارسال به مالی','ok']],archive:[['archived','بایگانی','ok']]};
 function purSeq(P,seen,legacy){ // مراحل: عمومی و مصرفی در کارگاه؛ مصالح، تجهیزات و ابزار اصلی با روال کامل دفتر مرکزی
   const HQS=['pm_approve','hq_quotes','price_approve','hq_purchase','finance_settle','invoice_fix','discrepancy'];
-  const site=seen.has('site_purchase')||P.stage=='site_purchase'||((P.category!='main'||P.unit=='support')&&!HQS.some(k=>seen.has(k)||P.stage==k));
+  const site=seen.has('site_purchase')||P.stage=='site_purchase'||(P.category!='main'&&!HQS.some(k=>seen.has(k)||P.stage==k));
   const tech=seen.has('tech_review')||P.stage=='tech_review'||!site;
   const s=['draft','unit_approval','warehouse_check'].concat(legacy?['supervisor_approve'].concat(tech?['tech_review']:[]):(tech?['tech_review']:[]).concat(['supervisor_approve']));
   const direct=seen.has('__direct')&&!seen.has('hq_quotes');
@@ -821,7 +821,7 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   const rows=d.items;
   if(st=='warehouse_check'){x=`<table><tr><th>شرح کالا</th><th>مقدار درخواست</th><th>واحد</th><th>موجودی قابل تحویل از انبار</th></tr>${rows.map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.qty)}</td><td>${esc(i.unit)}</td><td>${numIn('stk'+i.id,i.stock_qty?fa(i.stock_qty):'',120)}</td></tr>`).join('')}</table>`;
     hint='برای هر قلم مقداری را که از انبار تحویل می‌دهید بنویسید (خالی = موجود نیست). از این پس در فرم، فقط مانده هر قلم (مقدار درخواست منهای موجودی انبار) نمایش داده می‌شود؛ اگر همه اقلام کامل موجود باشد، درخواست با حواله خروج بسته می‌شود.'}
-  if(st=='supervisor_approve')hint=P.category=='main'&&P.unit!='support'?'این درخواست «مصالح، تجهیزات و ابزار اصلی» است؛ پس از تأیید شما به مدیر پروژه و دفتر مرکزی می‌رود.':'این درخواست «عمومی و مصرفی» است؛ پس از تأیید شما، پشتیبانی کارگاه خرید را در کارگاه انجام می‌دهد.';
+  if(st=='supervisor_approve')hint=P.category=='main'?'این درخواست «مصالح، تجهیزات و ابزار اصلی» است؛ پس از تأیید شما به مدیر پروژه و دفتر مرکزی می‌رود.':'این درخواست «عمومی و مصرفی» است؛ پس از تأیید شما، پشتیبانی کارگاه خرید را در کارگاه انجام می‌دهد.';
   if(st=='hq_quotes')hint='پیش‌فاکتورها را در بخش پیوست‌ها (بالا) با نوع «پیش‌فاکتور» بارگذاری کنید (حداقل یکی). این مدارک برای کارکنان کارگاه نمایش داده نمی‌شود.';
   if(st=='price_approve'){const pf=d.attachments.filter(a=>a.kind=='پیش‌فاکتور'&&!a.archived);
     x=`<div><label>یکی از پیش‌فاکتورها را انتخاب کنید *</label>${pf.map((a,i)=>`<label style="display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px;margin:6px 0"><input type="radio" name="pfSel" value="${a.id}" style="width:auto" ${pf.length==1?'checked':''}> <a href="/files/${a.id}" target="_blank">${esc(a.name)}</a> <span class="mut">${esc(a.uploader)} — ${jd(a.created_at,1)}</span></label>`).join('')||'<div class="tag bad">پیش‌فاکتوری پیوست نشده</div>'}</div>`;
@@ -841,7 +841,7 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   if(A.includes('return')&&(d.return_targets||[]).length>1)x+=`<div style="margin-top:8px;max-width:420px"><label>در صورت برگشت، به چه کسی برگردد؟</label><select id="paRt">${opts(d.return_targets.map(t=>[t.id,t.name+' — '+t.label]),P.requester_id)}</select></div>`;
   return `<div class="card noprint" style="border-color:var(--warn)"><h2>اقدام شما — ${esc(M.p_stages[st])}</h2>${hint?`<div class="mut" style="margin-bottom:8px">${hint}</div>`:''}${x}
    <label style="margin-top:8px">توضیح ${['return','requote','recv_bad','wh_bad','accept','fix'].some(a=>A.includes(a))?'(برای برگشت یا مغایرت الزامی است)':''}</label><textarea id="paN"></textarea>
-   <div class="row" style="margin-top:8px">${(PUR_ACT[st]||[]).filter(([a])=>A.includes(a)).map(([a,t,c])=>`<button class="btn ${c}" onclick="purAct(${P.id},'${a}')">${t}</button>`).join('')}${d.can_edit&&!d.is_admin?`<button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button>`:''}</div></div>`}
+   <div class="row" style="margin-top:8px">${(PUR_ACT[st]||[]).filter(([a])=>A.includes(a)).map(([a,t,c])=>`<button class="btn ${c}" onclick="purAct(${P.id},'${a}')">${t}</button>`).join('')}${d.handover_to?`<button class="btn l" onclick="purHandover(${P.id})">واگذاری به ${esc(d.handover_to.label)} (${esc(d.handover_to.name)})</button>`:''}${d.can_edit&&!d.is_admin?`<button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button>`:''}</div></div>`}
 function docsCard(d){const m=d.docs,P=d.doc;const row=(t,ok,v)=>`<tr><td>${t}</td><td>${ok?'<span class="tag ok">✓ موجود</span>':'<span class="tag bad">✗ ندارد</span>'}</td><td>${v||''}</td></tr>`;
   return `<div class="card"><h2>تطبیق سه‌طرفه (وجود مدارک)</h2><table><tr><th>مدرک</th><th>وضعیت</th><th></th></tr>
    ${row('درخواست کالا',1,dn(m.mr))}${row('اعلام وصول',!!m.grn,m.grn?dn(m.grn):'منتظر تأیید تحویل‌گیرنده و انباردار')}
@@ -868,6 +868,9 @@ async function goNext(kind,id){const cur=`#/${kind}/${id}`;let t={act:[],letters
   flash('ثبت شد — مورد بعدی: '+(t.act.length?fa(t.act.length)+' درخواست قابل اقدام مانده':'نامه‌ها و رونوشت‌ها'));location.hash=all[0].href}
 const purResub=id=>run(async()=>{const v=purVals();purCheck(v);if(!await ask('درخواست اصلاح‌شده دوباره ارسال می‌شود.'))return;await api('POST',`/api/purchases/${id}/resubmit`,Object.assign(v,{note:val('puRN')}));flash('ارسال شد');route()});
 const purEdit=id=>run(async()=>{const v=purVals();purCheck(v);await api('POST',`/api/purchases/${id}/edit`,Object.assign(v,{note:val('puRN')}));flash('نسخه جدید ذخیره شد');route()});
+// واگذاری کار پشتیبانی به پشتیبانی دیگر (کارگاه ↔ دفتر مرکزی)؛ مرحله همان می‌ماند
+const purHandover=id=>run(async()=>{const t=purView.d.handover_to;if(!await ask('این کار به '+t.name+' ('+t.label+') واگذار می‌شود و از کارتابل شما خارج می‌شود.'))return;
+  await api('POST',`/api/purchases/${id}/handover`,{note:val('paN')});refreshCount();await goNext('purchase',id)});
 const purPaid=id=>run(async()=>{if(!await ask('پرداخت این خرید ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/paid`,{note:val('payN')});flash('پرداخت ثبت شد');refreshCount();route()});
 const purOfficial=id=>run(async()=>{if(!await ask('دریافت فاکتور رسمی و ارزش افزوده ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/official_inv`,{note:val('oiN')});flash('ثبت شد');route()});
 const purGrnEdit=id=>run(async()=>{const its=purView.d.items.filter(i=>$('#ge'+i.id));if(!await ask('اعلام وصول ویرایش شود؟'))return;
