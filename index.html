@@ -182,7 +182,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='2.7'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='2.8'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -293,7 +293,9 @@ async function boot(){
    ۲. روی کامپیوتر سرور فایل <b>4-restart.bat</b> را با «Run as administrator» اجرا کنید (یا کامپیوتر سرور را یک بار ری‌استارت کنید).<br>
    ۳. این صفحه را با Ctrl+F5 دوباره باز کنید.</div></div>`;return}
   if(M.me.must_change)pwModal(true);
-  lastAct=lastPing=Date.now();route();refreshCount();notifyStart();
+  lastAct=lastPing=Date.now();
+  if(!location.hash){try{const t=await todoItems();const f=t.act[0];if(f)history.replaceState(null,'',f.href)}catch(e){}} // پس از ورود: اولین کار قابل اقدام باز می‌شود
+  route();refreshCount();notifyStart();
   if(NT.tok&&window.isSecureContext&&'serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 }
 const isTop=()=>['admin','manager'].includes(M.me.role); // مدیر سیستم و هیات مدیره: بالاترین سطح
@@ -307,20 +309,21 @@ const HQ_OF={};HQ.forEach(g=>g[3].forEach(t=>HQ_OF[t[0]]=g));Object.assign(HQ_OF
 const navProjects=()=>M.projects.filter(p=>p.code!='HQ'&&(M.broad||M.my_roles.some(r=>r.project_id==p.id)));
 function drawNav(cur){
   const a=(k,t,cls,extra)=>`<a href="#/${k}" class="${cls||''} ${cur==k?'on':''}">${t}${extra||''}</a>`;
-  let h=M.site_only?'<div class="grp">مکاتبات</div>'+a('letters','نامه‌های من','sub')+a('letter-new','نامه داخلی جدید','sub'):'<div class="grp">دفتر مرکزی</div>'+HQ.filter(g=>g[0]!='hq-reports'||M.can_report).map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
+  let h=a('todo','در دست اقدام','main','<span class="badge" id="cnt3" style="display:none"></span>')+'<hr>';
+  h+=M.site_only?'<div class="grp">مکاتبات</div>'+a('letters','نامه‌های من','sub')+a('letter-new','نامه داخلی جدید','sub'):'<div class="grp">دفتر مرکزی</div>'+HQ.filter(g=>g[0]!='hq-reports'||M.can_report).map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
   h+='<div class="grp">پروژه‌ها</div>'+navProjects().map(p=>a('project/'+p.id,esc(p.name),'sub')).join('')+(isTop()?'<a class="sub act" onclick="projModal(p=>location=\'#/project/\'+p.id)">+ تعریف پروژه جدید</a>':'');
   h+=a('cartable','کارتابل من','main','<span class="badge" id="cnt" style="display:none"></span>')+'<hr>';
   h+=a('purchase-new','درخواست کالا')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
   $('#nav').innerHTML=h}
 function toggleNav(on){document.body.classList.toggle('navopen',on===undefined?!document.body.classList.contains('navopen'):!!on)}
 function subBar(p){const g=HQ_OF[p];if(!g)return'';return `<div class="crumb">دفتر مرکزی › ${g[1]}</div><div class="tabs noprint">${g[3].map(t=>`<a href="#/${t[0]}" class="${t[0]==p?'on':''}">${t[1]}</a>`).join('')}</div>`}
-async function refreshCount(){try{const r=await api('GET','/api/counts');['#cnt','#cnt2'].forEach(k=>{const b=$(k);if(b){b.textContent=fa(r.n);b.style.display=r.n?'inline':'none'}});document.title=(r.n?'('+fa(r.n)+') ':'')+'اتوماسیون — '+M.company}catch(e){}}
+async function refreshCount(){try{const r=await api('GET','/api/counts');['#cnt','#cnt2','#cnt3'].forEach(k=>{const b=$(k);if(b){b.textContent=fa(r.n);b.style.display=r.n?'inline':'none'}});document.title=(r.n?'('+fa(r.n)+') ':'')+'اتوماسیون — '+M.company}catch(e){}}
 setInterval(()=>{if(M)refreshCount()},60000);
 window.addEventListener('hashchange',route);
 async function route(){
-  if(!M)return;const h=location.hash.replace(/^#\//,'')||'cartable';const[p,id,sub]=h.split('/');
+  if(!M)return;const h=location.hash.replace(/^#\//,'')||'todo';const[p,id,sub]=h.split('/');
   toggleNav(0);try{drawNav(p=='project'?'project/'+id:M.site_only?({letter:'letters','letter-edit':'letters'}[p]||p):(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
-  const V={search:()=>searchPage(id),'letter-print':()=>letterPrint(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
+  const V={search:()=>searchPage(id),'letter-print':()=>letterPrint(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),todo,letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('hq_quotes,hq_purchase','درخواست‌های کالا منتظر استعلام قیمت یا خرید (پشتیبانی دفتر مرکزی)'),'hq-finance':hqFinance,'hq-noinv':()=>hqStage('','فاکتور رسمی و ارزش افزوده دریافت‌نشده (پس از کنترل مدارک)',0,'no_official=1'),'hq-office':()=>hqStage('','',1),
     'report-purchases':()=>purchasesPage(),'report-requests':requestsList,'report-letters':lettersList,
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
@@ -372,6 +375,25 @@ const refSt=(id,st)=>run(async()=>{if(st!='doing'&&!await ask(st=='done'?'این
 const cancelRef=id=>run(async()=>{if(!await ask('این ارجاع لغو شود؟'))return;await api('POST',`/api/referrals/${id}/status`,{status:'cancel'});route()});
 const doRefer=(dt,id,pfx,parent)=>run(async()=>{const v=referVals(pfx);if(!v.to_ids.length)throw new Error('گیرنده را انتخاب کنید');if(!await ask('سند برای '+v.to_ids.map(uname).join('، ')+' ارجاع می‌شود.'))return;await api('POST','/api/refer',Object.assign(v,{doc_type:dt,doc_id:id,parent_id:parent||null,reply:parent?val('myRep'):''}));flash('ارجاع شد');route()});
 const docLink=r=>`#/${r.doc_type}/${r.doc_id}`;
+
+// ---------------------------------------------------------------- در دست اقدام (صفحه پیش‌فرض پس از ورود)
+// ترتیب: درخواست‌هایی که کاربر می‌تواند روی آن‌ها اقدام کند (کالا، سپس مالی) ← نامه‌ها ← رونوشت‌های درخواست کالا (فقط جهت اطلاع)
+async function todoItems(){const d=await api('GET','/api/cartable');M.today=d.today;const seen=new Set();
+  const it=(href,tag,title,sub,who,at,cls)=>{if(seen.has(href))return null;seen.add(href);return{href,tag,title,sub,who,at,cls}};
+  const pur=(r,sub)=>it('#/purchase/'+r.id,'کالا',dn(r.number)+' — '+esc(r.items_text||''),sub||esc(M.p_stages[r.stage]||''),esc(r.requester||''),r.req_date?fa(r.req_date):'');
+  const act=[...d.pur_held.map(r=>pur(r)),...d.pur_pay.map(r=>pur(r,r.stage=='finance_settle'?'کنترل مدارک مالی':'منتظر پرداخت مالی')),
+    ...d.approvals.map(r=>it('#/request/'+r.request_id,'مالی',fa(r.number)+' — '+esc(r.title),esc(r.label),esc(r.requester),'')),
+    ...d.pay.map(r=>it('#/request/'+r.id,'مالی',fa(r.number)+' — '+esc(r.title),r.status=='approved'?'منتظر پرداخت':'ثبت سند سپیدار',esc(r.payee||''),''))].filter(Boolean);
+  const isCc=r=>r.doc_type=='purchase'&&r.action=='جهت اطلاع';
+  const ref=r=>it(docLink(r),{letter:'نامه',purchase:'کالا',request:'مالی'}[r.doc_type]||'',esc(fa(r.doc_label||'')),esc(r.action)+(r.instruction?' — '+esc(r.instruction):''),esc(r.from_name||''),jd(r.created_at,1),late(r)?'late':'');
+  return{act,letters:d.inbox.filter(r=>!isCc(r)).map(ref).filter(Boolean),cc:d.inbox.filter(isCc).map(ref).filter(Boolean)}}
+async function todo(){const t=await todoItems();
+  const tb=(rs,empty)=>rs.length?`<table><tr><th></th><th>سند</th><th>مرحله / اقدام</th><th>از / درخواست‌کننده</th><th>تاریخ</th></tr>${rs.map(r=>`<tr class="cl ${r.cls||''}" onclick="location='${r.href}'"><td><span class="tag">${r.tag}</span></td><td>${r.title}</td><td>${r.sub}</td><td>${r.who}</td><td class="mut">${r.at}</td></tr>`).join('')}</table>`:`<div class="mut">${empty}</div>`;
+  $('#pg').innerHTML=`<h1>در دست اقدام — ${esc(M.me.full_name)}</h1>
+   <div class="card"><h2>۱. درخواست‌هایی که باید روی آن‌ها اقدام کنید (${fa(t.act.length)})</h2>${tb(t.act,'درخواستی منتظر اقدام شما نیست.')}${t.act.length?`<div class="row" style="margin-top:8px"><a class="btn" href="${t.act[0].href}">شروع از اولین درخواست</a><span class="mut">پس از هر اقدام، درخواست بعدی خودکار باز می‌شود.</span></div>`:''}</div>
+   <div class="card"><h2>۲. نامه‌ها و ارجاع‌ها (${fa(t.letters.length)})</h2>${tb(t.letters,'نامه بازی در کارتابل شما نیست.')}</div>
+   <div class="card"><h2>۳. رونوشت درخواست‌های کالا — فقط جهت اطلاع (${fa(t.cc.length)})</h2>${tb(t.cc,'رونوشتی ندارید.')}</div>
+   <div class="mut">همه بخش‌ها (درخواست‌های ثبت‌شده خودتان، پیگیری نامه‌های ارسالی و …) در «کارتابل من» است.</div>`}
 
 // ---------------------------------------------------------------- کارتابل
 async function cartable(){
@@ -668,7 +690,7 @@ function purSheet(P,items,edit,flow,d){
    <td><label>انبار محل درخواست:</label>${edit?`<input id="puW" value="${e(P.warehouse)}">`:e(P.warehouse)}</td></tr>
    <tr><td><label>فوریت:</label>${edit?sel('puE',M.urgencies,P.urgency||'normal'):(P.urgency=='emergency'?'<b style="color:#b42318">اضطراری</b>':'عادی')}</td>
    <td><label>تاریخ نیاز:</label>${edit?dIn('puD',P.need_date,{min:minNeed,w:170}):e(fa(P.need_date))}</td></tr></table>
-  ${edit?`<div class="mut noprint" style="margin:4px 0">«عمومی و مصرفی» در کارگاه و با پشتیبانی کارگاه تأمین می‌شود؛ «مصالح، تجهیزات و ابزار اصلی» روال کامل (معاون فنی، مدیر پروژه و دفتر مرکزی) را طی می‌کند.</div>`:''}
+  ${edit?`<div class="mut noprint" style="margin:4px 0">«عمومی و مصرفی» و همه درخواست‌های واحد پشتیبانی در کارگاه و با پشتیبانی کارگاه تأمین می‌شود؛ «مصالح، تجهیزات و ابزار اصلی» روال کامل (معاون فنی، مدیر پروژه و دفتر مرکزی) را طی می‌کند.</div>`:''}
   <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا${edit?' *':''}</th><th style="width:90px">مقدار${edit?' *':''}</th><th style="width:105px">واحد${edit?' *':''}</th><th>مشخصات فنی</th><th>توضیحات</th></tr></thead>
    <tbody id="puItems">${Array.from({length:Math.max(edit&&matchMedia('(max-width:760px)').matches?2:edit?7:0,rows.length)},(_,i)=>purRow(i+1,rows[i],edit)).join('')}</tbody></table>
   ${note?`<div class="mut" style="margin-top:4px">${note}</div>`:''}
@@ -715,7 +737,7 @@ function purchaseForm(pid){
   $('#puSave').onclick=()=>save(1);$('#puDraft').onclick=()=>save(0)}
 
 // ---------- مشاهده و گردش درخواست کالا
-const RET=['return','برگشت به درخواست‌کننده','l'];
+const RET=['return','برگشت (برای اصلاح)','l'];
 const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval:[['approve','تأیید و ارسال استعلام به انبار کارگاه','ok'],RET],
   supervisor_review:[['inquire','ارسال استعلام به انبار کارگاه','ok'],RET],
   warehouse_check:[['stock','ثبت موجودی و ارسال (مانده برای خرید می‌رود)','ok']],
@@ -732,7 +754,7 @@ const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval
   invoice_fix:[['fixed','فاکتور بارگذاری شد — ارسال به مالی','ok']],archive:[['archived','بایگانی','ok']]};
 function purSeq(P,seen,legacy){ // مراحل: عمومی و مصرفی در کارگاه؛ مصالح، تجهیزات و ابزار اصلی با روال کامل دفتر مرکزی
   const HQS=['pm_approve','hq_quotes','price_approve','hq_purchase','finance_settle','invoice_fix','discrepancy'];
-  const site=seen.has('site_purchase')||P.stage=='site_purchase'||(P.category!='main'&&!HQS.some(k=>seen.has(k)||P.stage==k));
+  const site=seen.has('site_purchase')||P.stage=='site_purchase'||((P.category!='main'||P.unit=='support')&&!HQS.some(k=>seen.has(k)||P.stage==k));
   const tech=seen.has('tech_review')||P.stage=='tech_review'||!site;
   const s=['draft','unit_approval','warehouse_check'].concat(legacy?['supervisor_approve'].concat(tech?['tech_review']:[]):(tech?['tech_review']:[]).concat(['supervisor_approve']));
   const direct=seen.has('__direct')&&!seen.has('hq_quotes');
@@ -799,7 +821,7 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   const rows=d.items;
   if(st=='warehouse_check'){x=`<table><tr><th>شرح کالا</th><th>مقدار درخواست</th><th>واحد</th><th>موجودی قابل تحویل از انبار</th></tr>${rows.map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.qty)}</td><td>${esc(i.unit)}</td><td>${numIn('stk'+i.id,i.stock_qty?fa(i.stock_qty):'',120)}</td></tr>`).join('')}</table>`;
     hint='برای هر قلم مقداری را که از انبار تحویل می‌دهید بنویسید (خالی = موجود نیست). از این پس در فرم، فقط مانده هر قلم (مقدار درخواست منهای موجودی انبار) نمایش داده می‌شود؛ اگر همه اقلام کامل موجود باشد، درخواست با حواله خروج بسته می‌شود.'}
-  if(st=='supervisor_approve')hint=P.category=='main'?'این درخواست «مصالح، تجهیزات و ابزار اصلی» است؛ پس از تأیید شما به مدیر پروژه و دفتر مرکزی می‌رود.':'این درخواست «عمومی و مصرفی» است؛ پس از تأیید شما، پشتیبانی کارگاه خرید را در کارگاه انجام می‌دهد.';
+  if(st=='supervisor_approve')hint=P.category=='main'&&P.unit!='support'?'این درخواست «مصالح، تجهیزات و ابزار اصلی» است؛ پس از تأیید شما به مدیر پروژه و دفتر مرکزی می‌رود.':'این درخواست «عمومی و مصرفی» است؛ پس از تأیید شما، پشتیبانی کارگاه خرید را در کارگاه انجام می‌دهد.';
   if(st=='hq_quotes')hint='پیش‌فاکتورها را در بخش پیوست‌ها (بالا) با نوع «پیش‌فاکتور» بارگذاری کنید (حداقل یکی). این مدارک برای کارکنان کارگاه نمایش داده نمی‌شود.';
   if(st=='price_approve'){const pf=d.attachments.filter(a=>a.kind=='پیش‌فاکتور'&&!a.archived);
     x=`<div><label>یکی از پیش‌فاکتورها را انتخاب کنید *</label>${pf.map((a,i)=>`<label style="display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px;margin:6px 0"><input type="radio" name="pfSel" value="${a.id}" style="width:auto" ${pf.length==1?'checked':''}> <a href="/files/${a.id}" target="_blank">${esc(a.name)}</a> <span class="mut">${esc(a.uploader)} — ${jd(a.created_at,1)}</span></label>`).join('')||'<div class="tag bad">پیش‌فاکتوری پیوست نشده</div>'}</div>`;
@@ -816,6 +838,7 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
     hint=d.docs&&d.docs.ok?'امور مالی فقط مدارک را کنترل می‌کند (پرداخت و تسویه در سامانه نیست). هر سه مدرک (درخواست کالا، اعلام وصول و فاکتور یا پیش‌فاکتور) موجود است؛ وضعیت فاکتور رسمی (ارزش افزوده) را مشخص کنید و «مدارک کامل است» را بزنید تا کار پایان یابد و خودکار بایگانی شود. اگر دریافت نشده، درخواست در فهرست «فاکتورهای رسمی دریافت‌نشده» می‌ماند.':'فاکتور (یا پیش‌فاکتور) بارگذاری نشده؛ آن را خودتان در بخش پیوست‌ها بارگذاری کنید یا درخواست را برای بارگذاری فاکتور به پشتیبانی برگردانید.'}
   if(st=='invoice_fix')hint='فاکتور خرید را در بخش پیوست‌ها (بالا) با نوع «فاکتور» بارگذاری کنید، سپس «فاکتور بارگذاری شد» را بزنید.';
   if(st=='archive')x=`<div><label>کد / محل بایگانی فیزیکی</label><input id="paC" placeholder="مثلاً کلاسور خرید — موادکاران"></div>`;
+  if(A.includes('return')&&(d.return_targets||[]).length>1)x+=`<div style="margin-top:8px;max-width:420px"><label>در صورت برگشت، به چه کسی برگردد؟</label><select id="paRt">${opts(d.return_targets.map(t=>[t.id,t.name+' — '+t.label]),P.requester_id)}</select></div>`;
   return `<div class="card noprint" style="border-color:var(--warn)"><h2>اقدام شما — ${esc(M.p_stages[st])}</h2>${hint?`<div class="mut" style="margin-bottom:8px">${hint}</div>`:''}${x}
    <label style="margin-top:8px">توضیح ${['return','requote','recv_bad','wh_bad','accept','fix'].some(a=>A.includes(a))?'(برای برگشت یا مغایرت الزامی است)':''}</label><textarea id="paN"></textarea>
    <div class="row" style="margin-top:8px">${(PUR_ACT[st]||[]).filter(([a])=>A.includes(a)).map(([a,t,c])=>`<button class="btn ${c}" onclick="purAct(${P.id},'${a}')">${t}</button>`).join('')}${d.can_edit&&!d.is_admin?`<button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button>`:''}</div></div>`}
@@ -827,7 +850,7 @@ function docsCard(d){const m=d.docs,P=d.doc;const row=(t,ok,v)=>`<tr><td>${t}</t
 function mgmtNotes(d){return (d.mgmt_notes||[]).length?`<div class="mgmt"><b>نظر مدیر پروژه / هیات مدیره:</b>${d.mgmt_notes.map(f=>`<div>• ${esc(f.user_name)} (${esc(M.p_stages[f.stage]||'')} — ${jd(f.at,1)}): ${esc(f.note)}</div>`).join('')}</div>`:''}
 function printPur(num){const t=document.title;document.title=num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
 const radio=n=>(document.querySelector(`input[name="${n}"]:checked`)||{}).value||'';
-const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action:a,note:val('paN'),archive_code:val('paC'),chosen_att:radio('pfSel'),official_inv:radio('oiSel')};
+const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action:a,note:val('paN'),archive_code:val('paC'),chosen_att:radio('pfSel'),official_inv:radio('oiSel'),return_to:a=='return'?val('paRt'):''};
   if(a=='approve'&&d.doc.stage=='price_approve'&&!b.chosen_att)throw new Error('یکی از پیش‌فاکتورها را انتخاب کنید');
   if(a=='docs_ok'&&b.official_inv==='')throw new Error('مشخص کنید فاکتور رسمی (ارزش افزوده) دریافت شده یا نه');
   if(a=='stock')b.items=its.map(i=>({id:i.id,stock:en(val('stk'+i.id))}));
@@ -837,12 +860,12 @@ const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action
   if(!await ask(a.endsWith('_bad')?'مغایرت ثبت و درخواست برای اصلاح به خرید برگردانده می‌شود.':'«'+lbl+'»'))return;
   await api('POST',`/api/purchases/${id}/act`,b);refreshCount();if(a=='submit'){flash('ثبت شد');route()}else await goNext('purchase',id)});
 // پس از اقدام روی یک درخواست، درخواست بعدیِ منتظر همین کاربر خودکار باز می‌شود (بدون رفتن به کارتابل)
-async function goNext(kind,id){let ids=[];
-  try{const d=await api('GET','/api/cartable');ids=kind=='purchase'?d.pur_held.map(x=>x.id):d.approvals.map(x=>x.request_id)}catch(e){}
-  if(ids.includes(+id)){flash('ثبت شد');route();return} // هنوز در کارتابل شماست (مثلاً تحویل دوطرفه)
-  const nx=ids.find(x=>x>id)||ids[0];
-  if(!nx){flash('ثبت شد — درخواست دیگری منتظر شما نیست');route();return}
-  flash('ثبت شد — درخواست بعدی کارتابل شما ('+fa(ids.length)+' مورد مانده)');location.hash=`#/${kind}/${nx}`}
+// ترتیب همان «در دست اقدام» است: درخواست‌های قابل اقدام، سپس نامه‌ها، سپس رونوشت‌ها
+async function goNext(kind,id){const cur=`#/${kind}/${id}`;let t={act:[],letters:[],cc:[]};try{t=await todoItems()}catch(e){}
+  if(t.act.some(x=>x.href==cur)){flash('ثبت شد');route();return} // هنوز در کارتابل شماست (مثلاً تحویل دوطرفه)
+  const all=[...t.act,...t.letters,...t.cc].filter(x=>x.href!=cur);
+  if(!all.length){flash('ثبت شد — کار دیگری منتظر شما نیست');route();return}
+  flash('ثبت شد — مورد بعدی: '+(t.act.length?fa(t.act.length)+' درخواست قابل اقدام مانده':'نامه‌ها و رونوشت‌ها'));location.hash=all[0].href}
 const purResub=id=>run(async()=>{const v=purVals();purCheck(v);if(!await ask('درخواست اصلاح‌شده دوباره ارسال می‌شود.'))return;await api('POST',`/api/purchases/${id}/resubmit`,Object.assign(v,{note:val('puRN')}));flash('ارسال شد');route()});
 const purEdit=id=>run(async()=>{const v=purVals();purCheck(v);await api('POST',`/api/purchases/${id}/edit`,Object.assign(v,{note:val('puRN')}));flash('نسخه جدید ذخیره شد');route()});
 const purPaid=id=>run(async()=>{if(!await ask('پرداخت این خرید ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/paid`,{note:val('payN')});flash('پرداخت ثبت شد');refreshCount();route()});
@@ -876,6 +899,9 @@ async function admin(){
   <div class="mut">رمز کاربر جدید «1234» است و در اولین ورود باید تغییر کند. «حذف» (فقط مدیر سیستم): کاربری که سابقه‌ای در اسناد دارد از فهرست‌ها و سمت‌ها برداشته و حسابش بسته می‌شود ولی نامش در سوابق می‌ماند؛ کاربر بی‌سابقه کامل حذف می‌شود.</div></div>
   <div class="card"><h2>پروژه‌ها / کارگاه‌ها</h2><table><tr><th>نام</th><th>مدیر پروژه (تأییدکننده اول)</th><th>فعال</th><th></th></tr>${d.projects.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(uname(p.manager_id)||(d.users.find(u=>u.id==p.manager_id)||{}).full_name||'— (مدیر اجرایی)')}</td><td>${p.active?'بله':'خیر'}</td><td><a style="cursor:pointer" onclick='editProj(${JSON.stringify(p).replace(/'/g,"&#39;")})'>ویرایش</a>${d.is_admin&&p.code!='HQ'?` | <a style="cursor:pointer;color:var(--bad)" onclick="delProj(${p.id},'${esc(p.name).replace(/'/g,'')}')">حذف</a>`:''}</td></tr>`).join('')}</table>
   <div class="grid" style="margin-top:10px"><input type="hidden" id="pId"><div><label>نام پروژه</label><input id="pNm"></div><div><label>مدیر پروژه</label><select id="pM">${uo()}</select></div><div><label><input type="checkbox" id="pAc" style="width:auto" checked> فعال</label></div><div><button class="btn" onclick="saveProj()">ذخیره پروژه</button> <button class="btn l" onclick="editProj({})">جدید</button></div></div></div>
+  <div class="card"><h2>سمت‌های کارگاه (ارکان زیرمجموعه)</h2><div class="mut" style="margin-bottom:8px">سمت‌های ثابت: ${M.project_roles.map(r=>r[1]).join('، ')}، ${M.team_roles.slice(0,2).map(r=>r[1]).join('، ')}. سمت جدید مثل «مهندس اجرایی» چند نفر می‌گیرد؛ درخواست کالای هر نفر را بالادستش تأیید می‌کند و او درخواست‌های واحد خودش را می‌بیند. نفرات هر سمت در صفحه هر پروژه («ویرایش پروژه و ارکان») تعیین می‌شوند؛ کاربر جدید را از بخش «کاربران» بسازید.</div>
+   ${d.custom_roles.length?`<table><tr><th>سمت</th><th>بالادست</th><th>واحد</th><th></th></tr>${d.custom_roles.map(r=>`<tr><td>${esc(r[1])}</td><td>${esc((M.project_roles.find(x=>x[0]==r[2])||[])[1]||'')}</td><td>${esc(unitName(r[3]))}</td><td><a style="cursor:pointer" onclick="roleEdit('${r[0]}','${esc(r[1]).replace(/'/g,'')}','${r[2]}','${r[3]}')">ویرایش</a> | <a style="cursor:pointer;color:var(--bad)" onclick="roleDel('${r[0]}')">حذف</a></td></tr>`).join('')}</table>`:'<div class="mut">سمت جدیدی تعریف نشده است.</div>'}
+   <div class="grid" style="margin-top:10px"><input type="hidden" id="roK"><div><label>عنوان سمت</label><input id="roT" placeholder="مثلاً: کارشناس ایمنی"></div><div><label>بالادست</label><select id="roS">${opts(M.project_roles,'','— انتخاب کنید —')}</select></div><div><label>واحد</label><select id="roU">${opts(M.units,'','— انتخاب کنید —')}</select></div><div><button class="btn" onclick="roleSave()">ذخیره سمت</button> <button class="btn l" onclick="roleEdit('','','','')">جدید</button></div></div></div>
   <div class="card"><h2>تنظیمات گردش مالی و خرید</h2><div class="grid"><div><label>نام شرکت</label><input id="sCo" value="${esc(S.company)}"></div>
    <div><label>سقف نیاز به تأیید مدیرعامل (ریال)</label><input id="sTh" class="num" value="${money(S.ceo_threshold)}"></div>
    <div><label>مدیرعامل</label><select id="sCeo">${uo(S.ceo_user)}</select></div>
@@ -938,6 +964,9 @@ const saveUser=()=>run(async()=>{await api('POST','/api/admin/user',{id:val('uId
 const resetPw=id=>run(async()=>{if(!await ask('رمز این کاربر به 1234 برگردد؟'))return;await api('POST','/api/admin/reset',{id});flash('رمز بازنشانی شد');admin()});
 function editProj(p){$('#pId').value=p.id||'';$('#pNm').value=p.name||'';$('#pM').value=p.manager_id||'';$('#pAc').checked=p.active!==0}
 const saveProj=()=>run(async()=>{await api('POST','/api/admin/project',{id:val('pId'),name:val('pNm'),manager_id:val('pM'),active:$('#pAc').checked});flash('ذخیره شد');M=Object.assign(M,await api('GET','/api/meta'));admin()});
+const roleEdit=(k,t,s,u)=>{$('#roK').value=k;$('#roT').value=t;$('#roS').value=s;$('#roU').value=u;$('#roT').focus()};
+const roleSave=()=>run(async()=>{await api('POST','/api/admin/roles',{key:val('roK'),title:val('roT'),superior:val('roS'),unit:val('roU')});flash('سمت ذخیره شد');M=await api('GET','/api/meta');route()});
+const roleDel=k=>run(async()=>{if(!await ask('این سمت حذف شود؟'))return;await api('POST','/api/admin/roles',{delete:k});flash('حذف شد');M=await api('GET','/api/meta');route()});
 const saveSet=()=>run(async()=>{await api('POST','/api/admin/settings',{company:val('sCo'),ceo_threshold:en(val('sTh')).replace(/[^\d]/g,''),ceo_user:val('sCeo'),office_approver:val('sOff'),warehouse_user:val('sWh'),support_manager:val('sSup'),finance_manager:val('sFin'),cancel_reasons:val('sCx'),default_due_days:en(val('sDd'))});flash('ذخیره شد');await reloadMeta()});
 const saveSec=()=>run(async()=>{await api('POST','/api/admin/settings',{idle_minutes:en(val('sIdle')).trim()||'0',notify_enabled:$('#sNt').checked?'1':'0',notify_interval:en(val('sNi')).trim(),https_port:en(val('sHp')).trim()});flash('ذخیره شد');await reloadMeta();notifyStart()});
 const delUser=(id,name)=>run(async()=>{if(!await ask('کاربر «'+name+'» حذف می‌شود و از همه سمت‌ها برداشته می‌شود.','بله، حذف شود'))return;const r=await api('POST',`/api/admin/users/${id}/delete`,{});flash(r.kept_history?'حساب بسته و از فهرست‌ها حذف شد؛ نامش در سوابق می‌ماند':'کاربر حذف شد');await reloadMeta();admin()});

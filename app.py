@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.7'
+VERSION = '2.8'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -56,6 +56,7 @@ UNITS = [('tech', 'فنی'), ('exec', 'اجرایی'), ('support', 'پشتیبا
 TEAM_ROLES = [('exec_eng', 'مهندس اجرایی', 'exec'), ('tech_eng', 'مهندس دفتر فنی', 'tech')]
 ROLE_UNIT = {'pm': 'exec', 'supervisor': 'exec', 'exec': 'exec', 'tech': 'tech', 'support': 'support',
              'warehouse': 'warehouse', 'exec_eng': 'exec', 'tech_eng': 'tech'}
+BASE_TEAM_ROLES = list(TEAM_ROLES)
 # بالادستِ مستقیم هر سمت در کارگاه (تأیید درخواست و مکاتبات به سمت بالا)
 SUPERIOR = {'exec_eng': 'exec', 'tech_eng': 'tech', 'support': 'supervisor', 'warehouse': 'supervisor',
             'exec': 'supervisor', 'tech': 'supervisor', 'supervisor': 'pm'}
@@ -329,6 +330,26 @@ def hash_pw(pw, salt=None):
     return hashlib.pbkdf2_hmac('sha256', pw.encode('utf-8'), salt.encode(), 120000).hex(), salt
 
 
+def apply_custom_roles(c):
+    """سمت‌هایی که مدیر سیستم تعریف کرده (نسخه ۲.۸): مثل مهندسان، چند نفر در هر سمت، با بالادست و واحد.
+    در settings با کلید custom_roles به‌صورت [[کلید، عنوان، سمتِ بالادست، واحد], ...] نگه داشته می‌شوند."""
+    try:
+        roles = json.loads(settings(c).get('custom_roles') or '[]')
+    except ValueError:
+        roles = []
+    for k, _, _ in TEAM_ROLES[len(BASE_TEAM_ROLES):]:
+        SUPERIOR.pop(k, None); ROLE_UNIT.pop(k, None)
+    TEAM_ROLES[:] = BASE_TEAM_ROLES + [(r[0], r[1], r[2]) for r in roles]
+    for k, _, sup, unit in roles:
+        SUPERIOR[k] = sup; ROLE_UNIT[k] = unit
+
+
+def team_unit_sql():
+    """واحد هر سمت زیرمجموعه (برای اینکه هر کس فقط درخواست‌های واحد خودش را ببیند)."""
+    return 'CASE t.role_key %s ELSE NULL END' % ' '.join("WHEN '%s' THEN '%s'" % (k, ROLE_UNIT.get(k, ''))
+                                                          for k, _, _ in TEAM_ROLES)
+
+
 def init_db():
     os.makedirs(FILES, exist_ok=True)
     os.makedirs(BACK, exist_ok=True)
@@ -348,6 +369,7 @@ def init_db():
         c.execute("UPDATE settings SET value=? WHERE key='warehouse_user'", (str(ids['aliasghari']),))
         c.execute("INSERT INTO projects(name,code,manager_id) VALUES('دفتر مرکزی','HQ',NULL)")
     add_columns(c)
+    apply_custom_roles(c)
     migrate(c)
     migrate_v13(c)
     migrate_v15(c)
@@ -1592,6 +1614,29 @@ def fmt_num(x):
     return ('%g' % x) if x is not None else ''
 
 
+def round_start(c, P):
+    """شروع نوبت فعلی: آخرین ارسال مجدد یا برگشت؛ تأییدهای پیش از آن دوباره لازم است."""
+    return c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action IN ('resubmit','return')",
+                     (P['id'],)).fetchone()[0]
+
+
+RETURN_STAGES = ('unit_approval', 'supervisor_review', 'warehouse_check', 'tech_review', 'supervisor_approve')
+
+
+def return_targets(c, u, P):
+    """کسانی که درخواست را می‌توان به آن‌ها برگرداند (نسخه ۲.۸): درخواست‌کننده و هر کسی که پیش‌تر در مراحل
+    کارگاه روی آن اقدام کرده؛ درخواست به همان مرحله و کارتابل او برمی‌گردد."""
+    out = {P['requester_id']: 'returned'}
+    for f in c.execute("SELECT user_id, stage FROM purchase_flow WHERE purchase_id=? AND action IN "
+                       "('approve','stock','inquire') ORDER BY id", (P['id'],)):
+        if f[1] in RETURN_STAGES and f[1] != P['stage'] and f[0] != P['requester_id']:
+            out[f[0]] = f[1]
+    out.pop(u['id'], None)
+    names = {r[0]: r[1] for r in c.execute('SELECT id, full_name FROM users WHERE active=1')}
+    return [{'id': k, 'name': names[k], 'stage': v, 'label': 'درخواست‌کننده' if v == 'returned' else P_STAGES[v]}
+            for k, v in out.items() if k in names]
+
+
 def tech_already(c, P):
     """معاون فنی قبلاً در همین نوبت درخواست را ثبت یا تأیید کرده است (دوباره لازم نیست)."""
     t = pmembers(c, P['project_id']).get('tech')
@@ -1599,8 +1644,7 @@ def tech_already(c, P):
         return False
     if t == P['requester_id']:
         return True
-    last_ret = c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action='resubmit'",
-                         (P['id'],)).fetchone()[0]
+    last_ret = round_start(c, P)
     return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND id>? AND "
                      "action IN ('approve','submit') AND stage IN ('draft','unit_approval')",
                      (P['id'], t, last_ret)).fetchone() is not None
@@ -1608,15 +1652,15 @@ def tech_already(c, P):
 
 def done_this_round(c, P, stage):
     """این مرحله در نوبت فعلی (پس از آخرین ارسال مجدد) تأیید شده است."""
-    last_ret = c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action='resubmit'",
-                         (P['id'],)).fetchone()[0]
+    last_ret = round_start(c, P)
     return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND stage=? AND action='approve' AND id>?",
                      (P['id'], stage, last_ret)).fetchone() is not None
 
 
 def is_general(P):
-    """کالای عمومی و مصرفی: در کارگاه و با پشتیبانی کارگاه تأمین می‌شود (بدون دفتر مرکزی)."""
-    return (P['category'] or 'general') != 'main'
+    """کالای عمومی و مصرفی، و هر درخواست واحد پشتیبانی کارگاه (نسخه ۲.۸): در کارگاه و با پشتیبانی کارگاه تأمین
+    می‌شود و به پشتیبانی دفتر مرکزی نمی‌رود."""
+    return (P['category'] or 'general') != 'main' or P['unit'] == 'support'
 
 
 def after_stock(c, P, notes):
@@ -1781,7 +1825,7 @@ def pur_filter(c, u, q):
         w.append('(x.requester_id=? OR x.holder_id=? OR x.project_id IN (SELECT project_id FROM project_members '
                  'WHERE user_id=?) OR EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id AND f.user_id=?) '
                  "OR EXISTS(SELECT 1 FROM project_team t WHERE t.project_id=x.project_id AND t.user_id=? AND "
-                 "x.unit=CASE t.role_key WHEN 'exec_eng' THEN 'exec' ELSE 'tech' END))")
+                 "x.unit=" + team_unit_sql() + "))")
         p += [u['id']] * 5
     for k in ('project_id', 'holder_id'):
         if q.get(k):
@@ -1904,8 +1948,10 @@ def can_edit(u, P):
     return P['holder_id'] == u['id']  # فقط کسی که درخواست اکنون در کارتابل اوست
 
 
-def can_cancel(u, P):
+def can_cancel(c, u, P):
     if P['status'] not in ('open', 'returned') or P['stage'] not in CANCEL_STAGES:
+        return False
+    if is_warehouse(c, u, P) and P['requester_id'] != u['id'] and not is_mgr(u):  # انباردار درخواست را لغو نمی‌کند
         return False
     return (P['holder_id'] == u['id'] or is_mgr(u)
             or (P['requester_id'] == u['id'] and P['stage'] in ('unit_approval', 'returned')))
@@ -1960,7 +2006,7 @@ def api_purchase_get(h, c, u, b, q, pid):
     return {'docs': docs_check(c, P) if bought else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
             'site_path': site_path(c, P), 'is_admin': u['role'] == 'admin',
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
-            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
+            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in allowed_actions(c, u, P) else [],
             'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
             'buy_status': BUY_STATUS, 'site_view': site, 'can_edit_grn': can_edit_grn(c, u, P),
             'support_attach': not can_attach_turn(c, u, P) and post_purchase_support(c, u, P),
@@ -2092,6 +2138,13 @@ def api_purchase_act(h, c, u, b, q, pid):
     its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],)))
     posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
 
+    rt = int(b.get('return_to') or 0)
+    if a == 'return' and rt and rt != P['requester_id']:  # برگشت به یکی از اقدام‌کنندگان قبلی، نه درخواست‌کننده
+        tg = next((t for t in return_targets(c, u, P) if t['id'] == rt), None)
+        need(tg, 'درخواست را فقط به درخواست‌کننده یا کسانی که پیش‌تر روی آن اقدام کرده‌اند می‌توان برگرداند', 400)
+        c.execute("UPDATE purchases SET status='open', stage=?, holder_id=? WHERE id=?", (tg['stage'], rt, P['id']))
+        pflow(c, P['id'], u, P['stage'], 'return', 'برگشت به %s (%s)' % (tg['name'], tg['label']), note)
+        return {'ok': True}
     if a == 'submit':
         nxt, label = start_stage(c, u, P)
     elif a == 'stock':  # انبار موجودی هر قلم را ثبت می‌کند؛ مانده برای خرید می‌رود
@@ -2221,7 +2274,7 @@ def api_purchase_resubmit(h, c, u, b, q, pid):
 @route('POST', r'/api/purchases/(\d+)/cancel')
 def api_purchase_cancel(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
-    need(can_cancel(u, P), 'لغو فقط تا پیش از تأیید مدیر پروژه و توسط کسی که درخواست در کارتابل اوست ممکن است')
+    need(can_cancel(c, u, P), 'لغو فقط تا پیش از تأیید مدیر پروژه و توسط کسی که درخواست در کارتابل اوست ممکن است')
     reason = (b.get('reason') or '').strip()
     need(reason in cancel_reasons(c), 'علت لغو را انتخاب کنید', 400)
     note = (b.get('note') or '').strip()
@@ -2430,7 +2483,8 @@ def api_admin(h, c, u, b, q):
     for x in users:
         x['devices'] = devs.get(x['id'], 0)
     return {'users': users, 'projects': rows(c.execute('SELECT * FROM projects WHERE deleted=0 ORDER BY id')),
-            'settings': settings(c), 'backups': sorted(os.listdir(BACK))[-10:], 'https': https_status(c),
+            'settings': settings(c), 'custom_roles': [list(r) + [ROLE_UNIT.get(r[0])] for r in TEAM_ROLES[len(BASE_TEAM_ROLES):]],
+            'backups': sorted(os.listdir(BACK))[-10:], 'https': https_status(c),
             'is_admin': u['role'] == 'admin'}
 
 
@@ -2478,6 +2532,36 @@ def api_admin_project(h, c, u, b, q):
         cur = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (b['name'].strip(), b.get('code') or '', mid))
         sync_pm(c, cur.lastrowid, mid)
     return {'ok': True}
+
+
+@route('POST', '/api/admin/roles')
+def api_admin_roles(h, c, u, b, q):
+    """تعریف، ویرایش و حذف سمت‌های کارگاه (ارکان زیرمجموعه) توسط مدیر سیستم و هیات مدیره."""
+    need(is_mgr(u), 'تعریف سمت فقط توسط مدیر سیستم و هیات مدیره')
+    roles = json.loads(settings(c).get('custom_roles') or '[]')
+    if b.get('delete'):
+        k = b['delete']
+        need(any(r[0] == k for r in roles), 'سمت پیدا نشد', 404)
+        need(not c.execute('SELECT 1 FROM project_team WHERE role_key=?', (k,)).fetchone(),
+             'این سمت در پروژه‌ها نفر دارد؛ اول نفرات را در صفحه پروژه از این سمت بردارید', 400)
+        roles = [r for r in roles if r[0] != k]
+    else:
+        title = (b.get('title') or '').strip()
+        need(title, 'عنوان سمت را بنویسید', 400)
+        need(b.get('superior') in dict(PROJECT_ROLES), 'بالادست سمت را انتخاب کنید', 400)
+        need(b.get('unit') in dict(UNITS), 'واحد سمت را انتخاب کنید', 400)
+        names = {t for k, t, _ in TEAM_ROLES if k != b.get('key')} | {t for _, t in PROJECT_ROLES}
+        need(title not in names, 'سمتی با این عنوان وجود دارد', 400)
+        if b.get('key'):
+            need(any(r[0] == b['key'] for r in roles), 'سمت پیدا نشد', 404)
+            roles = [[r[0], title, b['superior'], b['unit']] if r[0] == b['key'] else r for r in roles]
+        else:
+            n = max([int(r[0][1:]) for r in roles if r[0][1:].isdigit()] or [0]) + 1
+            roles.append(['c%d' % n, title, b['superior'], b['unit']])
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('custom_roles',?)", (json.dumps(roles, ensure_ascii=False),))
+    apply_custom_roles(c)
+    log(c, 'admin', 0, u['id'], 'تعریف سمت‌های کارگاه', json.dumps(roles, ensure_ascii=False))
+    return {'ok': True, 'roles': roles}
 
 
 @route('POST', '/api/admin/settings')
