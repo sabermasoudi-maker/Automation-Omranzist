@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>اتوماسیون اداری عمران زیست</title>
-<link rel="manifest" href="/manifest.json"><meta name="theme-color" content="#17344d"><link rel="apple-touch-icon" href="/icon.png">
+<link rel="manifest" href="/manifest.json"><meta name="theme-color" content="#17344d"><link rel="apple-touch-icon" href="/icon.png"><link rel="icon" type="image/png" href="/favicon.png">
 <style>
 :root{--bg:#f4f5f7;--card:#fff;--ink:#1f2933;--mut:#6b7280;--line:#e3e6ea;--pri:#1f5f8b;--pri2:#e8f1f8;--ok:#1e7a46;--okb:#e6f4ec;--warn:#9a6700;--warnb:#fdf3dc;--bad:#b42318;--badb:#fdecea}
 *{box-sizing:border-box}
@@ -182,7 +182,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='2.6'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='2.7'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -347,9 +347,11 @@ function referForm(pfx,title){return `<div class="grid"><div class="full"><label
   <div class="full"><label>دستور / توضیح ارجاع</label><textarea id="${pfx}Ins" placeholder="مثلاً: بررسی و تا پایان هفته پاسخ تهیه شود"></textarea></div></div>`}
 function referVals(pfx){return{to_ids:picked(pfx+'To'),action:val(pfx+'Act'),instruction:val(pfx+'Ins'),due:toIso(val(pfx+'Due'))}}
 const delAtt=(id,name)=>run(async()=>{if(!await ask('پیوست «'+name+'» حذف شود؟'))return;await api('POST',`/api/attachments/${id}/delete`,{});flash('حذف شد');route()});
+// پیوست: با انتخاب فایل خودکار بارگذاری می‌شود (دکمه «افزودن پیوست» حذف شد)
+const attAuto=(dt,id)=>run(async()=>{const f=$('#attF');if(!f.files.length)return;f.disabled=true;try{await uploadFiles(dt,id,'attF',val('attK'));flash('بارگذاری شد');route()}finally{f.disabled=false}});
 async function uploadFiles(dt,id,inputId,kind){const f=$('#'+inputId);if(!f||!f.files.length)return;for(const file of f.files){flash('در حال بارگذاری '+file.name);await api('POST',`/api/attach?doc_type=${dt}&doc_id=${id}`,undefined,{name:file.name,data:file,kind})}}
 function attachBlock(dt,id,att,canAdd,defKind,chosen){const kinds=dt=='purchase';return `<div class="card"><h2>پیوست‌ها${kinds?' (پیش‌فاکتور، فاکتور، مشخصات فنی، …)':' و اسکن‌ها'}</h2>${att.length?`<table><tr>${kinds?'<th>نوع</th>':''}<th>فایل</th><th>حجم</th><th>بارگذاری</th><th></th></tr>`+att.map(a=>`<tr>${kinds?`<td>${a.kind?`<span class="tag pri">${esc(a.kind)}</span>`:''}${a.id==chosen?' <span class="tag ok">منتخب</span>':a.archived?' <span class="tag">بایگانی</span>':''}</td>`:''}<td><a href="/files/${a.id}" target="_blank">${esc(a.name)}</a></td><td class="mut">${fa(Math.ceil(a.size/1024))} KB</td><td class="mut">${esc(a.uploader)} — ${jd(a.created_at,1)}</td><td><a href="/files/${a.id}?dl=1">دانلود</a>${a.can_delete?` | <a class="noprint" style="cursor:pointer;color:var(--bad)" onclick="delAtt(${a.id},'${esc(a.name).replace(/'/g,'')}')">حذف</a>`:''}</td></tr>`).join('')+'</table>':'<div class="mut">پیوستی ندارد.</div>'}
-  ${canAdd===false?(kinds?'<div class="mut noprint" style="margin-top:6px">پیوست و حذف پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد.</div>':''):`<div class="row noprint" style="margin-top:10px">${kinds?`<div>${kindSel('attK',defKind)}</div>`:''}<div style="flex:1"><input type="file" id="attF" multiple accept=".pdf,.jpg,.jpeg,.png,.heic,.tif,.tiff,.doc,.docx,.xls,.xlsx,.zip,.dwg"></div><button class="btn l" onclick="run(async()=>{await uploadFiles('${dt}',${id},'attF',val('attK'));flash('بارگذاری شد');route()})">افزودن پیوست</button></div>`}</div>`}
+  ${canAdd===false?(kinds?'<div class="mut noprint" style="margin-top:6px">پیوست و حذف پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد.</div>':''):`<div class="row noprint" style="margin-top:10px">${kinds?`<div>${kindSel('attK',defKind)}</div>`:''}<div style="flex:1"><input type="file" id="attF" multiple accept=".pdf,.jpg,.jpeg,.png,.heic,.tif,.tiff,.doc,.docx,.xls,.xlsx,.zip,.dwg" onchange="attAuto('${dt}',${id})"></div><span class="mut">${kinds?'نوع را انتخاب کنید؛ ':''}فایل پس از انتخاب خودکار بارگذاری می‌شود.</span></div>`}</div>`}
 function flowBlock(dt,id,refs){
   const mine=refs.filter(r=>r.to_id==M.me.id&&['new','seen','doing'].includes(r.status));
   let h=`<div class="card"><h2>گردش و ارجاع‌ها</h2>`;
@@ -554,7 +556,7 @@ async function requestView(id){
   if((M.me.role=='finance'||isTop())&&R.status=='paid')h+=`<div class="card noprint"><h2>ثبت شماره سند سپیدار</h2><div class="row"><div><input id="pS"></div><button class="btn" onclick="pay(${R.id})">ثبت</button></div></div>`;
   h+=attachBlock('request',R.id,d.attachments)+flowBlock('request',R.id,d.referrals)+adminDocCard('request',R.id,R.number)+logBlock(d.log);
   $('#pg').innerHTML=h;bindTabs()}
-const act=(id,dec)=>run(async()=>{if(!await ask({approve:'درخواست تأیید و برای مرحله بعد فرستاده می‌شود.',return:'درخواست برای اصلاح به درخواست‌کننده برمی‌گردد.',reject:'درخواست رد می‌شود.'}[dec]))return;await api('POST',`/api/requests/${id}/act`,{decision:dec,note:val('apN')});flash('ثبت شد');route()});
+const act=(id,dec)=>run(async()=>{if(!await ask({approve:'درخواست تأیید و برای مرحله بعد فرستاده می‌شود.',return:'درخواست برای اصلاح به درخواست‌کننده برمی‌گردد.',reject:'درخواست رد می‌شود.'}[dec]))return;await api('POST',`/api/requests/${id}/act`,{decision:dec,note:val('apN')});refreshCount();await goNext('request',id)});
 const resub=id=>run(async()=>{if(!await ask('درخواست اصلاح‌شده دوباره برای تأیید فرستاده می‌شود.'))return;await api('POST',`/api/requests/${id}/resubmit`,reqVals());flash('ارسال شد');route()});
 const cancelReq=id=>run(async()=>{if(!await ask('درخواست لغو شود؟'))return;await api('POST',`/api/requests/${id}/cancel`,{});route()});
 const pay=id=>run(async()=>{if(!await ask('پرداخت / سند سپیدار این درخواست ثبت می‌شود.'))return;await api('POST',`/api/requests/${id}/pay`,{paid_amount:en(val('pA')).replace(/[^\d]/g,''),paid_at:en(val('pD')),sepidar_no:en(val('pS')),pay_note:val('pN')});flash('ثبت شد');route()});
@@ -833,7 +835,14 @@ const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action
   if(a=='recv_ok')b.items=its.filter(i=>$('#rq'+i.id)).map(i=>({id:i.id,qty:en(val('rq'+i.id))}));
   const lbl=((PUR_ACT[d.doc.stage]||[]).find(x=>x[0]==a)||[])[1]||a;
   if(!await ask(a.endsWith('_bad')?'مغایرت ثبت و درخواست برای اصلاح به خرید برگردانده می‌شود.':'«'+lbl+'»'))return;
-  await api('POST',`/api/purchases/${id}/act`,b);flash('ثبت شد');refreshCount();route()});
+  await api('POST',`/api/purchases/${id}/act`,b);refreshCount();if(a=='submit'){flash('ثبت شد');route()}else await goNext('purchase',id)});
+// پس از اقدام روی یک درخواست، درخواست بعدیِ منتظر همین کاربر خودکار باز می‌شود (بدون رفتن به کارتابل)
+async function goNext(kind,id){let ids=[];
+  try{const d=await api('GET','/api/cartable');ids=kind=='purchase'?d.pur_held.map(x=>x.id):d.approvals.map(x=>x.request_id)}catch(e){}
+  if(ids.includes(+id)){flash('ثبت شد');route();return} // هنوز در کارتابل شماست (مثلاً تحویل دوطرفه)
+  const nx=ids.find(x=>x>id)||ids[0];
+  if(!nx){flash('ثبت شد — درخواست دیگری منتظر شما نیست');route();return}
+  flash('ثبت شد — درخواست بعدی کارتابل شما ('+fa(ids.length)+' مورد مانده)');location.hash=`#/${kind}/${nx}`}
 const purResub=id=>run(async()=>{const v=purVals();purCheck(v);if(!await ask('درخواست اصلاح‌شده دوباره ارسال می‌شود.'))return;await api('POST',`/api/purchases/${id}/resubmit`,Object.assign(v,{note:val('puRN')}));flash('ارسال شد');route()});
 const purEdit=id=>run(async()=>{const v=purVals();purCheck(v);await api('POST',`/api/purchases/${id}/edit`,Object.assign(v,{note:val('puRN')}));flash('نسخه جدید ذخیره شد');route()});
 const purPaid=id=>run(async()=>{if(!await ask('پرداخت این خرید ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/paid`,{note:val('payN')});flash('پرداخت ثبت شد');refreshCount();route()});
