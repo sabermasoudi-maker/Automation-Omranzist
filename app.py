@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.1'
+VERSION = '3.2'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -371,6 +371,13 @@ def init_db():
         c.execute("INSERT INTO projects(name,code,manager_id) VALUES('دفتر مرکزی','HQ',NULL)")
     add_columns(c)
     apply_custom_roles(c)
+    if not settings(c).get('fix_v32'):  # ۳.۲: رونوشت‌های باز درخواست کالا که به پشتیبانی رفته بود، بسته می‌شوند
+        sup = support_users(c)
+        if sup:
+            c.execute("UPDATE referrals SET status='closed', done_at=?, reply='رونوشت به پشتیبانی لازم نیست (نسخه ۳.۲)' "
+                      "WHERE doc_type='purchase' AND action='جهت اطلاع' AND status IN ('new','seen','doing') AND to_id IN (%s)"
+                      % ','.join('?' * len(sup)), (now(),) + tuple(sup))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('fix_v32','1')")
     migrate(c)
     migrate_v13(c)
     migrate_v15(c)
@@ -1820,9 +1827,18 @@ def start_stage(c, u, f):
     return 'unit_approval', 'ثبت و ارسال برای تأیید رئیس واحد'
 
 
+def support_users(c):
+    """پشتیبانی دفتر مرکزی و پشتیبانی همه کارگاه‌ها."""
+    ids = {r[0] for r in c.execute("SELECT user_id FROM project_members WHERE role_key='support'")}
+    sm = int(settings(c).get('support_manager') or 0)
+    return ids | ({sm} if sm else set())
+
+
 def cc_exec(c, u, pid, f):
     """درخواستی که معاون فنی صادر یا تأیید می‌کند (از جمله درخواست مهندسان دفتر فنی)، رونوشت به معاون اجرایی می‌رود."""
     mem = pmembers(c, f['project_id'])
+    if mem.get('exec') in support_users(c):  # رونوشت به پشتیبانی نمی‌رود (نسخه ۳.۲)
+        return
     if mem.get('tech') == u['id'] and mem.get('exec') and mem.get('exec') != u['id'] and not c.execute(
             "SELECT 1 FROM referrals WHERE doc_type='purchase' AND doc_id=? AND to_id=?", (pid, mem['exec'])).fetchone():
         c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
@@ -2311,14 +2327,8 @@ def api_purchase_act(h, c, u, b, q, pid):
          'closed' if nxt == 'done' else 'open')
     if (P['stage'] == 'unit_approval' and a == 'approve') or a == 'submit':
         cc_exec(c, u, P['id'], P)
-    if note and P['stage'] in GROUP_STAGES and nxt in ('hq_quotes', 'hq_purchase'):
-        # نظر مدیر پروژه یا هیات مدیره به مدیر پشتیبانی گوشزد می‌شود
-        sm = int(settings(c).get('support_manager') or 0)
-        # نسخه ۳.۱: وقتی خود پشتیبانی کار را در دست دارد، رونوشت لازم نیست (نظر در کارت اقدام او به رنگ قرمز هست)
-        holder = c.execute('SELECT holder_id FROM purchases WHERE id=?', (P['id'],)).fetchone()[0]
-        if sm and sm != u['id'] and sm != holder:
-            c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
-                      ('purchase', P['id'], u['id'], sm, 'جهت اطلاع', 'نظر %s: %s' % (u['full_name'], note), now()))
+    # نسخه ۳.۲: هیچ رونوشتی از درخواست کالا به پشتیبانی (دفتر مرکزی یا کارگاه) نمی‌رود؛ نظر مدیر پروژه / هیات مدیره
+    # در کارت اقدام پشتیبانی به رنگ قرمز دیده می‌شود
     return {'ok': True}
 
 
