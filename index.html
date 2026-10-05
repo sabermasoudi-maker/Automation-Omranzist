@@ -182,7 +182,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='3.3'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='3.4'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -383,7 +383,7 @@ const docLink=r=>`#/${r.doc_type}/${r.doc_id}`;
 async function todoItems(){const d=await api('GET','/api/cartable');M.today=d.today;const seen=new Set();
   const it=(href,tag,title,sub,who,at,cls)=>{if(seen.has(href))return null;seen.add(href);return{href,tag,title,sub,who,at,cls}};
   const pur=(r,sub)=>it('#/purchase/'+r.id,'کالا',dn(r.number)+' — '+esc(r.items_text||''),sub||esc(M.p_stages[r.stage]||''),esc(r.requester||''),r.req_date?fa(r.req_date):'');
-  const act=[...d.pur_held.map(r=>pur(r)),...d.pur_pay.map(r=>pur(r,r.stage=='finance_settle'?'کنترل مدارک مالی':'منتظر پرداخت مالی')),
+  const act=[...(d.locked||[]).map(r=>it('#/admin/'+r.id,'حساب',esc(r.full_name)+' ('+esc(r.username)+')','حساب بسته شد (۵ ورود ناموفق) — رمز جدید بگذارید','',jd(r.locked_at,1),'late')),...d.pur_held.map(r=>pur(r)),...d.pur_pay.map(r=>pur(r,r.stage=='finance_settle'?'کنترل مدارک مالی':'منتظر پرداخت مالی')),
     ...d.approvals.map(r=>it('#/request/'+r.request_id,'مالی',fa(r.number)+' — '+esc(r.title),esc(r.label),esc(r.requester),'')),
     ...d.pay.map(r=>it('#/request/'+r.id,'مالی',fa(r.number)+' — '+esc(r.title),r.status=='approved'?'منتظر پرداخت':'ثبت سند سپیدار',esc(r.payee||''),''))].filter(Boolean);
   const isCc=r=>r.doc_type=='purchase'&&r.action=='جهت اطلاع';
@@ -910,7 +910,7 @@ async function reports(){
 async function admin(){
   const d=await api('GET','/api/admin');const S=d.settings;const uo=sel=>opts(d.users.filter(u=>u.active).map(u=>[u.id,u.full_name]),sel,'—');
   $('#pg').innerHTML=`<h1>مدیریت سامانه</h1>
-  <div class="card"><h2>کاربران</h2><table><tr><th>نام کاربری</th><th>نام</th><th>سمت</th><th>نقش</th><th>فعال</th><th></th></tr>${d.users.map(u=>`<tr><td>${esc(u.username)}</td><td>${esc(u.full_name)}</td><td>${esc(u.title)}</td><td>${M.roles[u.role]}</td><td>${u.active?'بله':'خیر'}${u.must_change?' <span class="tag warn">رمز پیش‌فرض</span>':''}</td><td><a style="cursor:pointer" onclick='editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'>ویرایش</a> | <a style="cursor:pointer" onclick="resetPw(${u.id})">رمز ← ۱۲۳۴</a>${d.is_admin&&u.id!=M.me.id?` | <a style="cursor:pointer;color:var(--bad)" onclick="delUser(${u.id},'${esc(u.full_name).replace(/'/g,'')}')">حذف</a>`:''}${u.devices?` <span class="tag pri" title="دستگاه‌های ثبت‌شده برای اعلان">🔔 ${fa(u.devices)}</span>${d.is_admin?` <a style="cursor:pointer;font-size:12px" onclick="ntRevoke(${u.id})">لغو اعلان</a>`:''}`:''}</td></tr>`).join('')}</table>
+  <div class="card"><h2>کاربران</h2><table><tr><th>نام کاربری</th><th>نام</th><th>سمت</th><th>نقش</th><th>فعال</th><th></th></tr>${d.users.map(u=>`<tr><td>${esc(u.username)}</td><td>${esc(u.full_name)}</td><td>${esc(u.title)}</td><td>${M.roles[u.role]}</td><td>${u.active?'بله':'خیر'}${u.must_change?' <span class="tag warn">رمز پیش‌فرض</span>':''}${u.locked_at?` <span class="tag bad">بسته شد — ${fa(u.failed_logins)} ورود ناموفق، ${jd(u.locked_at,1)}</span>`:''}</td><td><a style="cursor:pointer" onclick='editUser(${JSON.stringify(u).replace(/'/g,"&#39;")})'>ویرایش</a> | <a style="cursor:pointer" onclick="resetPw(${u.id})">رمز ← ۱۲۳۴</a>${d.is_admin?` | <a style="cursor:pointer;${u.locked_at?'color:var(--bad);font-weight:bold':''}" onclick="setPw(${u.id},'${esc(u.full_name).replace(/'/g,'')}')">${u.locked_at?'رمز جدید و بازکردن حساب':'رمز جدید'}</a>`:''}${d.is_admin&&u.id!=M.me.id?` | <a style="cursor:pointer;color:var(--bad)" onclick="delUser(${u.id},'${esc(u.full_name).replace(/'/g,'')}')">حذف</a>`:''}${u.devices?` <span class="tag pri" title="دستگاه‌های ثبت‌شده برای اعلان">🔔 ${fa(u.devices)}</span>${d.is_admin?` <a style="cursor:pointer;font-size:12px" onclick="ntRevoke(${u.id})">لغو اعلان</a>`:''}`:''}</td></tr>`).join('')}</table>
   <div class="grid" style="margin-top:10px" id="uF"><input type="hidden" id="uId"><div><label>نام کاربری</label><input id="uU" class="num"></div><div><label>نام کامل</label><input id="uN"></div><div><label>سمت</label><input id="uT"></div><div><label>نقش</label><select id="uR">${opts(Object.entries(M.roles),'staff')}</select></div><div><label><input type="checkbox" id="uA" style="width:auto" checked> فعال</label></div><div><button class="btn" onclick="saveUser()">ذخیره کاربر</button> <button class="btn l" onclick="editUser({})">جدید</button></div></div>
   <div class="mut">رمز کاربر جدید «1234» است و در اولین ورود باید تغییر کند. «حذف» (فقط مدیر سیستم): کاربری که سابقه‌ای در اسناد دارد از فهرست‌ها و سمت‌ها برداشته و حسابش بسته می‌شود ولی نامش در سوابق می‌ماند؛ کاربر بی‌سابقه کامل حذف می‌شود.</div></div>
   <div class="card"><h2>پروژه‌ها / کارگاه‌ها</h2><table><tr><th>نام</th><th>مدیر پروژه (تأییدکننده اول)</th><th>فعال</th><th></th></tr>${d.projects.map(p=>`<tr><td>${esc(p.name)}</td><td>${esc(uname(p.manager_id)||(d.users.find(u=>u.id==p.manager_id)||{}).full_name||'— (مدیر اجرایی)')}</td><td>${p.active?'بله':'خیر'}</td><td><a style="cursor:pointer" onclick='editProj(${JSON.stringify(p).replace(/'/g,"&#39;")})'>ویرایش</a>${d.is_admin&&p.code!='HQ'?` | <a style="cursor:pointer;color:var(--bad)" onclick="delProj(${p.id},'${esc(p.name).replace(/'/g,'')}')">حذف</a>`:''}</td></tr>`).join('')}</table>
@@ -977,6 +977,13 @@ function lhEdit(i){const x=LHA.letterheads[i];const Y=JSON.parse(JSON.stringify(
   d.querySelector('#lhSave').onclick=()=>run(async()=>{await api('POST',`/api/admin/letterheads/${x.scope}/layout`,Y);d.remove();flash('تنظیم سربرگ ذخیره شد');lhAdmin()})}
 function editUser(u){$('#uId').value=u.id||'';$('#uU').value=u.username||'';$('#uN').value=u.full_name||'';$('#uT').value=u.title||'';$('#uR').value=u.role||'staff';$('#uA').checked=u.active!==0;$('#uU').focus()}
 const saveUser=()=>run(async()=>{await api('POST','/api/admin/user',{id:val('uId'),username:val('uU'),full_name:val('uN'),title:val('uT'),role:val('uR'),active:$('#uA').checked});flash('ذخیره شد');M=Object.assign(M,await api('GET','/api/meta'));admin()});
+// مدیر سیستم: رمز جدید (حساب بسته‌شده هم باز می‌شود)؛ کاربر در اولین ورود رمز را عوض می‌کند
+function setPw(id,name){const d=document.createElement('div');d.className='modal';d.innerHTML=`<div class="card"><h2>رمز جدید برای ${esc(name)}</h2>
+  <div class="grid"><div><label>رمز جدید (حداقل ۶ کاراکتر)</label><input type="text" id="npw" autocomplete="off"></div></div>
+  <div class="mut" style="margin-top:6px">حساب (اگر بسته شده باشد) باز می‌شود. رمز را به کاربر بدهید؛ او در اولین ورود باید آن را تغییر دهد.</div>
+  <div class="row" style="margin-top:12px"><button class="btn" id="npS">ذخیره رمز جدید</button><button class="btn l" id="npC">انصراف</button></div></div>`;
+  document.body.appendChild(d);$('#npw').focus();$('#npC').onclick=()=>d.remove();
+  $('#npS').onclick=()=>run(async()=>{await api('POST','/api/admin/setpw',{id,password:val('npw')});d.remove();flash('رمز جدید ذخیره و حساب باز شد');refreshCount();admin()})}
 const resetPw=id=>run(async()=>{if(!await ask('رمز این کاربر به 1234 برگردد؟'))return;await api('POST','/api/admin/reset',{id});flash('رمز بازنشانی شد');admin()});
 function editProj(p){$('#pId').value=p.id||'';$('#pNm').value=p.name||'';$('#pM').value=p.manager_id||'';$('#pAc').checked=p.active!==0}
 const saveProj=()=>run(async()=>{await api('POST','/api/admin/project',{id:val('pId'),name:val('pNm'),manager_id:val('pM'),active:$('#pAc').checked});flash('ذخیره شد');M=Object.assign(M,await api('GET','/api/meta'));admin()});

@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.3'
+VERSION = '3.4'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -421,7 +421,8 @@ def add_columns(c):
                         ('sig_name', "TEXT DEFAULT ''"), ('sig_title', "TEXT DEFAULT ''"), ('sig_file', "TEXT DEFAULT ''"),
                         ('registered_at', 'TEXT'), ('main_to_id', 'INTEGER'), ('cc_text', "TEXT DEFAULT ''"),
                         ('cc_ids', "TEXT DEFAULT ''"), ('main_action', "TEXT DEFAULT ''"), ('dispatched', 'INTEGER DEFAULT 1')],
-            'users': [('sig_path', "TEXT DEFAULT ''"), ('deleted', 'INTEGER DEFAULT 0')],
+            'users': [('sig_path', "TEXT DEFAULT ''"), ('deleted', 'INTEGER DEFAULT 0'),
+                      ('failed_logins', 'INTEGER DEFAULT 0'), ('locked_at', 'TEXT')],  # ۳.۴: قفل پس از ۵ ورود ناموفق
             'projects': [('deleted', 'INTEGER DEFAULT 0')],
             'sessions': [('last_seen', 'TEXT')]}
     for t, cols in want.items():
@@ -798,9 +799,11 @@ def pw_ok(pw, r):
     return any(hash_pw(t, r['salt'])[0] == r['pw_hash'] for t in tries)
 
 
-# محدودیت ورود ناموفق (نسخه ۳.۳): ۵ بار برای یک نام کاربری یا ۲۰ بار از یک نشانی IP، ۱۵ دقیقه قفل
+# محدودیت ورود ناموفق: حساب پس از ۵ ورود ناموفق پیاپی بسته می‌شود و فقط مدیر سیستم با رمز جدید بازش می‌کند (۳.۴)؛
+# از یک نشانی IP هم ۲۰ ورود ناموفق ورود را ۱۵ دقیقه می‌بندد (حدس نام‌های کاربری مختلف)
 LOGIN_FAILS, LOGIN_LOCK = {}, threading.Lock()
 LOGIN_MAX_USER, LOGIN_MAX_IP, LOGIN_WINDOW = 5, 20, 15 * 60
+LOCKED_MSG = 'حساب شما به دلیل %s ورود ناموفق بسته شده است. برای رمز جدید به مدیر سیستم مراجعه کنید.' % '۵'
 
 
 def login_blocked(keys):
@@ -826,17 +829,31 @@ def login_failed(keys):
 def api_login(h, c, u, b, q):
     # نام کاربری به حروف کوچک و بزرگ حساس نیست
     un = (b.get('username') or '').strip()
-    keys = [('u:' + un.lower(), LOGIN_MAX_USER), ('ip:' + h.client_address[0], LOGIN_MAX_IP)]
+    keys = [('ip:' + h.client_address[0], LOGIN_MAX_IP)]
     wait = login_blocked(keys)
     if wait:
-        raise ApiError('به دلیل ورودهای ناموفق پیاپی، ورود تا %s دقیقه دیگر ممکن نیست' % fa_num(str((wait + 59) // 60)), 429)
+        raise ApiError('به دلیل ورودهای ناموفق پیاپی از این دستگاه، ورود تا %s دقیقه دیگر ممکن نیست'
+                       % fa_num(str((wait + 59) // 60)), 429)
     r = one(c.execute('SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1', (un,)))
+    if r and r['locked_at']:
+        raise ApiError(LOCKED_MSG, 423)
     if not r or not pw_ok(b.get('password') or '', r):
         login_failed(keys)
         log(c, 'user', r['id'] if r else 0, None, 'ورود ناموفق', '%s از %s' % (un[:50], h.client_address[0]))
-        raise ApiError('نام کاربری یا رمز عبور نادرست است', 401)
-    with LOGIN_LOCK:
-        LOGIN_FAILS.pop(keys[0][0], None)  # ورود موفق، شمارش همان نام کاربری را صفر می‌کند
+        if r:
+            n = (r['failed_logins'] or 0) + 1
+            c.execute('UPDATE users SET failed_logins=?, locked_at=? WHERE id=?',
+                      (n, now() if n >= LOGIN_MAX_USER else None, r['id']))
+            if n >= LOGIN_MAX_USER:  # بسته شد؛ در «در دست اقدام» مدیر سیستم می‌آید
+                c.execute('DELETE FROM sessions WHERE user_id=?', (r['id'],))
+                log(c, 'user', r['id'], None, 'حساب بسته شد', '%d ورود ناموفق — ارجاع به مدیر سیستم' % n)
+        c.commit()  # خطا تراکنش را برمی‌گرداند؛ شمارش و قفل باید بماند
+        if r and n >= LOGIN_MAX_USER:
+            raise ApiError(LOCKED_MSG, 423)
+        left = LOGIN_MAX_USER - n if r else 0
+        raise ApiError('نام کاربری یا رمز عبور نادرست است' + (' (%s بار دیگر تا بسته شدن حساب)' % fa_num(str(left))
+                                                             if r and left <= 2 else ''), 401)
+    c.execute('UPDATE users SET failed_logins=0 WHERE id=?', (r['id'],))
     tok = secrets.token_hex(24)
     c.execute('INSERT INTO sessions(token,user_id,created_at,last_seen) VALUES(?,?,?,?)', (tok, r['id'], now(), now()))
     h.set_cookie = 'sid=%s; Path=/; HttpOnly; SameSite=Lax' % tok  # کوکی جلسه؛ با بستن مرورگر یا بی‌فعالیتی از بین می‌رود
@@ -936,7 +953,9 @@ def api_cartable(h, c, u, b, q):
     pur_pay = rows(c.execute(PUR_SEL + "WHERE " + PUR_PAY_SQL + " ORDER BY x.id")) if is_finance(c, u) else []
     pur_mine = rows(c.execute(PUR_SEL + "WHERE x.requester_id=? AND x.status IN ('open','returned') ORDER BY x.id DESC",
                               (u['id'],)))
-    return {'inbox': inbox, 'sent': sent, 'approvals': approvals, 'mine': mine, 'pay': pay, 'desk': desk,
+    locked = rows(c.execute('SELECT id, username, full_name, locked_at FROM users WHERE locked_at IS NOT NULL AND deleted=0 '
+                            'ORDER BY locked_at')) if u['role'] == 'admin' else []
+    return {'locked': locked, 'inbox': inbox, 'sent': sent, 'approvals': approvals, 'mine': mine, 'pay': pay, 'desk': desk,
             'pur_held': pur_held, 'pur_mine': pur_mine, 'pur_pay': pur_pay, 'today': today()}
 
 
@@ -953,6 +972,8 @@ def cart_count(c, u):
     if u['role'] in ('finance',):
         n += c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]
     n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_HELD_SQL, held_args(u)).fetchone()[0]
+    if u['role'] == 'admin':  # حساب‌های بسته‌شده پس از ورود ناموفق، منتظر رمز جدید مدیر سیستم
+        n += c.execute('SELECT COUNT(*) FROM users WHERE locked_at IS NOT NULL AND deleted=0').fetchone()[0]
     if u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager'):
         n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_PAYWAIT_SQL).fetchone()[0]
     return n
@@ -2609,7 +2630,8 @@ def api_admin_sig_view(h, c, u, b, q, uid):
 def api_admin(h, c, u, b, q):
     need(is_mgr(u))
     devs = {r[0]: r[1] for r in c.execute('SELECT user_id, COUNT(*) FROM notify_devices GROUP BY user_id')}
-    users = rows(c.execute('SELECT id,username,full_name,title,role,active,must_change FROM users WHERE deleted=0 ORDER BY id'))
+    users = rows(c.execute('SELECT id,username,full_name,title,role,active,must_change,locked_at,failed_logins FROM users '
+                           'WHERE deleted=0 ORDER BY id'))
     for x in users:
         x['devices'] = devs.get(x['id'], 0)
     return {'users': users, 'projects': rows(c.execute('SELECT * FROM projects WHERE deleted=0 ORDER BY id')),
@@ -2639,11 +2661,28 @@ def api_admin_user(h, c, u, b, q):
     return {'ok': True}
 
 
+@route('POST', '/api/admin/setpw')
+def api_admin_setpw(h, c, u, b, q):
+    """مدیر سیستم برای کاربر (از جمله حساب بسته‌شده) رمز جدید می‌گذارد و حساب را باز می‌کند؛ کاربر در اولین ورود عوضش می‌کند."""
+    need_admin(u)
+    t = one(c.execute('SELECT id, full_name FROM users WHERE id=? AND deleted=0', (int(b.get('id') or 0),)))
+    need(t, 'کاربر پیدا نشد', 404)
+    pw = b.get('password') or ''
+    need(len(pw) >= 6, 'رمز جدید حداقل ۶ کاراکتر است', 400)
+    hh, s = hash_pw(pw)
+    c.execute('UPDATE users SET pw_hash=?, salt=?, must_change=1, failed_logins=0, locked_at=NULL WHERE id=?', (hh, s, t['id']))
+    c.execute('DELETE FROM sessions WHERE user_id=?', (t['id'],))
+    log(c, 'user', t['id'], u['id'], 'رمز جدید و بازکردن حساب توسط مدیر سیستم', t['full_name'])
+    return {'ok': True}
+
+
 @route('POST', '/api/admin/reset')
 def api_admin_reset(h, c, u, b, q):
     need(is_mgr(u))
     hh, s = hash_pw('1234')
     c.execute('UPDATE users SET pw_hash=?, salt=?, must_change=1 WHERE id=?', (hh, s, int(b['id'])))
+    if u['role'] == 'admin':  # باز کردن حساب بسته‌شده فقط با مدیر سیستم
+        c.execute('UPDATE users SET failed_logins=0, locked_at=NULL WHERE id=?', (int(b['id']),))
     c.execute('DELETE FROM sessions WHERE user_id=?', (int(b['id']),))
     c.execute('DELETE FROM notify_devices WHERE user_id=?', (int(b['id']),))
     return {'ok': True}
@@ -3518,7 +3557,8 @@ def main():
     init_db()
     if '--reset-admin' in sys.argv:
         c = db(); hh, ss = hash_pw('1234')
-        c.execute("UPDATE users SET pw_hash=?, salt=?, must_change=1, active=1 WHERE username='admin'", (hh, ss))
+        c.execute("UPDATE users SET pw_hash=?, salt=?, must_change=1, active=1, failed_logins=0, locked_at=NULL "
+                  "WHERE username='admin'", (hh, ss))
         c.commit(); c.close(); print('رمز admin به 1234 برگشت.'); return
     other = running_version(PORT)
     if other:
