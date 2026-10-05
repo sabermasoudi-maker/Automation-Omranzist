@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.2'
+VERSION = '3.3'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -798,13 +798,45 @@ def pw_ok(pw, r):
     return any(hash_pw(t, r['salt'])[0] == r['pw_hash'] for t in tries)
 
 
+# محدودیت ورود ناموفق (نسخه ۳.۳): ۵ بار برای یک نام کاربری یا ۲۰ بار از یک نشانی IP، ۱۵ دقیقه قفل
+LOGIN_FAILS, LOGIN_LOCK = {}, threading.Lock()
+LOGIN_MAX_USER, LOGIN_MAX_IP, LOGIN_WINDOW = 5, 20, 15 * 60
+
+
+def login_blocked(keys):
+    """اگر یکی از کلیدها بیش از حد مجاز ناموفق بوده، چند ثانیه تا آزاد شدن مانده است."""
+    t = time.time()
+    with LOGIN_LOCK:
+        wait = 0
+        for k, lim in keys:
+            fl = [x for x in LOGIN_FAILS.get(k, []) if t - x < LOGIN_WINDOW]
+            LOGIN_FAILS[k] = fl
+            if len(fl) >= lim:
+                wait = max(wait, int(LOGIN_WINDOW - (t - fl[0])) + 1)
+        return wait
+
+
+def login_failed(keys):
+    with LOGIN_LOCK:
+        for k, _ in keys:
+            LOGIN_FAILS.setdefault(k, []).append(time.time())
+
+
 @route('POST', '/api/login')
 def api_login(h, c, u, b, q):
     # نام کاربری به حروف کوچک و بزرگ حساس نیست
-    r = one(c.execute('SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1',
-                      ((b.get('username') or '').strip(),)))
+    un = (b.get('username') or '').strip()
+    keys = [('u:' + un.lower(), LOGIN_MAX_USER), ('ip:' + h.client_address[0], LOGIN_MAX_IP)]
+    wait = login_blocked(keys)
+    if wait:
+        raise ApiError('به دلیل ورودهای ناموفق پیاپی، ورود تا %s دقیقه دیگر ممکن نیست' % fa_num(str((wait + 59) // 60)), 429)
+    r = one(c.execute('SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1', (un,)))
     if not r or not pw_ok(b.get('password') or '', r):
+        login_failed(keys)
+        log(c, 'user', r['id'] if r else 0, None, 'ورود ناموفق', '%s از %s' % (un[:50], h.client_address[0]))
         raise ApiError('نام کاربری یا رمز عبور نادرست است', 401)
+    with LOGIN_LOCK:
+        LOGIN_FAILS.pop(keys[0][0], None)  # ورود موفق، شمارش همان نام کاربری را صفر می‌کند
     tok = secrets.token_hex(24)
     c.execute('INSERT INTO sessions(token,user_id,created_at,last_seen) VALUES(?,?,?,?)', (tok, r['id'], now(), now()))
     h.set_cookie = 'sid=%s; Path=/; HttpOnly; SameSite=Lax' % tok  # کوکی جلسه؛ با بستن مرورگر یا بی‌فعالیتی از بین می‌رود
@@ -2003,11 +2035,7 @@ def api_purchase_get(h, c, u, b, q, pid):
             c.execute('UPDATE referrals SET status=?, seen_at=?, done_at=? WHERE id=?',
                       (ns, now(), now() if ns == 'done' else None, r['id']))
             r['status'] = ns
-    # کارمند کارگاه مدارک دفتر مرکزی را نمی‌بیند، مگر کار دفتر مرکزی به او واگذار شده باشد
-    site = is_site_only(c, u) and not ((P['holder_id'] == u['id'] and P['stage'] in HQ_ONLY_STAGES) or c.execute(
-        'SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND stage IN (%s) AND action NOT IN (%s)' % (
-            ','.join('?' * len(HQ_ONLY_STAGES)), ','.join('?' * len(SIDE_ACTIONS))),
-        (P['id'], u['id']) + HQ_ONLY_STAGES + SIDE_ACTIONS).fetchone())
+    site = site_view(c, u, P)
     if site:  # قیمت‌ها و مدارک پس از مدیر پروژه برای کارکنان کارگاه نمایش داده نمی‌شود
         hid = {a['flow_id'] for a in att if a.get('hq_only') and a.get('flow_id')}
         hq_inv = not site_path(c, P)  # فاکتور خرید دفتر مرکزی که پس از خرید پیوست یا حذف شده
@@ -2043,6 +2071,14 @@ def api_purchase_get(h, c, u, b, q, pid):
             'can_pay': fin and bool(P['pay_req_at']) and not P['pay_done_at'] and P['status'] not in ('cancelled', 'rejected'),
             'can_official': fin and bool(P['docs_at']) and not P['official_inv'],
             'hq_only_stages': HQ_ONLY_STAGES}
+
+
+def site_view(c, u, P):
+    """کارمند کارگاه مدارک و قیمت‌های دفتر مرکزی را نمی‌بیند، مگر کار دفتر مرکزی به او واگذار شده باشد."""
+    return is_site_only(c, u) and not ((P['holder_id'] == u['id'] and P['stage'] in HQ_ONLY_STAGES) or c.execute(
+        'SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND stage IN (%s) AND action NOT IN (%s)' % (
+            ','.join('?' * len(HQ_ONLY_STAGES)), ','.join('?' * len(SIDE_ACTIONS))),
+        (P['id'], u['id']) + HQ_ONLY_STAGES + SIDE_ACTIONS).fetchone())
 
 
 def is_warehouse(c, u, P):
@@ -3416,7 +3452,11 @@ class H(BaseHTTPRequestHandler):
                 need(u, 'ابتدا وارد شوید', 401)
                 a = one(c.execute('SELECT * FROM attachments WHERE id=?', (int(m.group(1)),)))
                 need(a, 'فایل پیدا نشد', 404)
-                get_doc(c, u, a['doc_type'], a['doc_id'])
+                D = get_doc(c, u, a['doc_type'], a['doc_id'])
+                # همان قاعده صفحه درخواست: پیوست حذف‌شده فقط برای مدیر سیستم، مدارک قیمت دفتر مرکزی نه برای کارگاه
+                need(not a['deleted_at'] or u['role'] == 'admin', 'فایل پیدا نشد', 404)
+                need(not (a['doc_type'] == 'purchase' and a['hq_only'] and site_view(c, u, D)),
+                     'این مدرک برای کارکنان کارگاه نمایش داده نمی‌شود', 403)
                 with open(os.path.join(FILES, a['path']), 'rb') as f:
                     data = f.read()
                 ct = mimetypes.guess_type(a['name'])[0] or 'application/octet-stream'
