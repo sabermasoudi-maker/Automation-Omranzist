@@ -182,7 +182,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='3.0'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='3.1'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -279,7 +279,7 @@ const late=r=>r.due_date&&r.due_date<M.today&&['new','seen','doing'].includes(r.
 
 // ---------------------------------------------------------------- ورود و ناوبری
 function showLogin(msg){$('#app').style.display='none';$('#login').style.display='block';const m=$('#lgMsg');m.textContent=msg||'';m.style.display=msg?'block':'none';$('#lgU').focus()}
-async function doLogin(){await run(async()=>{await api('POST','/api/login',{username:val('lgU'),password:val('lgP')});$('#lgP').value='';await boot()})}
+async function doLogin(){await run(async()=>{await api('POST','/api/login',{username:val('lgU'),password:val('lgP')});$('#lgP').value='';boot.fresh=1;await boot()})}
 $('#lgP').addEventListener('keydown',e=>{if(e.key=='Enter')doLogin()});
 async function logout(){if(!await ask('از سامانه خارج می‌شوید.','بله، خروج'))return;await api('POST','/api/logout',{}).catch(()=>{});$('#view').innerHTML='';showLogin()}
 async function boot(){
@@ -294,7 +294,9 @@ async function boot(){
    ۳. این صفحه را با Ctrl+F5 دوباره باز کنید.</div></div>`;return}
   if(M.me.must_change)pwModal(true);
   lastAct=lastPing=Date.now();
-  if(!location.hash){try{const t=await todoItems();const f=t.act[0];if(f)history.replaceState(null,'',f.href)}catch(e){}} // پس از ورود: اولین کار قابل اقدام باز می‌شود
+  // پس از ورود (یا باز کردن سامانه در زبانه/مرورگر تازه)، صفحه قبلی باز نمی‌شود: اولین کار قابل اقدام، وگرنه «در دست اقدام»
+  let started=false;try{started=sessionStorage.getItem('oa_started')==String(M.me.id);sessionStorage.setItem('oa_started',String(M.me.id))}catch(e){}
+  if(boot.fresh||!started||!location.hash){boot.fresh=0;let to='#/todo';try{const f=(await todoItems()).act[0];if(f)to=f.href}catch(e){}history.replaceState(null,'',to)}
   route();refreshCount();notifyStart();
   if(NT.tok&&window.isSecureContext&&'serviceWorker' in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 }
@@ -672,7 +674,7 @@ function purSheet(P,items,edit,flow,d){
   const sig=(sts)=>{const f=[...flow].reverse().find(x=>sts.includes(x.stage)&&['submit','resubmit'].includes(x.action));return f?`<div class="sg">${esc(f.user_name)} — ${jd(f.at,1)}</div>`:''};
   // درخواست‌کننده «واحد» است نه شخص: امضای رئیس واحد در بخش درخواست‌کننده (اگر خودِ رئیس واحد ثبت کرده، ثبتش همان تأیید است)
   const headSig=(()=>{const f=[...flow].reverse().find(x=>x.stage=='unit_approval'&&x.action=='approve');if(f)return `<div class="sg">رئیس واحد: ${esc(f.user_name)} — ${jd(f.at,1)}</div>`;
-    const s=[...flow].reverse().find(x=>['submit','resubmit'].includes(x.action)&&/تأیید رئیس واحد و ارسال استعلام/.test(x.label||''));return s?`<div class="sg">رئیس واحد: ${esc(s.user_name)} — ${jd(s.at,1)}</div>`:''})();
+    const s=[...flow].reverse().find(x=>['submit','resubmit'].includes(x.action)&&/ثبت و تأیید رئیس واحد/.test(x.label||''));return s?`<div class="sg">رئیس واحد: ${esc(s.user_name)} — ${jd(s.at,1)}</div>`:''})();
   const pmSig=[['tech_review','معاون فنی'],['supervisor_approve','سرپرست کارگاه'],['pm_approve','مدیر پروژه']].map(([st,t])=>{const f=[...flow].reverse().find(x=>x.stage==st&&x.action=='approve');return f?`<div class="sg">${t}: ${esc(f.user_name)} — ${jd(f.at,1)}</div>`:''}).join('');
   const sel=(id,arr,v)=>`<select id="${id}">${opts(arr,v)}</select>`;
   let rows=items,note='';
@@ -738,7 +740,7 @@ function purchaseForm(pid){
 
 // ---------- مشاهده و گردش درخواست کالا
 const RET=['return','برگشت (برای اصلاح)','l'];
-const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval:[['approve','تأیید و ارسال استعلام به انبار کارگاه','ok'],RET],
+const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval:[['approve','تأیید رئیس واحد و ارسال','ok'],RET],
   supervisor_review:[['inquire','ارسال استعلام به انبار کارگاه','ok'],RET],
   warehouse_check:[['stock','ثبت موجودی و ارسال (مانده برای خرید می‌رود)','ok']],
   supervisor_approve:[['approve','تأیید سرپرست کارگاه و ارسال','ok'],RET],
@@ -781,7 +783,7 @@ const SIDE_ACT=['attach','delatt','payment','archive_code','edit','pay_done','gr
 const numIn=(id,v,w)=>`<input id="${id}" value="${esc(v??'')}" class="num" style="max-width:${w||110}px">`;
 async function purchaseView(id,editing){
   const d=await api('GET','/api/purchases/'+id);const P=d.doc;const fl=d.flow.filter(f=>!SIDE_ACT.includes(f.action));
-  if(purView.id!=P.id){purView.id=P.id;purView.showReq=0}markBad.on={};
+  if(purView.id!=P.id){purView.id=P.id;purView.showReq=0}markBad.on={};markBad.wh={};
   const title=d.receipt&&!purView.showReq&&!editing?'اعلام وصول کالا':'درخواست کالا';
   let h=`<div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">${title} <span>${dn(d.receipt&&!purView.showReq&&P.grn_no?P.grn_no:P.number)}</span> ${pTag(P)}${P.urgency=='emergency'?' <span class="tag bad">اضطراری</span>':''} <span class="tag">${esc(catName(P.category))}</span></h1>
    <div class="row">${d.receipt&&!editing?`<button class="btn l" onclick="purView.showReq=!purView.showReq;route()">${purView.showReq?'نمایش اعلام وصول':'نمایش فرم درخواست کالا'}</button>`:''}<button class="btn l" onclick="printPur('${esc(title+' '+P.number)}')">خروجی PDF</button><a class="btn l" href="/api/purchases/${P.id}.csv">خروجی CSV</a>${P.project_id?`<a class="btn l" href="#/project/${P.project_id}">پروژه ${esc(P.project)}</a>`:''}</div></div>
@@ -815,7 +817,7 @@ async function purchaseView(id,editing){
   if(d.is_admin&&!editing)h+=`<div class="card noprint" style="border-color:var(--bad)"><h2>مدیر سیستم</h2><div class="row"><button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button>
     <div><label>کد / محل بایگانی</label><input id="admArc" value="${esc(P.archive_code||'')}"></div><button class="btn l" onclick="purArcCode(${P.id})">ذخیره محل بایگانی</button>
     <button class="btn bad" onclick="adminDel('purchase',${P.id},'${esc(P.number)}')">حذف کامل این درخواست</button></div><div class="mut" style="margin-top:6px">ویرایش مدیر سیستم در هر مرحله (حتی پس از بایگانی) ممکن است و به‌صورت نسخه جدید ثبت می‌شود.</div></div>`;
-  $('#pg').innerHTML=h;$('#pg').classList.add('purpg');purView.d=d}
+  $('#pg').innerHTML=h;$('#pg').classList.add('purpg');purView.d=d;markRefresh()}
 function purView(){}
 function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   const rows=d.items;
@@ -833,8 +835,9 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
     hint=(st=='site_purchase'?'فاکتور (یا پیش‌فاکتور) خرید را در بخش پیوست‌ها بارگذاری کنید (الزامی). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود'+(st=='hq_purchase'?'؛ همزمان برای پرداخت به امور مالی ارسال می‌شود.':'.')+' پس از خرید هم می‌توانید فاکتور یا پیش‌فاکتور پیوست کنید.'}
   if(st=='delivery'){const wh=A.includes('wh_ok');
     // انباردار و تحویل‌گیرنده یک فرم دارند؛ مغایرت هر قلم با دکمه همان ردیف
-    x=A.length?`<table><tr><th>شرح کالا</th><th>مقدار اعلام‌شده</th><th>مقدار تحویل‌گرفته</th><th>مغایرت</th></tr>${rows.filter(i=>i.bought_status&&i.bought_status!='none').map(i=>`<tr id="dr${i.id}"><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit)}</td><td>${numIn('rq'+i.id,fa(i.recv_qty||i.bought_qty),100)}</td><td><button class="btn bad sm" type="button" id="mb${i.id}" onclick="markBad(${i.id})">مغایرت</button><input id="mn${i.id}" placeholder="علت مغایرت این قلم *" style="display:none;margin-top:4px"></td></tr>`).join('')}</table>`:'';
-    hint=(wh?'شما انباردار هستید: مقدار دریافتی هر قلم را ثبت کنید. پس از تأیید شما، درخواست برای تأیید به تحویل‌گیرنده می‌رود.':A.length?'انباردار دریافت را تأیید کرده است؛ مقدار، نوع و کیفیت را بررسی و تأیید کنید.':'منتظر تأیید انباردار.')+' اگر قلمی مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید؛ درخواست برای اقدام اصلاحی به پشتیبانی برمی‌گردد و تا رفع مغایرت باز می‌ماند.'}
+    x=A.length?`<table><tr><th>شرح کالا</th><th>مقدار اعلام‌شده</th><th>مقدار تحویل‌گرفته</th><th>مغایرت</th></tr>${rows.filter(i=>i.bought_status&&i.bought_status!='none').map(i=>`<tr id="dr${i.id}"><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit)}</td><td>${numIn('rq'+i.id,fa(i.recv_qty||i.bought_qty),100)}</td><td>${!wh&&i.disc_note?(markBad.on[i.id]=1,markBad.wh[i.id]=1,`<div style="color:var(--bad);font-size:12px">${esc(i.disc_note)}</div>`):''}<button class="btn bad sm" type="button" id="mb${i.id}" onclick="markBad(${i.id})">مغایرت</button><input id="mn${i.id}" value="${!wh&&i.disc_note?esc(i.disc_note):''}" placeholder="علت مغایرت این قلم *" style="display:none;margin-top:4px"></td></tr>`).join('')}</table>`:'';
+    hint=wh?'شما انباردار هستید: مقدار دریافتی هر قلم را ثبت کنید. اگر قلمی مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید. پس از ثبت شما (تأیید یا مغایرت)، درخواست به تحویل‌گیرنده می‌رود.'
+     :A.length?(rows.some(i=>i.disc_note)?'انباردار برای قلم‌های قرمز مغایرت اعلام کرده است. اگر مغایرت برطرف شده، «رفع مغایرت» همان ردیف را بزنید و تحویل را تأیید کنید (کار طبق روال ادامه می‌یابد)؛ اگر مغایرت را تأیید می‌کنید، درخواست برای اقدام اصلاحی به همان پشتیبانی که خرید کرده برمی‌گردد و تا رفع مغایرت باز می‌ماند.':'انباردار دریافت را تأیید کرده است؛ مقدار، نوع و کیفیت را بررسی و تأیید کنید. اگر قلمی مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید؛ درخواست برای اقدام اصلاحی به پشتیبانی برمی‌گردد.'):'منتظر بررسی و تأیید انباردار.'}
   if(st=='finance_settle'){const yn=(n,t)=>`<div><label>${t} *</label><label style="display:inline-flex;gap:6px;color:var(--ink);font-size:14px;margin-left:18px"><input type="radio" name="${n}" value="1" style="width:auto"> دریافت شد</label><label style="display:inline-flex;gap:6px;color:var(--ink);font-size:14px"><input type="radio" name="${n}" value="0" style="width:auto"> دریافت نشد</label></div>`;
     x=d.docs&&d.docs.ok?`<div class="grid">${yn('oiSel','فاکتور رسمی و مدارک ارزش افزوده')}</div>`:'';
     hint=d.docs&&d.docs.ok?'امور مالی فقط مدارک را کنترل می‌کند (پرداخت و تسویه در سامانه نیست). هر سه مدرک (درخواست کالا، اعلام وصول و فاکتور یا پیش‌فاکتور) موجود است؛ وضعیت فاکتور رسمی (ارزش افزوده) را مشخص کنید و «مدارک کامل است» را بزنید تا کار پایان یابد و خودکار بایگانی شود. اگر دریافت نشده، درخواست در فهرست «فاکتورهای رسمی دریافت‌نشده» می‌ماند.':'فاکتور (یا پیش‌فاکتور) بارگذاری نشده؛ آن را خودتان در بخش پیوست‌ها بارگذاری کنید یا درخواست را برای بارگذاری فاکتور به پشتیبانی برگردانید.'}
@@ -851,9 +854,13 @@ function docsCard(d){const m=d.docs,P=d.doc;const row=(t,ok,v)=>`<tr><td>${t}</t
    <div class="mut" style="margin-top:6px">فقط وجود این سه مدرک بررسی می‌شود؛ مقدار، مبلغ و شماره فاکتور کنترل نمی‌شود.</div></div>`}
 function mgmtNotes(d){return (d.mgmt_notes||[]).length?`<div class="mgmt"><b>نظر مدیر پروژه / هیات مدیره:</b>${d.mgmt_notes.map(f=>`<div>• ${esc(f.user_name)} (${esc(M.p_stages[f.stage]||'')} — ${jd(f.at,1)}): ${esc(f.note)}</div>`).join('')}</div>`:''}
 function printPur(num){const t=document.title;document.title=num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
-function markBad(id){markBad.on=markBad.on||{};const on=markBad.on[id]=!markBad.on[id];
-  $('#mn'+id).style.display=on?'':'none';$('#dr'+id).style.background=on?'#fdecea':'';$('#mb'+id).textContent=on?'لغو مغایرت':'مغایرت';
-  const any=Object.values(markBad.on).some(Boolean);document.querySelectorAll('button[onclick*="_ok\'"]').forEach(b=>{b.dataset.t=b.dataset.t||b.textContent;b.textContent=any?'ثبت مغایرت و برگشت به پشتیبانی':b.dataset.t;b.classList.toggle('bad',any)})}
+// مغایرت هر قلم در اعلام وصول؛ قلم‌هایی که انبار مغایرت زده، برای تحویل‌گیرنده از ابتدا علامت دارند
+function markBad(id){markBad.on[id]=!markBad.on[id];markRefresh()}
+markBad.on={};markBad.wh={};
+function markRefresh(){for(const id in markBad.on){const on=markBad.on[id];if(!$('#dr'+id))continue;
+    $('#mn'+id).style.display=on?'':'none';$('#dr'+id).style.background=on?'#fdecea':'';$('#mb'+id).textContent=on?(markBad.wh[id]?'رفع مغایرت':'لغو مغایرت'):'مغایرت'}
+  const any=Object.values(markBad.on).some(Boolean);document.querySelectorAll('button[onclick*="_ok\'"]').forEach(b=>{b.dataset.t=b.dataset.t||b.textContent;
+    b.textContent=any?(b.getAttribute('onclick').includes('wh_ok')?'ثبت مغایرت و ارسال به تحویل‌گیرنده':'تأیید مغایرت و برگشت به پشتیبانی'):b.dataset.t;b.classList.toggle('bad',any)})}
 const radio=n=>(document.querySelector(`input[name="${n}"]:checked`)||{}).value||'';
 const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action:a,note:val('paN'),archive_code:val('paC'),chosen_att:radio('pfSel'),official_inv:radio('oiSel'),return_to:a=='return'?val('paRt'):''};
   if(a=='approve'&&d.doc.stage=='price_approve'&&!b.chosen_att)throw new Error('یکی از پیش‌فاکتورها را انتخاب کنید');
@@ -863,7 +870,7 @@ const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action
   if(a=='recv_ok'||a=='wh_ok'){b.items=its.filter(i=>$('#rq'+i.id)).map(i=>({id:i.id,qty:en(val('rq'+i.id)),bad:!!markBad.on[i.id],note:val('mn'+i.id)}));
     if(b.items.some(i=>i.bad)){if(b.items.some(i=>i.bad&&!i.note.trim()))throw new Error('علت مغایرت هر قلم را بنویسید');a=b.action=a.replace('_ok','_bad')}}
   const lbl=((PUR_ACT[d.doc.stage]||[]).find(x=>x[0]==a)||[])[1]||a;
-  if(!await ask(a.endsWith('_bad')?'مغایرت ثبت و درخواست برای اقدام اصلاحی به پشتیبانی برگردانده می‌شود.':'«'+lbl+'»'))return;
+  if(!await ask(a.endsWith('_bad')?(a=='wh_bad'?'مغایرت ثبت و درخواست برای رفع یا تأیید مغایرت به تحویل‌گیرنده فرستاده می‌شود.':'مغایرت تأیید و درخواست برای اقدام اصلاحی به پشتیبانی برگردانده می‌شود.'):'«'+lbl+'»'))return;
   await api('POST',`/api/purchases/${id}/act`,b);refreshCount();if(a=='submit'){flash('ثبت شد');route()}else await goNext('purchase',id)});
 // پس از اقدام روی یک درخواست، درخواست بعدیِ منتظر همین کاربر خودکار باز می‌شود (بدون رفتن به کارتابل)
 // ترتیب همان «در دست اقدام» است: درخواست‌های قابل اقدام، سپس نامه‌ها، سپس رونوشت‌ها

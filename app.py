@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.0'
+VERSION = '3.1'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -96,7 +96,7 @@ P_FLOW = {
                       'requote': ('hq_quotes', 'برگشت برای استعلام مجدد')},
     # خرید دفتر مرکزی: همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود
     'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول و پرداخت مالی')},
-    'delivery': {'recv_ok': (None, 'تأیید تحویل توسط تحویل‌گیرنده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
+    'delivery': {'recv_ok': (None, 'تأیید تحویل توسط تحویل‌گیرنده'), 'recv_bad': (None, 'تأیید مغایرت توسط تحویل‌گیرنده — برگشت به پشتیبانی'),
                  'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
@@ -2259,15 +2259,26 @@ def api_purchase_act(h, c, u, b, q, pid):
             if x.get('bad'):
                 dn_ = (x.get('note') or '').strip()
                 need(dn_, 'علت مغایرت «%s» را بنویسید' % it['title'], 400)
-                c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', ('%s: %s' % (who, dn_), it['id']))
-                bad.append('%s: %s' % (it['title'], dn_))
+                # مغایرت انبار که تحویل‌گیرنده تأیید کرده، با همان متن می‌ماند
+                dn_ = it['disc_note'] + ' — تأیید تحویل‌گیرنده' if dn_ == it['disc_note'] else '%s: %s' % (who, dn_)
+                c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', (dn_, it['id']))
+                bad.append('%s (%s)' % (it['title'], dn_))
         if a.endswith('_bad'):
             need(bad, 'برای هر قلمی که مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید', 400)
         else:
             need(not bad, 'قلم دارای مغایرت انتخاب شده؛ «ثبت مغایرت» را بزنید', 400)
-        if a == 'recv_ok':
+        if a == 'recv_ok':  # تحویل‌گیرنده مغایرت اعلام‌شده انبار را رفع کرد (یا مغایرتی نبود)
+            old = [i['title'] for i in its if i['disc_note']]
+            if old:
+                notes.append('مغایرت اعلام‌شده انبار توسط تحویل‌گیرنده رفع شد: ' + '، '.join(old))
+            c.execute("UPDATE purchase_items SET disc_note='' WHERE purchase_id=?", (P['id'],))
             c.execute('UPDATE purchases SET recv_by=?, recv_at=? WHERE id=?', (u['id'], now(), P['id']))
             P = dict(P, recv_at=now())
+        elif a == 'wh_bad':  # نسخه ۳.۱: مغایرت انبار به پشتیبانی نمی‌رود؛ تحویل‌گیرنده آن را رفع یا تأیید می‌کند
+            c.execute('UPDATE purchases SET wh_by=?, wh_at=?, holder_id=? WHERE id=?', (u['id'], now(), P['requester_id'], P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — ارسال به تحویل‌گیرنده برای رفع یا تأیید مغایرت',
+                  '؛ '.join(['مغایرت ' + '؛ '.join(bad)] + ([note] if note else [])))
+            return {'ok': True}
         elif a == 'wh_ok':
             c.execute('UPDATE purchases SET wh_by=?, wh_at=? WHERE id=?', (u['id'], now(), P['id']))
             P = dict(P, wh_at=now())
@@ -2303,7 +2314,9 @@ def api_purchase_act(h, c, u, b, q, pid):
     if note and P['stage'] in GROUP_STAGES and nxt in ('hq_quotes', 'hq_purchase'):
         # نظر مدیر پروژه یا هیات مدیره به مدیر پشتیبانی گوشزد می‌شود
         sm = int(settings(c).get('support_manager') or 0)
-        if sm and sm != u['id']:
+        # نسخه ۳.۱: وقتی خود پشتیبانی کار را در دست دارد، رونوشت لازم نیست (نظر در کارت اقدام او به رنگ قرمز هست)
+        holder = c.execute('SELECT holder_id FROM purchases WHERE id=?', (P['id'],)).fetchone()[0]
+        if sm and sm != u['id'] and sm != holder:
             c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
                       ('purchase', P['id'], u['id'], sm, 'جهت اطلاع', 'نظر %s: %s' % (u['full_name'], note), now()))
     return {'ok': True}
