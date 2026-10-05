@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.9'
+VERSION = '3.0'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -80,7 +80,8 @@ _RET = ('returned', 'برگشت به درخواست‌کننده برای اصل
 # مرحله بعد با None یعنی سرور بر اساس موجودی، کلاس خرید یا وضعیت تحویل و پرداخت تعیینش می‌کند
 P_FLOW = {
     'draft': {'submit': (None, '')},
-    'unit_approval': {'approve': ('warehouse_check', 'تأیید رئیس واحد و ارسال استعلام به انبار کارگاه'), 'return': _RET},
+    # از نسخه ۳.۰ استعلام موجودی انبار حذف شد؛ مرحله بعد را سرور تعیین می‌کند (معاون فنی یا سرپرست کارگاه)
+    'unit_approval': {'approve': (None, 'تأیید رئیس واحد'), 'return': _RET},
     'supervisor_review': {'inquire': ('warehouse_check', 'ارسال استعلام به انبار کارگاه'), 'return': _RET},
     'warehouse_check': {'stock': (None, 'ثبت موجودی انبار')},
     'supervisor_approve': {'approve': (None, 'تأیید سرپرست کارگاه'), 'return': _RET},
@@ -95,7 +96,7 @@ P_FLOW = {
                       'requote': ('hq_quotes', 'برگشت برای استعلام مجدد')},
     # خرید دفتر مرکزی: همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود
     'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول و پرداخت مالی')},
-    'delivery': {'recv_ok': (None, 'تأیید تحویل توسط درخواست‌کننده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
+    'delivery': {'recv_ok': (None, 'تأیید تحویل توسط تحویل‌گیرنده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
                  'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
@@ -132,7 +133,7 @@ EDIT_STAGES = ('draft', 'unit_approval', 'supervisor_review', 'warehouse_check',
                'pm_approve', 'returned')
 CANCEL_STAGES = EDIT_STAGES
 # دسته کالا تعیین‌کننده مسیر است: عمومی و مصرفی در کارگاه با پشتیبانی کارگاه؛ اصلی با روال کامل دفتر مرکزی
-CATEGORIES = [('main', 'مصالح، تجهیزات و ابزار اصلی'), ('general', 'عمومی و مصرفی')]
+CATEGORIES = [('main', 'خرید از دفتر مرکزی'), ('general', 'خرید در کارگاه')]  # عنوان‌ها از نسخه ۳.۰
 URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
 # رویدادهای جانبی گردش که درخواست را جابه‌جا نمی‌کنند (پیوست، ویرایش، پرداخت، اصلاح اعلام وصول، فاکتور رسمی)
 SIDE_ACTIONS = ('attach', 'edit', 'delatt', 'pay_done', 'grn_edit', 'official_inv')
@@ -405,7 +406,8 @@ def add_columns(c):
             'purchase_payments': [('code', "TEXT DEFAULT ''")],
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
-                               ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''")],
+                               ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''"),
+                               ('disc_note', "TEXT DEFAULT ''")],  # ۳.۰: مغایرت هر قلم در اعلام وصول
             'attachments': [('kind', "TEXT DEFAULT ''"), ('deleted_at', 'TEXT'), ('deleted_by', 'INTEGER'),
                             ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0'), ('archived', 'INTEGER DEFAULT 0')],
             'letters': [('body', "TEXT DEFAULT ''"), ('signer_id', 'INTEGER'), ('signed_at', 'TEXT'),
@@ -1581,8 +1583,7 @@ def stage_holder(c, P, stage):
         stage = purchase_stage_of(c, P)
     if stage == 'unit_approval':
         # تأیید بالادست مستقیم درخواست‌کننده (مهندس ← معاونش، پشتیبانی و انبار ← سرپرست کارگاه)؛ وگرنه رئیس واحد
-        own = [k for _, k in user_project_roles(c, P['requester_id'], P['project_id']) if k in SUPERIOR]
-        kind, key = 'member', (SUPERIOR[own[0]] if own else UNIT_HEAD[P['unit']])
+        kind, key = 'member', unit_head_key(c, P)
     else:
         kind, key = STAGE_HOLDER[stage]
     if kind == 'member':
@@ -1802,11 +1803,22 @@ def write_fields(c, pid, f, items):
     save_items(c, pid, items)
 
 
+def unit_head_key(c, P):
+    """سمتِ تأییدکننده واحد: بالادست مستقیم درخواست‌کننده، وگرنه رئیس واحد."""
+    own = [k for _, k in user_project_roles(c, P['requester_id'], P['project_id']) if k in SUPERIOR]
+    return SUPERIOR[own[0]] if own else UNIT_HEAD[P['unit']]
+
+
 def start_stage(c, u, f):
-    """مرحله اول: اگر درخواست‌کننده معاون فنی، معاون اجرایی یا سرپرست کارگاه باشد، ثبتش همان تأیید رئیس واحد است."""
+    """مرحله اول: اگر درخواست‌کننده معاون فنی، معاون اجرایی یا سرپرست کارگاه باشد، ثبتش همان تأیید رئیس واحد است.
+    خرید در کارگاه به معاون فنی نمی‌رود (نسخه ۳.۰): اگر تأییدکننده واحد معاون فنی باشد، مستقیم به سرپرست کارگاه.
+    استعلام موجودی انبار از نسخه ۳.۰ حذف شده است."""
     mem = pmembers(c, f['project_id'])
     if u['id'] in {mem.get(k) for k in HEAD_ROLES}:
-        return 'warehouse_check', 'ثبت و تأیید رئیس واحد و ارسال استعلام به انبار کارگاه'
+        nxt = after_stock(c, f, [])
+        return nxt, 'ثبت و تأیید رئیس واحد — ارسال به ' + P_STAGES[nxt]
+    if is_general(f) and unit_head_key(c, f) == 'tech':
+        return 'supervisor_approve', 'ثبت و ارسال برای تأیید سرپرست کارگاه (خرید در کارگاه؛ بدون معاون فنی)'
     return 'unit_approval', 'ثبت و ارسال برای تأیید رئیس واحد'
 
 
@@ -2030,10 +2042,11 @@ def allowed_actions(c, u, P):
     acts = list(P_FLOW.get(P['stage'], {}))
     if P['stage'] == 'delivery':  # تحویل دوطرفه: درخواست‌کننده و انبار، هر کدام جدا
         out = []
-        if P['holder_id'] == u['id'] and not P['recv_at']:
-            out += ['recv_ok', 'recv_bad']
+        wh = pmembers(c, P['project_id']).get('warehouse')
         if is_warehouse(c, u, P) and not P['wh_at']:
             out += ['wh_ok', 'wh_bad']
+        if u['id'] == P['requester_id'] and not P['recv_at'] and (P['wh_at'] or not wh):  # پس از انبار
+            out += ['recv_ok', 'recv_bad']
         return out
     if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
         return acts if in_group(c, u, P) else []
@@ -2128,12 +2141,18 @@ def is_finance(c, u):
 
 def move(c, u, P, stage, label, note='', status='open'):
     """انتقال درخواست به مرحله بعد و ثبت در گردش."""
-    holder = None if stage == 'done' else (P['requester_id'] if stage in ('returned', 'delivery') else stage_holder(c, P, stage))
+    holder = None if stage == 'done' else (P['requester_id'] if stage == 'returned' else
+                                           delivery_holder(c, P) if stage == 'delivery' else stage_holder(c, P, stage))
     if stage == 'returned':
         status = 'returned'
     c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
               (status, stage, holder, now() if stage == 'done' else None, P['id']))
     pflow(c, P['id'], u, P['stage'], label[0], label[1], note)
+
+
+def delivery_holder(c, P):
+    """اعلام وصول (نسخه ۳.۰): اول انباردار تأیید یا مغایرت اعلام می‌کند، سپس تحویل‌گیرنده."""
+    return pmembers(c, P['project_id']).get('warehouse') or P['requester_id']
 
 
 def after_delivery(c, P):
@@ -2149,7 +2168,7 @@ def api_purchase_act(h, c, u, b, q, pid):
     nxt, label = P_FLOW[P['stage']][a]
     note = (b.get('note') or '').strip()
     notes = []
-    if a in ('return', 'requote', 'recv_bad', 'wh_bad', 'accept', 'fix'):
+    if a in ('return', 'requote', 'accept', 'fix'):
         need(note, 'علت را بنویسید', 400)
     if a == 'direct':  # توضیح (منبع و قیمت) اختیاری است (نسخه ۲.۶)
         if not P['po_no']:  # صدور سفارش خرید
@@ -2198,6 +2217,8 @@ def api_purchase_act(h, c, u, b, q, pid):
             move(c, u, P, 'done', ('stock', label + ' — همه اقلام از انبار تحویل شد'), note, 'delivered')
             return {'ok': True}
         nxt = after_stock(c, P, notes)
+    elif a == 'approve' and P['stage'] == 'unit_approval':  # پس از رئیس واحد: معاون فنی (اصلی) یا سرپرست کارگاه
+        nxt = after_stock(c, P, notes)
     elif a == 'approve' and P['stage'] == 'supervisor_approve':
         nxt = after_supervisor(c, P, notes)
     elif a == 'approve' and P['stage'] == 'tech_review':
@@ -2226,20 +2247,36 @@ def api_purchase_act(h, c, u, b, q, pid):
             c.execute('UPDATE purchases SET pay_req_at=? WHERE id=?', (now(), P['id']))
             notes.append('همزمان برای پرداخت به امور مالی ارسال شد')
         c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
+        c.execute("UPDATE purchase_items SET disc_note='' WHERE purchase_id=?", (P['id'],))  # مغایرت رفع شد
     elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad'):
+        # نسخه ۳.۰: انباردار و تحویل‌گیرنده هر دو مقدار تحویل‌گرفته را ثبت می‌کنند؛ مغایرت برای هر قلم جدا
+        who = 'انباردار' if a.startswith('wh') else 'تحویل‌گیرنده'
+        bad = []
+        for it in its:
+            x = posted.get(it['id'])
+            if x is None:
+                continue
+            if x.get('qty') not in (None, ''):
+                c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(to_num(x.get('qty'))), it['id']))
+            if x.get('bad'):
+                dn_ = (x.get('note') or '').strip()
+                need(dn_, 'علت مغایرت «%s» را بنویسید' % it['title'], 400)
+                c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', ('%s: %s' % (who, dn_), it['id']))
+                bad.append('%s: %s' % (it['title'], dn_))
+        if a.endswith('_bad'):
+            need(bad, 'برای هر قلمی که مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید', 400)
+        else:
+            need(not bad, 'قلم دارای مغایرت انتخاب شده؛ «ثبت مغایرت» را بزنید', 400)
         if a == 'recv_ok':
-            for it in its:
-                x = posted.get(it['id'])
-                if x is not None:
-                    c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(to_num(x.get('qty'))), it['id']))
             c.execute('UPDATE purchases SET recv_by=?, recv_at=? WHERE id=?', (u['id'], now(), P['id']))
             P = dict(P, recv_at=now())
         elif a == 'wh_ok':
             c.execute('UPDATE purchases SET wh_by=?, wh_at=? WHERE id=?', (u['id'], now(), P['id']))
             P = dict(P, wh_at=now())
-        if a.endswith('_bad'):  # مغایرت: برمی‌گردد به خرید برای اصلاح
+        if a.endswith('_bad'):  # مغایرت: برمی‌گردد به پشتیبانی برای اقدام اصلاحی؛ کار تا رفع مغایرت باز می‌ماند
             c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
             nxt = purchase_stage_of(c, P)
+            notes.append('مغایرت ' + '؛ '.join(bad))
         elif P['recv_at'] and P['wh_at']:  # رسید تحویل کالا صادر می‌شود
             nxt = after_delivery(c, P)
             grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
@@ -2247,8 +2284,9 @@ def api_purchase_act(h, c, u, b, q, pid):
             notes.append('اعلام وصول کامل شد (تحویل‌گیرنده و انباردار) — %s' % grn)
             if nxt == 'done':
                 notes.append('پایان و بایگانی خودکار')
-        else:
-            pflow(c, P['id'], u, P['stage'], a, label, note)
+        else:  # انبار تأیید کرد ← به تحویل‌گیرنده
+            c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (P['requester_id'], P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — ارسال به تحویل‌گیرنده', note)
             return {'ok': True}
     elif a == 'docs_ok':  # امور مالی: کنترل مدارک؛ پرداخت و تسویه در سامانه نیست
         # فاکتور رسمی و مدارک ارزش افزوده یک مدرک‌اند (نسخه ۲.۶)
@@ -2295,8 +2333,8 @@ def api_purchase_resubmit(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
     need(P['requester_id'] == u['id'] and P['status'] == 'returned', 'فقط درخواست‌کننده، پس از برگشت درخواست')
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'], req_date=P['req_date'])
-    stage, label = start_stage(c, u, f)
-    holder = stage_holder(c, dict(f, project_id=P['project_id']), stage)
+    stage, label = start_stage(c, u, dict(P, **f))
+    holder = stage_holder(c, dict(P, **f), stage)
     write_fields(c, P['id'], f, items)
     c.execute("UPDATE purchases SET version=version+1, stage=?, status='open', holder_id=? WHERE id=?",
               (stage, holder, P['id']))
