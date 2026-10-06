@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """آزمون‌های CR-PUR-02: اعلام وصول (مقدار جدا، کسری/اضافه، تحویل بخشی، تاریخ و حواله، قفل) و امنیت پیوست.
+از نسخه ۳.۶ «تحویل بخشی» با انباردار است و تحویل‌گیرنده فقط تأیید نهایی دارد.
 اجرا:  python -m unittest discover -s tests"""
 import os, sys, shutil, tempfile, unittest, urllib.parse
 
@@ -137,18 +138,28 @@ class T06to10Receipt(Base):
 
     def test_07c_partial_cannot_exceed(self):
         pid = self.to_delivery()
+        with self.assertRaises(app.ApiError) as e:
+            self.act('mk-anbar', pid, 'wh_partial', items=self.lines(pid, 12, 5))
+        self.assertEqual(e.exception.code, 400)
+
+    def test_07d_receiver_has_no_partial_and_compares_to_warehouse(self):
+        pid = self.to_delivery()
         self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5))
         with self.assertRaises(app.ApiError) as e:
-            self.act('mk-zali', pid, 'recv_partial', items=self.lines(pid, 12, 5))
-        self.assertEqual(e.exception.code, 400)
+            self.act('mk-zali', pid, 'recv_partial', items=self.lines(pid, 6, 5))
+        self.assertEqual(e.exception.code, 403)
+        with self.assertRaises(app.ApiError) as e:  # با عدد انباردار فرق دارد و انتخابی نشده
+            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 9, 5))
+        self.assertIn('انباردار', e.exception.msg)
 
     def test_08a_partial(self):
         self.partial()
 
     def partial(self):
         pid = self.to_delivery()
-        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5))
-        self.act('mk-zali', pid, 'recv_partial', items=self.lines(pid, 6, 5))
+        self.act('mk-anbar', pid, 'wh_partial', items=self.lines(pid, 6, 5))
+        self.assertEqual(self.get(pid)['doc']['holder_id'], self.u('mk-zali')['id'])
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 6, 5))  # تأیید نهایی نوبت بخشی
         d = self.get(pid)
         self.assertEqual(d['receipts'][0]['status'], 'closed'); self.assertEqual(d['doc']['stage'], 'delivery')
         self.assertEqual(d['doc']['holder_id'], self.u('mk-anbar')['id'])
@@ -167,8 +178,9 @@ class T06to10Receipt(Base):
     def test_08c_shortage_closed_by_support(self):
         pid = self.partial()
         first = [(l['wh_qty'], l['recv_qty']) for l in self.receipts(pid)[0]['lines']]
-        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 4, 0)[:1])
-        self.act('mk-zali', pid, 'recv_bad', items=[dict(self.lines(pid, 0, 0)[0], bad=True, note='نرسید')])
+        with self.assertRaises(app.ApiError):  # پیگیری بدون توضیح
+            self.act('mk-anbar', pid, 'followup')
+        self.act('mk-anbar', pid, 'followup', note='فروشنده بقیه را نمی‌فرستد')  # فقط وقتی پیگیری لازم است
         self.assertEqual(self.get(pid)['doc']['stage'], 'site_purchase')
         self.buy(pid, 6, 5)
         d = self.get(pid)
@@ -178,8 +190,7 @@ class T06to10Receipt(Base):
 
     def test_08d_bought_below_received(self):
         pid = self.partial()
-        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 4, 0)[:1])
-        self.act('mk-zali', pid, 'recv_bad', items=[dict(self.lines(pid, 0, 0)[0], bad=True, note='نرسید')])
+        self.act('mk-anbar', pid, 'followup', note='پیگیری')
         with self.assertRaises(app.ApiError) as e:
             self.buy(pid, 5, 5)
         self.assertEqual(e.exception.code, 400)
@@ -220,6 +231,29 @@ class T06to10Receipt(Base):
         pid = self._done()
         with self.assertRaises(app.ApiError):
             self.call('POST', '/api/admin/docs/purchase/%d/delete' % pid, 'admin')
+
+
+class THandover(Base):
+    def test_handover_carries_through(self):
+        """کار واگذارشده به پشتیبانی کارگاه، در مرحله خرید دفتر مرکزی هم با او می‌ماند (نسخه ۳.۶)."""
+        r = self.call('POST', '/api/purchases', 'mk-zali', {
+            'project_id': 2, 'unit': 'exec', 'category': 'main', 'warehouse': 'انبار', 'purpose': 'آزمون',
+            'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'}]})
+        pid = r['id']
+        for un, a in (('mk-zali', 'submit'), ('mk-ejraei', 'approve'), ('mk-fanni', 'approve'),
+                      ('mk-sarparast', 'approve'), ('kasaeian', 'approve')):
+            self.act(un, pid, a)
+        self.assertEqual(self.get(pid)['doc']['stage'], 'hq_quotes')
+        self.call('POST', '/api/purchases/%d/handover' % pid, 'support', {'note': 'لطفاً شما'})
+        site = self.u('mk-poshtibani')['id']
+        d = self.get(pid)['doc']
+        self.assertEqual((d['holder_id'], d['support_side']), (site, 'site'))
+        hq = self.call('GET', '/api/purchases', 'admin', q={'status': 'open', 'support': 'hq'})
+        self.assertNotIn(pid, [x['id'] for x in hq])
+        self.attach('mk-poshtibani', pid, 'پیش‌فاکتور', 'pf.pdf')
+        self.act('mk-poshtibani', pid, 'quoted')
+        self.act('kasaeian', pid, 'approve')
+        self.assertEqual(self.get(pid)['doc']['holder_id'], site)  # خرید هم با پشتیبانی کارگاه
 
 
 class TMigration(Base):

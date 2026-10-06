@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.5'
+VERSION = '3.6'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -97,7 +97,9 @@ P_FLOW = {
     # خرید دفتر مرکزی: همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود
     'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول و پرداخت مالی')},
     'delivery': {'recv_ok': (None, 'تأیید تحویل توسط تحویل‌گیرنده'), 'recv_bad': (None, 'تأیید مغایرت توسط تحویل‌گیرنده — برگشت به پشتیبانی'),
-                 'recv_partial': (None, 'تحویل بخشی — باقی‌مانده بعداً'),
+                 'recv_partial': (None, 'تحویل بخشی — باقی‌مانده بعداً'),  # تا نسخه ۳.۵ (تحویل‌گیرنده)
+                 'wh_partial': (None, 'تحویل بخشی توسط انبار — باقی‌مانده بعداً'),
+                 'followup': (None, 'ارجاع به پشتیبانی برای پیگیری تحویل'),
                  'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
@@ -422,7 +424,9 @@ def add_columns(c):
                           ('docs_by', 'INTEGER'), ('docs_at', 'TEXT'),
                           # ۲.۶: ارسال همزمان به مالی برای پرداخت پس از خرید
                           ('pay_req_at', 'TEXT'), ('pay_done_at', 'TEXT'), ('pay_done_by', 'INTEGER'),
-                          ('pay_note', "TEXT DEFAULT ''")],
+                          ('pay_note', "TEXT DEFAULT ''"),
+                          # ۳.۶: پشتیبانی‌ای که کار به او واگذار شده (کارگاه یا دفتر مرکزی) در مراحل بعدی هم کار را دارد
+                          ('support_by', 'INTEGER'), ('support_side', "TEXT DEFAULT ''")],
             'purchase_payments': [('code', "TEXT DEFAULT ''")],
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
@@ -1730,6 +1734,10 @@ def stage_holder(c, P, stage):
     labels = dict(PROJECT_ROLES)
     if stage == 'invoice_fix':  # اصلاح با همان پشتیبانی که خرید را انجام داده (کارگاه یا دفتر مرکزی)
         stage = purchase_stage_of(c, P)
+    sb = P.get('support_by') if hasattr(P, 'get') else None
+    if stage in ('site_purchase', 'hq_quotes', 'hq_purchase') and sb and c.execute(
+            'SELECT 1 FROM users WHERE id=? AND active=1', (sb,)).fetchone():
+        return sb  # کار به این پشتیبانی واگذار شده است (نسخه ۳.۶)
     if stage == 'unit_approval':
         # تأیید بالادست مستقیم درخواست‌کننده (مهندس ← معاونش، پشتیبانی و انبار ← سرپرست کارگاه)؛ وگرنه رئیس واحد
         kind, key = 'member', unit_head_key(c, P)
@@ -2000,6 +2008,9 @@ def pur_filter(c, u, q):
             w.append('x.%s=?' % k); p.append(int(q[k]))
     if q.get('unsettled'):
         w.append(PUR_PAY_SQL)
+    if q.get('support') == 'hq':  # کارهای پشتیبانی دفتر مرکزی، با در نظر گرفتن واگذاری (نسخه ۳.۶)
+        w.append("((x.stage IN ('hq_quotes','hq_purchase') AND COALESCE(x.support_side,'')!='site') OR "
+                 "(x.stage IN ('site_purchase','invoice_fix') AND x.support_side='hq'))")
     if q.get('pay_wait'):
         w.append(PUR_PAYWAIT_SQL)
     if q.get('no_official'):
@@ -2237,10 +2248,10 @@ def allowed_actions(c, u, P):
     if P['stage'] == 'delivery':  # تحویل دوطرفه: درخواست‌کننده و انبار، هر کدام جدا
         out = []
         wh = pmembers(c, P['project_id']).get('warehouse')
-        if is_warehouse(c, u, P) and not P['wh_at']:
-            out += ['wh_ok', 'wh_bad']
-        if u['id'] == P['requester_id'] and not P['recv_at'] and (P['wh_at'] or not wh):  # پس از انبار
-            out += ['recv_ok', 'recv_bad', 'recv_partial']
+        if is_warehouse(c, u, P) and not P['wh_at']:  # ۳.۶: تحویل بخشی و پیگیری با انباردار است
+            out += ['wh_ok', 'wh_bad', 'wh_partial', 'followup']
+        if u['id'] == P['requester_id'] and not P['recv_at'] and (P['wh_at'] or not wh):  # پس از انبار: فقط تأیید نهایی
+            out += ['recv_ok', 'recv_bad']
         return out
     if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
         return acts if in_group(c, u, P) else []
@@ -2283,8 +2294,9 @@ def post_purchase_support(c, u, P):
     if P['status'] not in ('open', 'returned', 'closed') or P['stage'] in ('site_purchase', 'hq_purchase') \
             or not is_bought(c, P):
         return False
-    if c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased' AND user_id=?",
-                 (P['id'], u['id'])).fetchone():  # کسی که خرید را انجام داده (حتی پس از واگذاری)
+    if P.get('support_by') == u['id'] or c.execute(
+            "SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased' AND user_id=?",
+            (P['id'], u['id'])).fetchone():  # کسی که خرید را انجام داده یا کار به او واگذار شده
         return True
     if site_path(c, P):
         return pmembers(c, P['project_id']).get('support') == u['id']
@@ -2314,7 +2326,9 @@ def api_purchase_handover(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
     t = handover_target(c, u, P)
     need(t, 'واگذاری فقط در مراحل پشتیبانی و توسط کسی که کار در کارتابل اوست ممکن است')
-    c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (t['id'], P['id']))
+    # کار به‌طور کامل به گیرنده منتقل می‌شود: مراحل بعدی پشتیبانی هم با اوست
+    c.execute('UPDATE purchases SET holder_id=?, support_by=?, support_side=? WHERE id=?',
+              (t['id'], t['id'], 'site' if t['label'] == 'پشتیبانی کارگاه' else 'hq', P['id']))
     pflow(c, P['id'], u, P['stage'], 'handover', 'واگذاری به %s (%s)' % (t['name'], t['label']), (b.get('note') or '').strip())
     return {'ok': True}
 
@@ -2428,7 +2442,7 @@ def api_purchase_act(h, c, u, b, q, pid):
     nxt, label = P_FLOW[P['stage']][a]
     note = (b.get('note') or '').strip()
     notes = []
-    if a in ('return', 'requote', 'accept', 'fix'):
+    if a in ('return', 'requote', 'accept', 'fix', 'followup'):
         need(note, 'علت را بنویسید', 400)
     if a == 'direct':  # توضیح (منبع و قیمت) اختیاری است (نسخه ۲.۶)
         if not P['po_no']:  # صدور سفارش خرید
@@ -2526,7 +2540,15 @@ def api_purchase_act(h, c, u, b, q, pid):
             P = dict(P, recv_at=L['recv_at'], wh_at=L['wh_at'])
             nxt = after_delivery(c, P)
             notes.append('همه اقلام پیش‌تر تحویل شده‌اند — اعلام وصول کامل شد (%s)' % '، '.join(r['code'] for r in last))
-    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad', 'recv_partial'):
+    elif a == 'followup':  # انبار: باقی‌مانده نرسیده و پیگیری لازم است ← پشتیبانی خریدار؛ نوبت باز می‌ماند
+        R = open_receipt(c, P)
+        c.execute("UPDATE purchase_receipts SET note='پیگیری پشتیبانی' WHERE id=?", (R['id'],))
+        c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
+        nxt = purchase_stage_of(c, P)
+        left = [it['title'] + ' ' + fmt_num(remaining_receive(c, it)) for it in its if remaining_receive(c, it) > 0]
+        if left:
+            notes.append('باقی‌مانده: ' + '، '.join(left))
+    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad', 'recv_partial', 'wh_partial'):
         # نسخه ۳.۵: هر نوبت اعلام وصول مقدار انباردار و تحویل‌گیرنده را جدا نگه می‌دارد؛ تفاوت با باقی‌مانده
         # خرید باید «مغایرت»، «پذیرش با توضیح» یا (برای تحویل‌گیرنده) «تحویل بخشی» باشد
         wh_act = a.startswith('wh')
@@ -2557,21 +2579,23 @@ def api_purchase_act(h, c, u, b, q, pid):
                 bad.append('%s (%s)' % (it['title'], dn_))
             else:
                 upd['disc_note'] = ''
-                if abs(qv - left) > 1e-9:
+                # مبنای مقایسه: برای انباردار باقی‌مانده خرید؛ برای تحویل‌گیرنده عدد انباردار (نسخه ۳.۶)
+                whq = to_num(ln['wh_qty']) if ln['wh_qty'] != '' else None
+                base = left if wh_act or whq is None else whq
+                if abs(qv - base) > 1e-9:
                     dfn = (x.get('diff_note') or '').strip()
                     if x.get('diff_ok'):
                         need(dfn, 'توضیح «پذیرش با توضیح» برای «%s» را بنویسید' % it['title'], 400)
                         upd['diff_note'] = '%s: %s' % (who, dfn)
-                    elif not wh_act and ln['diff_note'] and ln['wh_qty'] != '' and abs(qv - (to_num(ln['wh_qty']) or 0)) < 1e-9:
-                        pass  # همان مقدار انباردار که با توضیح پذیرفته شده بود
-                    elif a == 'recv_partial' and qv < left:
+                    elif a in ('wh_partial', 'recv_partial') and qv < left:
                         short.append('%s: %s از %s' % (it['title'], fmt_num(qv), fmt_num(left)))
                     else:
-                        need(a != 'recv_partial', 'در تحویل بخشی مقدار «%s» نمی‌تواند از باقی‌مانده (%s) بیشتر باشد'
+                        need(a not in ('wh_partial', 'recv_partial'), 'در تحویل بخشی مقدار «%s» نمی‌تواند از باقی‌مانده (%s) بیشتر باشد'
                              % (it['title'], fmt_num(left)), 400)
-                        raise ApiError('مقدار «%s» با باقی‌مانده خرید (%s %s) برابر نیست؛ «مغایرت» یا «پذیرش با توضیح» را بزنید'
-                                       % (it['title'], fmt_num(left), it['bought_unit'] or it['unit']), 400)
-                elif not wh_act:
+                        raise ApiError('مقدار «%s» با %s (%s %s) برابر نیست؛ «مغایرت» یا «پذیرش با توضیح» را بزنید'
+                                       % (it['title'], 'باقی‌مانده خرید' if wh_act or whq is None else 'عدد انباردار', fmt_num(base),
+                                          it['bought_unit'] or it['unit']), 400)
+                elif not wh_act and abs(qv - left) < 1e-9:
                     upd['diff_note'] = ''  # تحویل‌گیرنده کامل گرفت؛ تفاوت انبار دیگر معنا ندارد
             c.execute('UPDATE purchase_receipt_lines SET %s WHERE id=?' % ', '.join('%s=?' % k for k in upd),
                       tuple(upd.values()) + (ln['id'],))
@@ -2580,19 +2604,20 @@ def api_purchase_act(h, c, u, b, q, pid):
             need(bad, 'برای هر قلمی که مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید', 400)
         else:
             need(not bad, 'قلم دارای مغایرت انتخاب شده؛ «ثبت مغایرت» را بزنید', 400)
-        if a == 'recv_partial':
+        if a in ('wh_partial', 'recv_partial'):
             need(short, 'برای «تحویل بخشی» دست‌کم یک قلم باید کمتر از باقی‌مانده تحویل شود', 400)
-        if wh_act:  # انبار (تأیید یا مغایرت) ← تحویل‌گیرنده
+        if wh_act:  # انبار (تأیید، تحویل بخشی یا مغایرت) ← تحویل‌گیرنده
             dd = need_jdate(b.get('delivery_date'), 'تاریخ تحویل', required=False, max_=jtoday(),
                             max_msg='تاریخ تحویل نمی‌تواند بعد از امروز باشد')
             ref = (b.get('delivery_ref') or '').strip()
             need(len(ref) <= 60, 'شماره حواله یا بارنامه حداکثر ۶۰ نویسه است', 400)
-            c.execute("UPDATE purchase_receipts SET wh_by=?, wh_at=?, delivery_date=?, delivery_ref=?, note='' WHERE id=?",
-                      (u['id'], now(), dd, ref, R['id']))
+            c.execute("UPDATE purchase_receipts SET wh_by=?, wh_at=?, delivery_date=?, delivery_ref=?, note=? WHERE id=?",
+                      (u['id'], now(), dd, ref, 'تحویل بخشی' if a == 'wh_partial' else '', R['id']))
             c.execute('UPDATE purchases SET wh_by=?, wh_at=?, holder_id=? WHERE id=?', (u['id'], now(), P['requester_id'], P['id']))
             pflow(c, P['id'], u, P['stage'], a, label + (' — ارسال به تحویل‌گیرنده برای رفع یا تأیید مغایرت' if bad
                                                           else ' — ارسال به تحویل‌گیرنده'),
-                  '؛ '.join((['مغایرت ' + '؛ '.join(bad)] if bad else []) + ([note] if note else [])))
+                  '؛ '.join((['مغایرت ' + '؛ '.join(bad)] if bad else []) + (['کسری: ' + '، '.join(short)] if short else [])
+                            + ([note] if note else [])))
             return {'ok': True}
         if a == 'recv_bad':  # مغایرت تأیید شد: برگشت به پشتیبانی خریدار؛ نوبت باز با خطوطش می‌ماند
             c.execute("UPDATE purchase_receipts SET note='مغایرت' WHERE id=?", (R['id'],))
@@ -2605,6 +2630,15 @@ def api_purchase_act(h, c, u, b, q, pid):
                       (delivery_holder(c, P), P['id']))
             pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s؛ باقی‌مانده به انبار' % code,
                   '؛ '.join(['کسری: ' + '، '.join(short)] + ([note] if note else [])))
+            return {'ok': True}
+        elif any(abs(to_num(l['recv_qty']) - remaining_receive(c, itm[l['item_id']])) > 1e-9 and
+                 to_num(l['recv_qty']) < remaining_receive(c, itm[l['item_id']]) and not l['diff_note']
+                 for l in rows(c.execute('SELECT * FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],)))):
+            # تأیید تحویل‌گیرنده روی تحویل بخشی انبار: نوبت بسته؛ باقی‌مانده نزد انباردار می‌ماند تا تکمیل
+            grn, code = close_receipt(c, u, P, R, 'partial')
+            c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL, holder_id=? WHERE id=?',
+                      (delivery_holder(c, P), P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s (بخشی)؛ باقی‌مانده نزد انباردار' % code, note)
             return {'ok': True}
         else:  # recv_ok: نوبت بسته و چون همه اقلام کامل شده‌اند، اعلام وصول درخواست کامل است
             grn, code = close_receipt(c, u, P, R, 'full')
