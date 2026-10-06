@@ -190,7 +190,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='4.0'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='4.1'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -601,7 +601,12 @@ const P_ST={open:'warn',returned:'bad',delivered:'ok',closed:'ok',rejected:'bad'
 const SUP_ST=['site_purchase','hq_quotes','hq_purchase','invoice_fix'];
 function stName(P,k){let t=M.p_stages[k]||'';if(P&&P.support_side&&SUP_ST.includes(k))t=P.support_side=='site'?t.replace('پشتیبانی دفتر مرکزی','پشتیبانی کارگاه'):t.replace('پشتیبانی کارگاه','پشتیبانی دفتر مرکزی');return t}
 const pTag=P=>`<span class="tag ${P_ST[P.status]||''}">${esc(P.status=='open'?stName(P,P.stage):M.p_status[P.status])}</span>`+(P.pay_req_at&&!P.pay_done_at&&!['cancelled','rejected'].includes(P.status)?' <span class="tag warn">منتظر پرداخت مالی</span>':'')+(P.docs_at&&!P.official_inv?' <span class="tag bad">فاکتور رسمی دریافت نشده</span>':'');
-function purTable(rs,noProj){return rs.length?`<table><tr><th>شماره</th><th>تاریخ</th>${noProj?'<th>پروژه</th>':''}<th>واحد</th><th>اقلام</th><th>درخواست‌کننده</th><th>وضعیت / مرحله</th><th>در دست</th></tr>${rs.map(r=>`<tr class="cl" onclick="location='#/purchase/${r.id}'"><td>${dn(r.number)}</td><td class="mut">${fa(r.req_date)}</td>${noProj?`<td>${esc(r.project||'')}</td>`:''}<td>${esc(unitName(r.unit))}</td><td>${esc(r.items_text||'')}</td><td>${esc(r.requester||'')}</td><td>${pTag(r)}</td><td>${esc(r.holder||'')}</td></tr>`).join('')}</table>`:'<div class="mut">موردی نیست.</div>'}
+// فهرست درخواست‌های کالا. در موبایل ترتیب ستون‌ها: شماره، اقلام، وضعیت / مرحله، در دست، تاریخ، درخواست‌کننده (و در صورت نیاز پروژه)
+function purTable(rs,noProj){if(!rs.length)return '<div class="mut">موردی نیست.</div>';
+  const mob=matchMedia('(max-width:760px)').matches;
+  const cols=mob?[['شماره',r=>dn(r.number)],['اقلام',r=>esc(r.items_text||'')],['وضعیت / مرحله',r=>pTag(r)],['در دست',r=>esc(r.holder||'')],['تاریخ',r=>`<span class="mut">${fa(r.req_date)}</span>`],['درخواست‌کننده',r=>esc(r.requester||'')]].concat(noProj?[['پروژه',r=>esc(r.project||'')]]:[])
+    :[['شماره',r=>dn(r.number)],['تاریخ',r=>`<span class="mut">${fa(r.req_date)}</span>`]].concat(noProj?[['پروژه',r=>esc(r.project||'')]]:[],[['واحد',r=>esc(unitName(r.unit))],['اقلام',r=>esc(r.items_text||'')],['درخواست‌کننده',r=>esc(r.requester||'')],['وضعیت / مرحله',r=>pTag(r)],['در دست',r=>esc(r.holder||'')]]);
+  return `<table><tr>${cols.map(c=>`<th>${c[0]}</th>`).join('')}</tr>${rs.map(r=>`<tr class="cl" onclick="location='#/purchase/${r.id}'">${cols.map(c=>`<td>${c[1](r)}</td>`).join('')}</tr>`).join('')}</table>`}
 async function hqFinance(){ // خریدهای منتظر پرداخت (همزمان با اعلام وصول) و منتظر کنترل مدارک
   const[pw,fs]=await Promise.all([api('GET','/api/purchases?pay_wait=1'),api('GET','/api/purchases?status=open&stage=finance_settle')]);
   $('#pg').innerHTML=`<div class="card"><h2>خریدهای منتظر پرداخت (${fa(pw.length)})</h2>${purTable(pw,1)}</div><div class="card"><h2>خریدهای منتظر کنترل مدارک (${fa(fs.length)})</h2>${purTable(fs,1)}</div>`}
