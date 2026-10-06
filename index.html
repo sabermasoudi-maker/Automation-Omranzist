@@ -190,7 +190,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='3.7'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='3.8'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -712,20 +712,27 @@ function purSheet(P,items,edit,flow,d){
   ${edit?`<div class="noprint" style="margin-top:6px"><button class="btn l sm" onclick="addPurRow()">+ ردیف</button></div><datalist id="purUnits">${PUR_UNITS.map(u=>`<option value="${u}">`).join('')}</datalist>`:''}
   <table class="sign"><tr><td><label>درخواست کننده:</label>${P.unit?'واحد '+e(unitName(P.unit)):''}${sig(['draft','returned']).replace('<div class="sg">','<div class="sg">تنظیم: ')||`<div class="sg">تنظیم: ${e(P.requester||M.me.full_name)}</div>`}${headSig}${techSig}</td><td><label>مدیریت پروژه / سرپرست کارگاه:</label>${pmSig}</td></tr></table></div>`}
 // فرم اعلام وصول یک نوبت (نسخه ۳.۵): مقدار انباردار و تحویل‌گیرنده جدا، تاریخ تحویل و شماره حواله
-function receiptSheet(P,items,flow,d){const e=v=>esc(v||'');const rs=d.receipts||[];
-  const R=rs.find(r=>r.id==purView.rcpt)||[...rs].reverse().find(r=>r.status=='closed')||rs.find(r=>r.status=='pending')||rs.find(r=>r.status=='open');
+// مقدار هر نوبت: صادرشده = عدد تحویل‌گیرنده، منتظر = عدد انباردار (نوبت ردشده و پیش‌نویس حساب نمی‌شوند)
+const RCPT_LIVE=r=>r.status=='closed'||r.status=='pending';
+const rcptQty=(r,l)=>+en((r.status=='closed'?l.recv_qty:l.wh_qty)||'0');
+function rcptPrev(rs,R,iid){return rs.filter(r=>RCPT_LIVE(r)&&r.seq<R.seq).reduce((t,r)=>t+r.lines.filter(l=>l.item_id==iid).reduce((a,l)=>a+rcptQty(r,l),0),0)}
+const RCPT_ST={closed:'صادر شد (قفل)',pending:'منتظر تأیید تحویل‌گیرنده',rejected:'مغایرت — برگشت به پشتیبانی',open:'پیش‌نویس انبار'};
+function receiptSheet(P,items,flow,d){const e=v=>esc(v||'');const rs=d.receipts||[];const live=rs.filter(RCPT_LIVE);
+  // پیش‌فرض: آخرین نوبت ثبت‌شده (نسخه ۳.۸)؛ نوبت دیگر از جدول «نوبت‌های اعلام وصول» انتخاب می‌شود
+  const R=rs.find(r=>r.id==purView.rcpt)||live[live.length-1]||rs[rs.length-1];purView.rcptShown=R;
   const conf=(at,who)=>at?`<div class="sg">${esc(who||'')} — ${jd(at,1)}</div>`:'<div class="sg mut">منتظر تأیید</div>';
   const st=i=>(d.buy_status[i.bought_status]||'')+(i.bought_note?' — '+i.bought_note:'');
   const ln=R?R.lines:items.filter(i=>i.bought_status&&i.bought_status!='none').map(i=>({title:i.title,bought_qty:i.bought_qty,bought_unit:i.bought_unit,unit:i.unit,spec:i.spec,wh_qty:i.wh_qty,recv_qty:i.recv_qty,diff_note:'',disc_note:i.disc_note}));
   return `<div class="sheet">
-  <table><tr><td><div class="hd"><img src="/logo.png" class="logo" onerror="this.remove()"><div><div class="co">${esc(M.company)}</div><div class="ttl">اعلام وصول کالا</div></div></div></td>
-   <td class="meta"><div><label>تاریخ:</label>${R&&R.recv_at?jd(R.recv_at):fa(todayJ())}</div><div><label>شماره:</label>${R&&R.code?dn(R.code):'<span class="mut">پس از تأیید انباردار و تحویل‌گیرنده</span>'}</div></td></tr></table>
+  <table><tr><td><div class="hd"><img src="/logo.png" class="logo" onerror="this.remove()"><div><div class="co">${esc(M.company)}</div><div class="ttl">اعلام وصول کالا${R?` — نوبت ${fa(R.seq)} از ${fa(live.length||rs.length)}`:''}</div></div></div></td>
+   <td class="meta"><div><label>تاریخ:</label>${R&&R.recv_at&&R.status=='closed'?jd(R.recv_at):R&&R.wh_at?jd(R.wh_at):fa(todayJ())}</div><div><label>شماره:</label>${R&&R.code?dn(R.code):'<span class="mut">پس از تأیید تحویل‌گیرنده</span>'}</div>${R?`<div><label>وضعیت:</label>${RCPT_ST[R.status]||''}${R.note?' — '+e(R.note):''}</div>`:''}</td></tr></table>
   <table><tr><td><label>نام پروژه:</label>${e(P.project)}</td><td><label>شماره درخواست کالا:</label>${dn(P.number)}</td>
    <td rowspan="3" class="w35"><label>جهت استفاده:</label><div style="white-space:pre-wrap">${e(P.purpose)}</div></td></tr>
    <tr><td><label>واحد درخواست کننده:</label>${e(unitName(P.unit))}</td><td><label>انبار محل تحویل:</label>${e(P.warehouse)}${P.po_no?` <label style="margin-right:10px">سفارش خرید:</label>${dn(P.po_no)}`:''}</td></tr>
    <tr><td><label>تاریخ تحویل:</label>${R&&R.delivery_date?fa(R.delivery_date):'—'}</td><td><label>شماره حواله / بارنامه:</label>${R&&R.delivery_ref?e(fa(R.delivery_ref)):'—'}</td></tr></table>
-  <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا</th><th style="width:90px">خریداری‌شده</th><th style="width:90px">واحد</th><th>مشخصات فنی</th><th style="width:90px">انباردار</th><th style="width:90px">تحویل‌گیرنده</th><th>توضیحات</th></tr></thead>
-   <tbody>${ln.map((i,k)=>`<tr><td class="c">${fa(k+1)}</td><td>${e(i.title)}</td><td>${e(fa(i.bought_qty))}</td><td>${e(i.bought_unit||i.unit)}</td><td>${e(i.spec)}</td><td>${e(fa(i.wh_qty))}</td><td>${e(fa(i.recv_qty))}</td><td>${e([i.diff_note,i.disc_note].filter(Boolean).join('؛ '))}</td></tr>`).join('')}</tbody></table>
+  <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا</th><th style="width:70px">واحد</th><th style="width:80px">خریداری‌شده</th><th style="width:90px">رسیده در نوبت‌های قبل</th><th style="width:90px">این نوبت — انباردار</th><th style="width:90px">این نوبت — تحویل‌گیرنده</th><th style="width:80px">مانده</th><th>توضیحات</th></tr></thead>
+   <tbody>${ln.map((i,k)=>{const prev=R?rcptPrev(rs,R,i.item_id):0;const cur=R?(R.status=='closed'?+en(i.recv_qty||'0'):+en(i.wh_qty||'0')):0;const left=Math.max(0,+en(i.bought_qty||'0')-prev-cur);
+     return `<tr><td class="c">${fa(k+1)}</td><td>${e(i.title)}${i.spec?`<div class="mut">${e(i.spec)}</div>`:''}</td><td>${e(i.bought_unit||i.unit)}</td><td>${e(fa(i.bought_qty))}</td><td>${R?fa(prev):'—'}</td><td><b>${e(fa(i.wh_qty))||'—'}</b></td><td><b>${e(fa(i.recv_qty))||'—'}</b></td><td>${R?fa(left):'—'}</td><td>${e([i.diff_note,i.disc_note].filter(Boolean).join('؛ '))}</td></tr>`}).join('')}</tbody></table>
   ${items.some(i=>i.bought_status=='none')?`<div class="mut" style="margin-top:4px">خریداری نشد: ${items.filter(i=>i.bought_status=='none').map(i=>esc(i.title)+(i.bought_note?' ('+esc(i.bought_note)+')':'')).join('، ')}</div>`:''}
   ${R&&R.note&&R.status=='closed'?`<div class="mut" style="margin-top:4px">${e(R.note)}</div>`:''}
   <table class="sign"><tr><td><label>تحویل گیرنده:</label>${e(P.requester)}${conf(R&&R.recv_at,R&&R.recv_name||P.requester)}</td><td><label>انباردار:</label>${e(R&&R.wh_name||d.warehouse_name)}${conf(R&&R.wh_at,R&&R.wh_name||d.warehouse_name)}</td></tr></table></div>`}
@@ -824,7 +831,7 @@ async function purchaseView(id,editing){
   if(d.can_pay&&!editing)h+=`<div class="card noprint" style="border-color:var(--warn)"><h2>پرداخت — امور مالی</h2><div class="mut" style="margin-bottom:8px">خرید انجام شده و همزمان با اعلام وصول در انبار، برای پرداخت به امور مالی آمده است. پس از پرداخت، آن را ثبت کنید.</div><label>توضیح پرداخت (اختیاری — مثلاً نحوه پرداخت یا شماره سند)</label><input id="payN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purPaid(${P.id})">پرداخت انجام شد</button></div></div>`;
   if(d.can_official&&!editing)h+=`<div class="card noprint" style="border-color:var(--bad)"><h2>فاکتور رسمی و ارزش افزوده دریافت نشده</h2><div class="mut" style="margin-bottom:8px">فاکتور رسمی را در بخش پیوست‌ها بارگذاری کنید و پس از دریافت، ثبت کنید تا از فهرست «فاکتورهای رسمی دریافت‌نشده» خارج شود.</div><label>توضیح (اختیاری)</label><input id="oiN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purOfficial(${P.id})">فاکتور رسمی و ارزش افزوده دریافت شد</button></div></div>`;
   // نوبت‌های اعلام وصول (نسخه ۳.۵)؛ پس از صدور قابل تغییر نیستند
-  if((d.receipts||[]).length&&!editing)h+=`<div class="card"><h2>نوبت‌های اعلام وصول</h2><table><tr><th>کد</th><th>وضعیت</th><th>تاریخ تحویل</th><th>شماره حواله</th><th>انباردار</th><th>تحویل‌گیرنده</th><th>تعداد اقلام</th><th class="noprint"></th></tr>${d.receipts.map(r=>`<tr><td>${r.code?dn(r.code):'—'}</td><td>${r.status=='closed'?'<span class="tag ok">صادر شد (قفل)</span>':r.status=='pending'?'<span class="tag warn">منتظر تأیید تحویل‌گیرنده'+(r.note?' — '+esc(r.note):'')+'</span>':r.status=='rejected'?'<span class="tag bad">مغایرت — برگشت به پشتیبانی</span>':'<span class="tag">پیش‌نویس انبار</span>'}</td><td>${r.delivery_date?fa(r.delivery_date):'—'}</td><td>${esc(fa(r.delivery_ref||''))||'—'}</td><td>${esc(r.wh_name||'')}${r.wh_at?'<div class="mut">'+jd(r.wh_at,1)+'</div>':''}</td><td>${esc(r.recv_name||'')}${r.recv_at&&r.status=='closed'?'<div class="mut">'+jd(r.recv_at,1)+'</div>':''}</td><td>${fa(r.lines.length)}</td><td class="noprint"><a style="cursor:pointer" onclick="rcptPrint(${P.id},${r.id})">نمایش / چاپ</a></td></tr>`).join('')}</table></div>`;
+  if((d.receipts||[]).length&&!editing)h+=`<div class="card"><h2>نوبت‌های اعلام وصول</h2>${rcptSummary(d)}<table><tr><th>نوبت</th><th>کد</th><th>وضعیت</th><th>اقلام و مقدار</th><th>تاریخ تحویل</th><th>شماره حواله</th><th>انباردار</th><th>تحویل‌گیرنده</th><th class="noprint"></th></tr>${d.receipts.map(r=>`<tr${r.id==((purView.rcptShown||{}).id)?' style="background:#eef5fb"':''}><td>${fa(r.seq)}</td><td>${r.code?dn(r.code):'—'}</td><td>${r.status=='closed'?'<span class="tag ok">صادر شد (قفل)</span>':r.status=='pending'?'<span class="tag warn">منتظر تأیید تحویل‌گیرنده'+(r.note?' — '+esc(r.note):'')+'</span>':r.status=='rejected'?'<span class="tag bad">مغایرت — برگشت به پشتیبانی</span>':'<span class="tag">پیش‌نویس انبار</span>'}</td><td>${r.lines.map(l=>`<div>${esc(l.title)}: انبار <b>${fa(l.wh_qty)||'—'}</b>${r.status=='closed'||l.recv_qty?` / تحویل‌گیرنده <b>${fa(l.recv_qty)||'—'}</b>`:''} ${esc(l.bought_unit||l.unit||'')}</div>`).join('')}</td><td>${r.delivery_date?fa(r.delivery_date):'—'}</td><td>${esc(fa(r.delivery_ref||''))||'—'}</td><td>${esc(r.wh_name||'')}${r.wh_at?'<div class="mut">'+jd(r.wh_at,1)+'</div>':''}</td><td>${esc(r.recv_name||'')}${r.recv_at&&r.status=='closed'?'<div class="mut">'+jd(r.recv_at,1)+'</div>':''}</td><td class="noprint"><a style="cursor:pointer" onclick="rcptShow(${P.id},${r.id})">نمایش</a> | <a style="cursor:pointer" onclick="rcptPrint(${P.id},${r.id})">چاپ</a></td></tr>`).join('')}</table></div>`;
   if(d.actions.length&&!editing)h+=actionCard(d);
   else if(d.can_edit&&!editing&&!ret&&!d.is_admin)h+=`<div class="noprint" style="margin-bottom:14px"><button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button></div>`;
   if(d.docs&&!d.site_path)h+=docsCard(d);
@@ -837,6 +844,12 @@ async function purchaseView(id,editing){
     <button class="btn bad" onclick="adminDel('purchase',${P.id},'${esc(P.number)}')">حذف کامل این درخواست</button></div><div class="mut" style="margin-top:6px">ویرایش مدیر سیستم در هر مرحله (حتی پس از بایگانی) ممکن است و به‌صورت نسخه جدید ثبت می‌شود.</div></div>`;
   $('#pg').innerHTML=h;$('#pg').classList.add('purpg');purView.d=d;markRefresh()}
 function purView(){}
+// خلاصه هر قلم در همه نوبت‌ها: خریداری‌شده، ثبت انبار، تأیید تحویل‌گیرنده، مانده
+function rcptSummary(d){const rs=(d.receipts||[]).filter(RCPT_LIVE);const its=d.items.filter(i=>i.bought_status&&i.bought_status!='none');
+  return `<table style="margin-bottom:10px"><tr><th>شرح کالا</th><th>خریداری‌شده</th><th>ثبت انبار (همه نوبت‌ها)</th><th>تأیید تحویل‌گیرنده</th><th>مانده برای ثبت انبار</th></tr>${its.map(i=>{
+    const sum=(f,st)=>rs.filter(r=>!st||r.status==st).reduce((t,r)=>t+r.lines.filter(l=>l.item_id==i.id).reduce((a,l)=>a+(+en(l[f]||'0')),0),0);
+    return `<tr><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit||i.unit)}</td><td>${fa(sum('wh_qty'))}</td><td>${fa(sum('recv_qty','closed'))}</td><td>${fa(i.remaining_wh)}</td></tr>`}).join('')}</table>`}
+const rcptShow=(pid,rid)=>run(async()=>{purView.rcpt=rid;purView.showReq=0;await purchaseView(pid);window.scrollTo(0,0)});
 const rcptPrint=(pid,rid)=>run(async()=>{purView.rcpt=rid;purView.showReq=0;await purchaseView(pid);const R=purView.d.receipts.find(r=>r.id==rid);printPur('اعلام وصول '+(R&&R.code||''))});
 function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   const rows=d.items;
