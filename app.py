@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.1'
+VERSION = '4.2'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -534,16 +534,20 @@ PURGE_TABLES = ('purchase_receipt_lines', 'purchase_receipts', 'purchase_invoice
                 'purchase_payments', 'purchase_versions', 'purchase_flow', 'purchase_items', 'purchases', 'letters')
 
 
-def purge_v35(c):
-    """نسخه ۳.۵ (درخواست کاربر): پاک کردن یک‌باره همه مکاتبات و درخواست‌های کالا برای شروع کار واقعی.
-    کاربران، پروژه‌ها و ارکان، تنظیمات، سربرگ‌ها و کلیشه‌های امضا و درخواست‌های مالی دست نمی‌خورند.
-    پیش از پاک کردن، از پایگاه داده نسخه پشتیبان کامل گرفته و فایل‌های پیوست به پوشه پشتیبان منتقل می‌شوند."""
-    if settings(c).get('purge_v35'):
-        return
-    has = c.execute('SELECT (SELECT COUNT(*) FROM letters)+(SELECT COUNT(*) FROM purchases)').fetchone()[0]
-    if has:
-        stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
-        keep = os.path.join(BACK, 'pre-v35-purge-' + stamp)
+def workflow_counts(c):
+    return {'letters': c.execute('SELECT COUNT(*) FROM letters').fetchone()[0],
+            'purchases': c.execute('SELECT COUNT(*) FROM purchases').fetchone()[0]}
+
+
+def purge_workflow(c, tag):
+    """پاک کردن همه مکاتبات و درخواست‌های کالا (با گردش، اقلام، نسخه‌ها، پیوست‌ها، ارجاع‌ها و اعلام وصول‌ها).
+    کاربران، پروژه‌ها و ارکان، سمت‌ها، تنظیمات، سربرگ‌ها و کلیشه‌های امضا و درخواست‌های مالی دست نمی‌خورند.
+    پیش از پاک کردن، نسخه کامل پایگاه داده و فایل‌های پیوستِ پاک‌شده در data\\backups\\<tag>-<تاریخ> نگه داشته می‌شوند.
+    خروجی: تعداد پاک‌شده‌ها و محل پشتیبان."""
+    cnt = workflow_counts(c)
+    keep = ''
+    if cnt['letters'] + cnt['purchases']:
+        keep = os.path.join(BACK, '%s-%s' % (tag, datetime.datetime.now().strftime('%Y%m%d-%H%M%S')))
         os.makedirs(keep, exist_ok=True)
         c.commit()
         bk = sqlite3.connect(os.path.join(keep, 'oa.db'))  # پشتیبان کامل پایگاه داده پیش از پاک کردن
@@ -557,6 +561,7 @@ def purge_v35(c):
         for sub in (PUR_DIR, SIG_COPY_DIR):  # پوشه پیوست‌های درخواست کالا و کلیشه‌های امضای نامه‌ها
             src = os.path.join(FILES, sub)
             if os.path.isdir(src):
+                os.makedirs(os.path.join(keep, 'files'), exist_ok=True)
                 shutil.move(src, os.path.join(keep, 'files', sub))
         c.execute("DELETE FROM referrals WHERE doc_type IN ('letter','purchase')")
         c.execute("DELETE FROM attachments WHERE doc_type IN ('letter','purchase')")
@@ -565,6 +570,15 @@ def purge_v35(c):
             if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone():
                 c.execute('DELETE FROM %s' % t)
         c.execute("DELETE FROM doc_serials WHERE dtype IN ('MR','PO','GRN','PAY')")  # شماره‌ها از نو (MR-0001)
+    return cnt, keep
+
+
+def purge_v35(c):
+    """نسخه ۳.۵ (درخواست کاربر): پاک کردن یک‌باره سوابق، هنگام اولین اجرا."""
+    if settings(c).get('purge_v35'):
+        return
+    cnt, keep = purge_workflow(c, 'pre-v35-purge')
+    if keep:
         log(c, 'admin', 0, None, 'پاک کردن سوابق مکاتبات و درخواست‌های کالا (نسخه ۳.۵)', 'پشتیبان: ' + keep)
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('purge_v35','1')")
 
@@ -2982,7 +2996,7 @@ def api_admin(h, c, u, b, q):
     return {'users': users, 'projects': rows(c.execute('SELECT * FROM projects WHERE deleted=0 ORDER BY id')),
             'settings': settings(c), 'custom_roles': [list(r) + [ROLE_UNIT.get(r[0])] for r in TEAM_ROLES[len(BASE_TEAM_ROLES):]],
             'backups': sorted(os.listdir(BACK))[-10:], 'https': https_status(c),
-            'is_admin': u['role'] == 'admin'}
+            'is_admin': u['role'] == 'admin', 'workflow_counts': workflow_counts(c)}
 
 
 @route('POST', '/api/admin/user')
@@ -3047,6 +3061,20 @@ def api_admin_project(h, c, u, b, q):
         cur = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (b['name'].strip(), b.get('code') or '', mid))
         sync_pm(c, cur.lastrowid, mid)
     return {'ok': True}
+
+
+@route('POST', '/api/admin/purge_workflow')
+def api_admin_purge_workflow(h, c, u, b, q):
+    """پاک کردن همه مکاتبات و درخواست‌های کالا (نسخه ۴.۲). فقط مدیر سیستم، با رمز خودش و نوشتن «حذف»؛ پیش از آن
+    پشتیبان کامل گرفته می‌شود. کاربران و بقیه بخش‌ها دست نمی‌خورند."""
+    need_admin(u)
+    need((b.get('confirm') or '').strip() == 'حذف', 'برای تأیید، کلمه «حذف» را بنویسید', 400)
+    r = one(c.execute('SELECT * FROM users WHERE id=?', (u['id'],)))
+    need(pw_ok(b.get('password') or '', r), 'رمز عبور شما نادرست است', 400)
+    cnt, keep = purge_workflow(c, 'purge')
+    log(c, 'admin', 0, u['id'], 'پاک کردن سوابق مکاتبات و درخواست‌های کالا',
+        '%d نامه، %d درخواست کالا — پشتیبان: %s' % (cnt['letters'], cnt['purchases'], keep or '-'))
+    return {'ok': True, 'letters': cnt['letters'], 'purchases': cnt['purchases'], 'backup': keep}
 
 
 @route('POST', '/api/admin/roles')

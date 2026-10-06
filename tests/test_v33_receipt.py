@@ -323,6 +323,39 @@ class TShortFlow(Base):
         self.assertEqual((d['stage'], d['holder_id']), ('supervisor_approve', self.u('mk-sarparast')['id']))
 
 
+class TPurge(Base):
+    """نسخه ۴.۲: پاک کردن سوابق گردش اسناد فقط با مدیر سیستم، رمز و تأیید؛ بدون آسیب به بقیه بخش‌ها."""
+    def seed(self):
+        pid = self.to_delivery()  # درخواست کالا با پیوست
+        self.c.execute("INSERT INTO letters(kind,year,seq,number,subject,created_by,created_at,status) "
+                       "VALUES('in',1405,1,'1405/1','نامه',1,?,'open')", (app.now(),))
+        self.c.execute("INSERT INTO requests(year,seq,number,kind,title,requester_id,amount,status,created_at) "
+                       "VALUES(1405,1,'R-1','تنخواه','تنخواه',1,100,'pending',?)", (app.now(),))
+        self.c.commit()
+        return pid
+
+    def test_guards(self):
+        self.seed()
+        for un, body in (('admin', {}), ('admin', {'confirm': 'حذف', 'password': 'غلط'}),
+                         ('admin', {'confirm': 'نه', 'password': '1234'}), ('ceo', {'confirm': 'حذف', 'password': '1234'})):
+            with self.assertRaises(app.ApiError):
+                self.call('POST', '/api/admin/purge_workflow', un, body)
+        self.assertEqual(app.workflow_counts(self.c)['purchases'], 1)
+
+    def test_purge_keeps_everything_else(self):
+        self.seed()
+        users = self.c.execute('SELECT COUNT(*) FROM users').fetchone()[0]
+        members = self.c.execute('SELECT COUNT(*) FROM project_members').fetchone()[0]
+        r = self.call('POST', '/api/admin/purge_workflow', 'admin', {'confirm': 'حذف', 'password': '1234'})
+        self.assertEqual((r['letters'], r['purchases']), (1, 1))
+        q = lambda t: self.c.execute('SELECT COUNT(*) FROM %s' % t).fetchone()[0]
+        self.assertEqual((q('letters'), q('purchases'), q('purchase_items'), q('purchase_flow'), q('purchase_receipts')), (0, 0, 0, 0, 0))
+        self.assertEqual((q('users'), q('project_members'), q('requests')), (users, members, 1))
+        self.assertTrue(os.path.isfile(os.path.join(r['backup'], 'oa.db')))
+        pid = self.to_delivery()  # شماره‌ها از نو
+        self.assertEqual(self.get(pid)['doc']['number'], 'MR-0001')
+
+
 class TAdminNoWorkflow(Base):
     """نسخه ۳.۹: مدیر سیستم در هیچ گردش کاری نقش ندارد."""
     def test_no_referral_role_or_finance(self):

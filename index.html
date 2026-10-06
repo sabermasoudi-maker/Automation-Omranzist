@@ -190,7 +190,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='4.1'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='4.2'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -1013,6 +1013,10 @@ async function admin(){
     <div><label>کلید (key.pem)</label><input type="file" id="hK" accept=".pem,.key"></div><button class="btn l sm" onclick="httpsUp('key','hK')">بارگذاری کلید</button>
     ${d.https.cert||d.https.key?'<button class="btn bad sm" onclick="httpsDel()">حذف گواهی و کلید</button>':''}<button class="btn l sm" onclick="ntRevoke()">لغو اعلان همه دستگاه‌ها</button></div>`:'<div class="mut">بارگذاری گواهی فقط با مدیر سیستم است.</div>'}</div>
   <div id="lhAdmin"><div class="card mut">در حال بارگذاری سربرگ‌ها و امضاها…</div></div>
+  ${d.is_admin?`<div class="card" style="border-color:var(--bad)"><h2>پاک کردن سوابق گردش اسناد</h2>
+   <div class="mut" style="margin-bottom:8px">همه <b>مکاتبات</b> (${fa(d.workflow_counts.letters)} نامه) و همه <b>درخواست‌های کالا</b> (${fa(d.workflow_counts.purchases)} درخواست) با گردش، اقلام، پیوست‌ها، ارجاع‌ها و اعلام وصول‌هایشان پاک می‌شوند و شماره‌ها از نو شروع می‌شود. <b>کاربران، رمزها، پروژه‌ها و ارکان، سمت‌ها، تنظیمات، سربرگ‌ها، کلیشه‌های امضا و درخواست‌های مالی دست نمی‌خورند.</b> پیش از پاک کردن، نسخه کامل پایگاه داده و فایل‌های پیوست در پوشه «پشتیبان» (<bdi dir="ltr">data\\backups\\purge-تاریخ</bdi>) نگه داشته می‌شود. این کار برگشت‌پذیر نیست مگر با همان پشتیبان.</div>
+   <div class="grid"><div><label>رمز عبور شما</label><input type="password" id="pgPw" autocomplete="off"></div><div><label>برای تأیید، کلمه «حذف» را بنویسید</label><input id="pgOk" autocomplete="off"></div></div>
+   <div class="row" style="margin-top:10px"><button class="btn bad" onclick="purgeWf()" ${d.workflow_counts.letters+d.workflow_counts.purchases?'':'disabled'}>پاک کردن همه مکاتبات و درخواست‌های کالا</button>${d.workflow_counts.letters+d.workflow_counts.purchases?'':'<span class="mut">سندی برای پاک کردن نیست.</span>'}</div></div>`:''}
   <div class="card"><h2>پشتیبان‌گیری</h2><div class="mut">نسخه پشتیبان پایگاه داده هر روز خودکار در پوشه data\\backups ساخته می‌شود (۶۰ روز آخر نگه داشته می‌شود). آخرین‌ها: ${d.backups.map(esc).join('، ')||'—'}<br>برای نسخه بیرونی (شامل اسکن‌ها) فایل backup.bat را هفتگی اجرا کنید.</div></div>`;
   lhAdmin()}
 // ---------- مدیریت: سربرگ‌ها و کلیشه‌های امضا
@@ -1054,6 +1058,9 @@ function setPw(id,name){const d=document.createElement('div');d.className='modal
 const resetPw=id=>run(async()=>{if(!await ask('رمز این کاربر به 1234 برگردد؟'))return;await api('POST','/api/admin/reset',{id});flash('رمز بازنشانی شد');admin()});
 function editProj(p){$('#pId').value=p.id||'';$('#pNm').value=p.name||'';$('#pM').value=p.manager_id||'';$('#pAc').checked=p.active!==0}
 const saveProj=()=>run(async()=>{await api('POST','/api/admin/project',{id:val('pId'),name:val('pNm'),manager_id:val('pM'),active:$('#pAc').checked});flash('ذخیره شد');M=Object.assign(M,await api('GET','/api/meta'));admin()});
+const purgeWf=()=>run(async()=>{if(!await ask('همه مکاتبات و درخواست‌های کالا پاک می‌شوند. ادامه می‌دهید؟','بله، پاک شود'))return;
+  const r=await api('POST','/api/admin/purge_workflow',{password:val('pgPw'),confirm:val('pgOk')});
+  flash(fa('پاک شد: %d نامه و %d درخواست کالا'.replace('%d',r.letters).replace('%d',r.purchases)),0);refreshCount();admin()});
 const roleEdit=(k,t,s,u)=>{$('#roK').value=k;$('#roT').value=t;$('#roS').value=s;$('#roU').value=u;$('#roT').focus()};
 const roleSave=()=>run(async()=>{await api('POST','/api/admin/roles',{key:val('roK'),title:val('roT'),superior:val('roS'),unit:val('roU')});flash('سمت ذخیره شد');M=await api('GET','/api/meta');route()});
 const roleDel=k=>run(async()=>{if(!await ask('این سمت حذف شود؟'))return;await api('POST','/api/admin/roles',{delete:k});flash('حذف شد');M=await api('GET','/api/meta');route()});
