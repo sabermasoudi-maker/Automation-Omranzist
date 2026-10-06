@@ -63,8 +63,7 @@ class Base(unittest.TestCase):
                                                   {'title': 'سیمان', 'qty': '5', 'unit': 'کیسه'}]})
         pid = r['id']
         self.act('mk-zali', pid, 'submit')
-        self.act('mk-ejraei', pid, 'approve')
-        self.act('mk-sarparast', pid, 'approve')
+        self.act('mk-sarparast', pid, 'approve')  # از نسخه ۴.۰ مستقیم سرپرست کارگاه
         self.attach('mk-poshtibani', pid, 'فاکتور', 'inv.pdf')
         self.buy(pid, 10, 5)
         self.assertEqual(self.get(pid)['doc']['stage'], 'delivery')
@@ -262,8 +261,7 @@ class THandover(Base):
             'project_id': 2, 'unit': 'exec', 'category': 'main', 'warehouse': 'انبار', 'purpose': 'آزمون',
             'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'}]})
         pid = r['id']
-        for un, a in (('mk-zali', 'submit'), ('mk-ejraei', 'approve'), ('mk-fanni', 'approve'),
-                      ('mk-sarparast', 'approve'), ('kasaeian', 'approve')):
+        for un, a in (('mk-zali', 'submit'), ('mk-sarparast', 'approve'), ('kasaeian', 'approve')):
             self.act(un, pid, a)
         self.assertEqual(self.get(pid)['doc']['stage'], 'hq_quotes')
         self.call('POST', '/api/purchases/%d/handover' % pid, 'support', {'note': 'لطفاً شما'})
@@ -276,6 +274,53 @@ class THandover(Base):
         self.act('mk-poshtibani', pid, 'quoted')
         self.act('kasaeian', pid, 'approve')
         self.assertEqual(self.get(pid)['doc']['holder_id'], site)  # خرید هم با پشتیبانی کارگاه
+
+
+class TShortFlow(Base):
+    """نسخه ۴.۰: مسیر کوتاه؛ مستقیم به سرپرست کارگاه، ارجاع سرپرست، بدون معاون فنی."""
+    def new(self, cat, un='mk-zali', unit='exec'):
+        pid = self.call('POST', '/api/purchases', un, {
+            'project_id': 2, 'unit': unit, 'category': cat, 'warehouse': 'انبار', 'purpose': 'آزمون',
+            'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'}]})['id']
+        self.act(un, pid, 'submit')
+        return pid
+
+    def test_goes_straight_to_supervisor(self):
+        sup = self.u('mk-sarparast')['id']
+        for cat, unit, un in (('general', 'exec', 'mk-zali'), ('main', 'tech', 'mk-bajelani'), ('main', 'exec', 'mk-ejraei')):
+            d = self.get(self.new(cat, un, unit))['doc']
+            self.assertEqual((d['stage'], d['holder_id']), ('supervisor_approve', sup))
+
+    def test_main_skips_tech_review(self):
+        pid = self.new('main', 'mk-bajelani', 'tech')
+        self.act('mk-sarparast', pid, 'approve')
+        self.assertEqual(self.get(pid)['doc']['stage'], 'pm_approve')
+
+    def test_supervisor_own_request_is_self_approved(self):
+        d = self.get(self.new('general', 'mk-sarparast'))['doc']
+        self.assertEqual(d['stage'], 'site_purchase')
+
+    def test_refer_and_return(self):
+        pid = self.new('main')
+        with self.assertRaises(app.ApiError):  # ارجاع بدون توضیح یا شخص
+            self.act('mk-sarparast', pid, 'refer', refer_to=self.u('mk-fanni')['id'])
+        with self.assertRaises(app.ApiError):  # ارجاع به مدیر سیستم
+            self.act('mk-sarparast', pid, 'refer', refer_to=self.u('admin')['id'], note='کنترل')
+        self.act('mk-sarparast', pid, 'refer', refer_to=self.u('mk-fanni')['id'], note='مشخصات را کنترل کنید')
+        d = self.get(pid)['doc']
+        self.assertEqual((d['stage'], d['holder_id']), ('referred', self.u('mk-fanni')['id']))
+        self.attach('mk-fanni', pid, 'مشخصات فنی', 'spec.pdf')
+        self.act('mk-fanni', pid, 'refer_done', note='کنترل شد')
+        d = self.get(pid)['doc']
+        self.assertEqual((d['stage'], d['holder_id']), ('supervisor_approve', self.u('mk-sarparast')['id']))
+
+    def test_migration_of_legacy_stages(self):
+        pid = self.new('main')
+        self.c.execute("UPDATE purchases SET stage='tech_review', holder_id=? WHERE id=?", (self.u('mk-fanni')['id'], pid))
+        self.c.execute("DELETE FROM settings WHERE key='mig_v40'"); self.c.commit(); self.c.close()
+        app.init_db(); self.c = app.db()
+        d = self.get(pid)['doc']
+        self.assertEqual((d['stage'], d['holder_id']), ('supervisor_approve', self.u('mk-sarparast')['id']))
 
 
 class TAdminNoWorkflow(Base):

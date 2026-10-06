@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.9'
+VERSION = '4.0'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -68,6 +68,7 @@ P_STAGES = {'draft': 'پیش‌نویس درخواست‌کننده', 'unit_appr
             'supervisor_review': 'بررسی سرپرست کارگاه',  # فقط برای درخواست‌های نسخه‌های قبل
             'warehouse_check': 'استعلام موجودی از انبار کارگاه',
             'supervisor_approve': 'تأیید سرپرست کارگاه', 'tech_review': 'بررسی معاون فنی',
+            'referred': 'ارجاع سرپرست کارگاه — کنترل یا تکمیل مدارک',
             'site_purchase': 'خرید در کارگاه — پشتیبانی کارگاه', 'pm_approve': 'بررسی مدیر پروژه',
             'hq_quotes': 'استعلام و پیش‌فاکتور — پشتیبانی دفتر مرکزی',
             'price_approve': 'تأیید قیمت و فروشنده — مدیر پروژه / هیات مدیره',
@@ -81,10 +82,14 @@ _RET = ('returned', 'برگشت به درخواست‌کننده برای اصل
 P_FLOW = {
     'draft': {'submit': (None, '')},
     # از نسخه ۳.۰ استعلام موجودی انبار حذف شد؛ مرحله بعد را سرور تعیین می‌کند (معاون فنی یا سرپرست کارگاه)
+    # از نسخه ۴.۰ درخواست مستقیم به سرپرست کارگاه می‌رود؛ مراحل رئیس واحد، استعلام انبار و بررسی معاون فنی فقط برای
+    # درخواست‌های قدیمی در جریان نگه داشته شده‌اند (هنگام ارتقا به تأیید سرپرست کارگاه منتقل می‌شوند)
     'unit_approval': {'approve': (None, 'تأیید رئیس واحد'), 'return': _RET},
     'supervisor_review': {'inquire': ('warehouse_check', 'ارسال استعلام به انبار کارگاه'), 'return': _RET},
     'warehouse_check': {'stock': (None, 'ثبت موجودی انبار')},
-    'supervisor_approve': {'approve': (None, 'تأیید سرپرست کارگاه'), 'return': _RET},
+    'supervisor_approve': {'approve': (None, 'تأیید سرپرست کارگاه'), 'return': _RET,
+                           'refer': (None, 'ارجاع برای کنترل یا تکمیل مدارک')},
+    'referred': {'refer_done': ('supervisor_approve', 'کنترل یا تکمیل انجام شد — بازگشت به سرپرست کارگاه')},
     'tech_review': {'approve': (None, 'تأیید معاون فنی'), 'return': _RET},
     'site_purchase': {'purchased': ('delivery', 'خرید در کارگاه انجام شد — ارسال برای اعلام وصول')},
     'pm_approve': {'approve': ('hq_quotes', 'تأیید مدیر پروژه — ارسال به پشتیبانی برای استعلام قیمت'),
@@ -411,6 +416,16 @@ def init_db():
                 if (settings(c).get(k) or '') in [str(a) for a in adm]:
                     c.execute("UPDATE settings SET value='' WHERE key=?", (k,))
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('fix_v39','1')")
+    if not settings(c).get('mig_v40'):  # ۴.۰: درخواست‌های در جریان در مراحل حذف‌شده به تأیید سرپرست کارگاه می‌روند
+        for P in rows(c.execute("SELECT * FROM purchases WHERE status='open' AND stage IN "
+                                "('unit_approval','supervisor_review','warehouse_check','tech_review')")):
+            sup = pmembers(c, P['project_id']).get('supervisor')
+            if sup:
+                c.execute("UPDATE purchases SET stage='supervisor_approve', holder_id=? WHERE id=?", (sup, P['id']))
+                c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
+                          (P['id'], P['stage'], 'approve', 'انتقال به تأیید سرپرست کارگاه (کوتاه‌شدن مسیر گردش، نسخه ۴.۰)',
+                           None, '', now()))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v40','1')")
     if not settings(c).get('mig_v37'):  # ۳.۷: نوبتی که انباردار ثبت کرده، «منتظر تحویل‌گیرنده» است
         c.execute("UPDATE purchase_receipts SET status='pending' WHERE status='open' AND wh_at IS NOT NULL")
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v37','1')")
@@ -1857,21 +1872,13 @@ def is_general(P):
 
 
 def after_stock(c, P, notes):
-    """پس از استعلام انبار: عمومی و مصرفی ← سرپرست کارگاه؛ اصلی ← معاون فنی، سپس سرپرست کارگاه."""
-    if is_general(P):
-        return 'supervisor_approve'
-    if tech_already(c, P):
-        notes.append('بررسی معاون فنی لازم نبود؛ معاون فنی قبلاً درخواست را ثبت یا تأیید کرده است')
-        return 'supervisor_approve'
-    return 'tech_review'
+    """(برای درخواست‌های قدیمی) پس از استعلام انبار یا تأیید رئیس واحد: مستقیم به سرپرست کارگاه؛ بدون معاون فنی (۴.۰)."""
+    return 'supervisor_approve'
 
 
 def after_supervisor(c, P, notes):
-    """پس از تأیید سرپرست کارگاه: عمومی و مصرفی ← خرید در کارگاه؛ اصلی ← مدیر پروژه و دفتر مرکزی.
-    درخواست اصلی‌ای که پیش از نسخه ۲.۲ به سرپرست رسیده و معاون فنی هنوز بررسی‌اش نکرده، اول به معاون فنی می‌رود."""
-    if not is_general(P) and not done_this_round(c, P, 'tech_review') and not tech_already(c, P) and not c.execute(
-            "SELECT 1 FROM purchase_flow WHERE purchase_id=? AND stage='tech_review'", (P['id'],)).fetchone():
-        return 'tech_review'
+    """پس از تأیید سرپرست کارگاه: خرید در کارگاه ← خرید پشتیبانی کارگاه؛ خرید از دفتر مرکزی ← مدیر پروژه.
+    از نسخه ۴.۰ کنترل معاون فنی هم برای خرید از دفتر مرکزی لازم نیست."""
     return after_tech(P)
 
 
@@ -2002,14 +2009,13 @@ def unit_head_key(c, P):
 
 
 def start_stage(c, u, f):
-    """مرحله اول: اگر درخواست‌کننده معاون فنی، معاون اجرایی یا سرپرست کارگاه باشد، ثبتش همان تأیید رئیس واحد است.
-    خرید در کارگاه مرحله «بررسی معاون فنی» ندارد؛ ولی درخواست زیرمجموعه دفتر فنی را معاون فنی به‌عنوان رئیس واحد تأیید می‌کند.
-    استعلام موجودی انبار از نسخه ۳.۰ حذف شده است."""
+    """نسخه ۴.۰: هر درخواست کالا مستقیم به سرپرست کارگاه می‌رود (بدون تأیید معاون یا رئیس واحد).
+    اگر خود سرپرست کارگاه درخواست‌دهنده باشد، ثبت او همان تأیید است."""
     mem = pmembers(c, f['project_id'])
-    if u['id'] in {mem.get(k) for k in HEAD_ROLES}:
-        nxt = after_stock(c, f, [])
-        return nxt, 'ثبت و تأیید رئیس واحد — ارسال به ' + P_STAGES[nxt]
-    return 'unit_approval', 'ثبت و ارسال برای تأیید رئیس واحد'
+    if u['id'] == mem.get('supervisor'):
+        nxt = after_supervisor(c, f, [])
+        return nxt, 'ثبت و تأیید سرپرست کارگاه — ارسال به ' + P_STAGES[nxt]
+    return 'supervisor_approve', 'ثبت و ارسال برای تأیید سرپرست کارگاه'
 
 
 def support_users(c):
@@ -2175,7 +2181,7 @@ def can_cancel(c, u, P):
     if is_warehouse(c, u, P) and P['requester_id'] != u['id'] and not is_board(u):  # انباردار درخواست را لغو نمی‌کند
         return False
     return (P['holder_id'] == u['id'] or is_board(u)
-            or (P['requester_id'] == u['id'] and P['stage'] in ('unit_approval', 'returned')))
+            or (P['requester_id'] == u['id'] and P['stage'] in ('supervisor_approve', 'unit_approval', 'returned')))
 
 
 @route('GET', r'/api/purchases/(\d+)')
@@ -2507,7 +2513,7 @@ def api_purchase_act(h, c, u, b, q, pid):
     nxt, label = P_FLOW[P['stage']][a]
     note = (b.get('note') or '').strip()
     notes = []
-    if a in ('return', 'requote', 'accept', 'fix', 'followup'):
+    if a in ('return', 'requote', 'accept', 'fix', 'followup', 'refer'):
         need(note, 'علت را بنویسید', 400)
     if a == 'direct':  # توضیح (منبع و قیمت) اختیاری است (نسخه ۲.۶)
         if not P['po_no']:  # صدور سفارش خرید
@@ -2531,6 +2537,16 @@ def api_purchase_act(h, c, u, b, q, pid):
     its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],)))
     posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
 
+    if a == 'refer':  # سرپرست کارگاه: ارجاع به هر کس برای کنترل یا تکمیل مدارک؛ کار به کارتابل او می‌رود
+        to = int(b.get('refer_to') or 0)
+        need(to, 'شخصی را که کار به او ارجاع می‌شود انتخاب کنید', 400)
+        need(to != u['id'], 'ارجاع به خودتان معنا ندارد', 400)
+        tu = one(c.execute('SELECT id, full_name FROM users WHERE id=? AND active=1', (to,)))
+        need(tu, 'کاربر انتخاب‌شده نامعتبر است', 400)
+        need_not_admin(c, to, 'ارجاع')
+        c.execute("UPDATE purchases SET status='open', stage='referred', holder_id=? WHERE id=?", (to, P['id']))
+        pflow(c, P['id'], u, P['stage'], 'refer', 'ارجاع به %s برای کنترل یا تکمیل مدارک' % tu['full_name'], note)
+        return {'ok': True}
     rt = int(b.get('return_to') or 0)
     if a == 'return' and rt and rt != P['requester_id']:  # برگشت به یکی از اقدام‌کنندگان قبلی، نه درخواست‌کننده
         tg = next((t for t in return_targets(c, u, P) if t['id'] == rt), None)
@@ -2711,8 +2727,6 @@ def api_purchase_act(h, c, u, b, q, pid):
     label = label + (' — ارسال به ' + P_STAGES[nxt] if a in ('stock', 'approve') and nxt not in ('done', 'returned') else '')
     move(c, u, P, nxt, (a, label), '؛ '.join([note] + notes if note else notes),
          'closed' if nxt == 'done' else 'open')
-    if (P['stage'] == 'unit_approval' and a == 'approve') or a == 'submit':
-        cc_exec(c, u, P['id'], P)
     # نسخه ۳.۲: هیچ رونوشتی از درخواست کالا به پشتیبانی (دفتر مرکزی یا کارگاه) نمی‌رود؛ نظر مدیر پروژه / هیات مدیره
     # در کارت اقدام پشتیبانی به رنگ قرمز دیده می‌شود
     return {'ok': True}
