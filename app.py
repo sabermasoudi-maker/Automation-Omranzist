@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.6'
+VERSION = '3.7'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -398,6 +398,9 @@ def init_db():
     migrate_v24(c)
     purge_v35(c)
     migrate_v33(c)
+    if not settings(c).get('mig_v37'):  # ۳.۷: نوبتی که انباردار ثبت کرده، «منتظر تحویل‌گیرنده» است
+        c.execute("UPDATE purchase_receipts SET status='pending' WHERE status='open' AND wh_at IS NOT NULL")
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v37','1')")
     # نام کامل دو مهندس دفتر فنی موادکاران (فقط اگر هنوز نام قبلی ثبت است)
     for un, old, new in (('mk-bajelani', 'خانم مهندس باجلانی', 'دینا باجلانی'),
                          ('mk-hosseini', 'خانم مهندس حسینی', 'سارینا حسینی')):
@@ -490,7 +493,7 @@ def migrate_v33(c):
                           (rid, it['id'], it['recv_qty'] or '', it['recv_qty'] or ''))
                 c.execute('UPDATE purchase_items SET wh_qty=recv_qty WHERE id=?', (it['id'],))
         elif P['stage'] == 'delivery' and P['status'] == 'open' and P['wh_at'] and not P['recv_at']:  # انبار تأیید کرده
-            rid = c.execute("INSERT INTO purchase_receipts(purchase_id,seq,status,wh_by,wh_at) VALUES(?,1,'open',?,?)",
+            rid = c.execute("INSERT INTO purchase_receipts(purchase_id,seq,status,wh_by,wh_at) VALUES(?,1,'pending',?,?)",
                             (P['id'], P['wh_by'], P['wh_at'])).lastrowid
             for it in its:
                 c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id,wh_qty,recv_qty,disc_note) VALUES(?,?,?,?,?)',
@@ -1069,8 +1072,8 @@ def cart_count(c, u):
 # درخواست‌های کالای در کارتابل: دارنده (جز درخواست‌کننده‌ای که تحویل را تأیید کرده) و انباردارِ منتظر تأیید تحویل
 # مرحله‌های مدیر پروژه / هیات مدیره در کارتابل همه اعضای هیات مدیره و مدیر پروژه است (پارامتر چهارم: عضو هیات مدیره هست یا نه)
 PUR_HELD_SQL = ("((x.holder_id=? AND x.status IN ('open','returned') AND NOT (x.stage='delivery' AND x.recv_at IS NOT NULL)) "
-                "OR (x.stage='delivery' AND x.status='open' AND x.wh_at IS NULL AND EXISTS(SELECT 1 FROM project_members m "
-                "WHERE m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?)) "
+                "OR (x.stage='delivery' AND x.status='open' AND x.requester_id=? AND EXISTS(SELECT 1 FROM purchase_receipts r "
+                "WHERE r.purchase_id=x.id AND r.status='pending')) "
                 "OR (x.status='open' AND x.stage IN ('pm_approve','price_approve','discrepancy') AND x.requester_id!=? AND (?=1 "
                 "OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=x.project_id AND m.role_key='pm' AND m.user_id=?))))")
 
@@ -2186,6 +2189,7 @@ def api_purchase_get(h, c, u, b, q, pid):
     for it in items:
         it['remaining'] = fmt_num(remaining(it))
         it['remaining_receive'] = fmt_num(remaining_receive(c, it))
+        it['remaining_wh'] = fmt_num(wh_remaining(c, it))
     receipts = rows(c.execute('SELECT r.*, w.full_name wh_name, v.full_name recv_name FROM purchase_receipts r '
                               'LEFT JOIN users w ON w.id=r.wh_by LEFT JOIN users v ON v.id=r.recv_by '
                               'WHERE r.purchase_id=? ORDER BY r.seq', (P['id'],)))
@@ -2248,9 +2252,11 @@ def allowed_actions(c, u, P):
     if P['stage'] == 'delivery':  # تحویل دوطرفه: درخواست‌کننده و انبار، هر کدام جدا
         out = []
         wh = pmembers(c, P['project_id']).get('warehouse')
-        if is_warehouse(c, u, P) and not P['wh_at']:  # ۳.۶: تحویل بخشی و پیگیری با انباردار است
+        its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))
+        # ۳.۷: انباردار تا وقتی باقی‌مانده دارد ثبت می‌کند (حتی اگر نوبت قبلی هنوز منتظر تحویل‌گیرنده است)
+        if (is_warehouse(c, u, P) or (not wh and u['id'] == P['requester_id'])) and any(wh_remaining(c, it) > 0 for it in its):
             out += ['wh_ok', 'wh_bad', 'wh_partial', 'followup']
-        if u['id'] == P['requester_id'] and not P['recv_at'] and (P['wh_at'] or not wh):  # پس از انبار: فقط تأیید نهایی
+        if u['id'] == P['requester_id'] and pending_receipts(c, P['id']):  # تأیید نهایی هر نوبت ثبت‌شده انبار
             out += ['recv_ok', 'recv_bad']
         return out
     if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
@@ -2371,6 +2377,24 @@ def remaining_receive(c, it):
     return max(0.0, (to_num(it.get('bought_qty')) or 0) - received_sum(c, it['id']))
 
 
+def pending_receipts(c, pid):
+    """نوبت‌هایی که انباردار ثبت کرده و منتظر تأیید تحویل‌گیرنده‌اند (نسخه ۳.۷)."""
+    return rows(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='pending' ORDER BY seq", (pid,)))
+
+
+def wh_remaining(c, it):
+    """باقی‌مانده‌ای که انباردار هنوز باید ثبت کند = باقی‌مانده وصول − آنچه در نوبت‌های منتظر تحویل‌گیرنده ثبت شده."""
+    left = remaining_receive(c, it)
+    if left <= 0:
+        return 0.0
+    for l in c.execute("SELECT l.wh_qty, l.diff_note FROM purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id "
+                       "WHERE l.item_id=? AND r.status='pending'", (it['id'],)):
+        if l[1]:
+            return 0.0  # پذیرش با توضیح: قلم برای انبار کامل است
+        left -= to_num(l[0]) or 0
+    return max(0.0, left)
+
+
 def closed_receipts(c, pid):
     return rows(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='closed' ORDER BY seq", (pid,)))
 
@@ -2386,7 +2410,7 @@ def open_receipt(c, P, create=True):
         R = one(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],)))
     have = {r[0] for r in c.execute('SELECT item_id FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],))}
     for it in rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],))):
-        left = remaining_receive(c, it)
+        left = wh_remaining(c, it)
         if left > 0 and it['id'] not in have:
             c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id) VALUES(?,?)', (R['id'], it['id']))
         elif left <= 0 and it['id'] in have:
@@ -2404,7 +2428,7 @@ def refresh_item_totals(c, pid):
                    fmt_num(sum(to_num(x['wh_qty']) or 0 for x in ls)) if ls else '', it['id']))
 
 
-def close_receipt(c, u, P, R, kind):
+def close_receipt(c, u, P, R):
     """بستن نوبت: کد GRN (اولین نوبت کد درخواست را می‌سازد؛ با دومین نوبت، کدها /1، /2، ... می‌شوند)."""
     grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
     c.execute('UPDATE purchases SET grn_no=? WHERE id=?', (grn, P['id']))
@@ -2415,9 +2439,11 @@ def close_receipt(c, u, P, R, kind):
     c.execute("UPDATE purchase_receipts SET status='closed', closed_at=?, code=?, recv_by=?, recv_at=? WHERE id=?",
               (now(), code, u['id'], now(), R['id']))
     refresh_item_totals(c, P['id'])
-    pflow(c, P['id'], u, P['stage'], 'receipt_' + kind, 'اعلام وصول %s' % code,
-          'تحویل بخشی — باقی‌مانده بعداً' if kind == 'partial' else 'تحویل کامل')
-    return grn, code
+    done = not pending_receipts(c, P['id']) and all(
+        remaining_receive(c, it) <= 0 for it in rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],))))
+    pflow(c, P['id'], u, P['stage'], 'receipt_' + ('full' if done else 'partial'), 'اعلام وصول %s' % code,
+          'تحویل کامل' if done else 'تحویل بخشی — باقی‌مانده بعداً')
+    return grn, code, done
 
 
 def has_closed_receipt(c, pid):
@@ -2425,8 +2451,15 @@ def has_closed_receipt(c, pid):
 
 
 def delivery_holder(c, P):
-    """اعلام وصول (نسخه ۳.۰): اول انباردار تأیید یا مغایرت اعلام می‌کند، سپس تحویل‌گیرنده."""
-    return pmembers(c, P['project_id']).get('warehouse') or P['requester_id']
+    """اعلام وصول: انباردار تا وقتی باقی‌مانده‌ای برای ثبت دارد؛ وگرنه تحویل‌گیرنده برای تأیید نوبت‌های منتظر (۳.۷).
+    نوبت‌ها موازی‌اند: انباردار لازم نیست منتظر تأیید تحویل‌گیرنده بماند."""
+    wh = pmembers(c, P['project_id']).get('warehouse')
+    its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))
+    if wh and any(wh_remaining(c, it) > 0 for it in its):
+        return wh
+    if pending_receipts(c, P['id']):
+        return P['requester_id']
+    return wh or P['requester_id']
 
 
 def after_delivery(c, P):
@@ -2512,7 +2545,9 @@ def api_purchase_act(h, c, u, b, q, pid):
             if stt != 'none':
                 need(bq and bq > 0, 'مقدار خریداری‌شده «%s» را وارد کنید' % it['title'], 400)
             need(stt == 'bought' or (x.get('note') or '').strip(), 'برای «%s» علت خرید ناقص یا نشدن را بنویسید' % it['title'], 400)
-            rs = received_sum(c, it['id'])  # نوبت‌های بسته‌شده هرگز تغییر نمی‌کنند
+            rs = received_sum(c, it['id']) + sum(to_num(r[0]) or 0 for r in c.execute(  # بسته + منتظر تحویل‌گیرنده
+                "SELECT l.wh_qty FROM purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id "
+                "WHERE l.item_id=? AND r.status='pending'", (it['id'],)))
             need(((bq or 0) if stt != 'none' else 0) >= rs - 1e-9,
                  'مقدار خریداری‌شده «%s» از مقدار تحویل‌شده (%s) کمتر است' % (it['title'], fmt_num(rs)), 400)
             c.execute('UPDATE purchase_items SET bought_qty=?, bought_unit=?, bought_status=?, bought_note=? WHERE id=?',
@@ -2529,7 +2564,7 @@ def api_purchase_act(h, c, u, b, q, pid):
                   "(SELECT id FROM purchase_receipts WHERE purchase_id=? AND status='open')", (P['id'],))
         its2 = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))
         last = closed_receipts(c, P['id'])
-        if last and all(remaining_receive(c, it) <= 0 for it in its2):
+        if last and not pending_receipts(c, P['id']) and all(remaining_receive(c, it) <= 0 for it in its2):
             # کسری با کاهش مقدار خریداری‌شده بسته شد: همه اقلام پیش‌تر تحویل شده‌اند؛ تکمیل بدون نوبت تازه
             c.execute("DELETE FROM purchase_receipt_lines WHERE receipt_id IN (SELECT id FROM purchase_receipts "
                       "WHERE purchase_id=? AND status='open')", (P['id'],))
@@ -2541,32 +2576,31 @@ def api_purchase_act(h, c, u, b, q, pid):
             nxt = after_delivery(c, P)
             notes.append('همه اقلام پیش‌تر تحویل شده‌اند — اعلام وصول کامل شد (%s)' % '، '.join(r['code'] for r in last))
     elif a == 'followup':  # انبار: باقی‌مانده نرسیده و پیگیری لازم است ← پشتیبانی خریدار؛ نوبت باز می‌ماند
-        R = open_receipt(c, P)
-        c.execute("UPDATE purchase_receipts SET note='پیگیری پشتیبانی' WHERE id=?", (R['id'],))
         c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
         nxt = purchase_stage_of(c, P)
-        left = [it['title'] + ' ' + fmt_num(remaining_receive(c, it)) for it in its if remaining_receive(c, it) > 0]
+        left = [it['title'] + ' ' + fmt_num(wh_remaining(c, it)) for it in its if wh_remaining(c, it) > 0]
         if left:
             notes.append('باقی‌مانده: ' + '، '.join(left))
-    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad', 'recv_partial', 'wh_partial'):
-        # نسخه ۳.۵: هر نوبت اعلام وصول مقدار انباردار و تحویل‌گیرنده را جدا نگه می‌دارد؛ تفاوت با باقی‌مانده
-        # خرید باید «مغایرت»، «پذیرش با توضیح» یا (برای تحویل‌گیرنده) «تحویل بخشی» باشد
+    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad', 'wh_partial'):
+        # نسخه ۳.۷: نوبت‌ها موازی‌اند. انباردار هر رسیدن کالا را یک نوبت ثبت می‌کند (حتی پیش از تأیید نوبت قبلی)؛
+        # تحویل‌گیرنده قدیمی‌ترین نوبت منتظر را با عدد انباردار مقایسه و تأیید نهایی می‌کند
         wh_act = a.startswith('wh')
         who = 'انباردار' if wh_act else 'تحویل‌گیرنده'
-        R = open_receipt(c, P)
+        if wh_act:
+            R = open_receipt(c, P)
+        else:
+            pend = pending_receipts(c, P['id'])
+            need(pend, 'نوبتی منتظر تأیید شما نیست', 400)
+            R = pend[0]
         itm = {it['id']: it for it in its}
         lines = rows(c.execute('SELECT * FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],)))
         need(lines, 'قلمی برای اعلام وصول باقی نمانده است', 400)
         bad, short = [], []
         for ln in lines:
             it, x = itm[ln['item_id']], posted.get(ln['item_id']) or {}
-            left = remaining_receive(c, it)
-            if x.get('qty') not in (None, ''):
-                qv = to_num(x.get('qty'))
-            elif not wh_act and ln['wh_qty'] != '':
-                qv = to_num(ln['wh_qty'])
-            else:
-                qv = left
+            whq = to_num(ln['wh_qty']) if ln['wh_qty'] != '' else None
+            left = wh_remaining(c, it) if wh_act else (whq if whq is not None else remaining_receive(c, it))
+            qv = to_num(x.get('qty')) if x.get('qty') not in (None, '') else left
             need(qv is not None and qv >= 0, 'مقدار «%s» باید عدد باشد' % it['title'], 400)
             upd = {'wh_qty' if wh_act else 'recv_qty': fmt_num(qv)}
             if x.get('bad'):
@@ -2579,24 +2613,19 @@ def api_purchase_act(h, c, u, b, q, pid):
                 bad.append('%s (%s)' % (it['title'], dn_))
             else:
                 upd['disc_note'] = ''
-                # مبنای مقایسه: برای انباردار باقی‌مانده خرید؛ برای تحویل‌گیرنده عدد انباردار (نسخه ۳.۶)
-                whq = to_num(ln['wh_qty']) if ln['wh_qty'] != '' else None
-                base = left if wh_act or whq is None else whq
-                if abs(qv - base) > 1e-9:
+                if abs(qv - left) > 1e-9:  # انباردار: با باقی‌مانده؛ تحویل‌گیرنده: با عدد انباردار
                     dfn = (x.get('diff_note') or '').strip()
                     if x.get('diff_ok'):
                         need(dfn, 'توضیح «پذیرش با توضیح» برای «%s» را بنویسید' % it['title'], 400)
-                        upd['diff_note'] = '%s: %s' % (who, dfn)
-                    elif a in ('wh_partial', 'recv_partial') and qv < left:
+                        upd['diff_note'] = '؛ '.join(filter(None, [ln['diff_note'], '%s: %s' % (who, dfn)]))
+                    elif a == 'wh_partial' and qv < left:
                         short.append('%s: %s از %s' % (it['title'], fmt_num(qv), fmt_num(left)))
                     else:
-                        need(a not in ('wh_partial', 'recv_partial'), 'در تحویل بخشی مقدار «%s» نمی‌تواند از باقی‌مانده (%s) بیشتر باشد'
+                        need(a != 'wh_partial', 'در تحویل بخشی مقدار «%s» نمی‌تواند از باقی‌مانده (%s) بیشتر باشد'
                              % (it['title'], fmt_num(left)), 400)
                         raise ApiError('مقدار «%s» با %s (%s %s) برابر نیست؛ «مغایرت» یا «پذیرش با توضیح» را بزنید'
-                                       % (it['title'], 'باقی‌مانده خرید' if wh_act or whq is None else 'عدد انباردار', fmt_num(base),
+                                       % (it['title'], 'باقی‌مانده خرید' if wh_act else 'عدد انباردار', fmt_num(left),
                                           it['bought_unit'] or it['unit']), 400)
-                elif not wh_act and abs(qv - left) < 1e-9:
-                    upd['diff_note'] = ''  # تحویل‌گیرنده کامل گرفت؛ تفاوت انبار دیگر معنا ندارد
             c.execute('UPDATE purchase_receipt_lines SET %s WHERE id=?' % ', '.join('%s=?' % k for k in upd),
                       tuple(upd.values()) + (ln['id'],))
             c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', (upd['disc_note'], it['id']))
@@ -2604,46 +2633,36 @@ def api_purchase_act(h, c, u, b, q, pid):
             need(bad, 'برای هر قلمی که مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید', 400)
         else:
             need(not bad, 'قلم دارای مغایرت انتخاب شده؛ «ثبت مغایرت» را بزنید', 400)
-        if a in ('wh_partial', 'recv_partial'):
+        if a == 'wh_partial':
             need(short, 'برای «تحویل بخشی» دست‌کم یک قلم باید کمتر از باقی‌مانده تحویل شود', 400)
-        if wh_act:  # انبار (تأیید، تحویل بخشی یا مغایرت) ← تحویل‌گیرنده
+        if wh_act:  # نوبت ثبت شد و منتظر تأیید تحویل‌گیرنده است؛ انباردار برای باقی‌مانده منتظر نمی‌ماند
             dd = need_jdate(b.get('delivery_date'), 'تاریخ تحویل', required=False, max_=jtoday(),
                             max_msg='تاریخ تحویل نمی‌تواند بعد از امروز باشد')
             ref = (b.get('delivery_ref') or '').strip()
             need(len(ref) <= 60, 'شماره حواله یا بارنامه حداکثر ۶۰ نویسه است', 400)
-            c.execute("UPDATE purchase_receipts SET wh_by=?, wh_at=?, delivery_date=?, delivery_ref=?, note=? WHERE id=?",
-                      (u['id'], now(), dd, ref, 'تحویل بخشی' if a == 'wh_partial' else '', R['id']))
-            c.execute('UPDATE purchases SET wh_by=?, wh_at=?, holder_id=? WHERE id=?', (u['id'], now(), P['requester_id'], P['id']))
-            pflow(c, P['id'], u, P['stage'], a, label + (' — ارسال به تحویل‌گیرنده برای رفع یا تأیید مغایرت' if bad
-                                                          else ' — ارسال به تحویل‌گیرنده'),
+            c.execute("UPDATE purchase_receipts SET status='pending', wh_by=?, wh_at=?, delivery_date=?, delivery_ref=?, note=? "
+                      "WHERE id=?", (u['id'], now(), dd, ref, 'تحویل بخشی' if a == 'wh_partial' else '', R['id']))
+            hold = delivery_holder(c, P)
+            c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (hold, P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — نوبت %s برای تأیید تحویل‌گیرنده' % fa_num(str(R['seq']))
+                  + ('؛ باقی‌مانده نزد انباردار' if hold != P['requester_id'] else ''),
                   '؛ '.join((['مغایرت ' + '؛ '.join(bad)] if bad else []) + (['کسری: ' + '، '.join(short)] if short else [])
                             + ([note] if note else [])))
             return {'ok': True}
-        if a == 'recv_bad':  # مغایرت تأیید شد: برگشت به پشتیبانی خریدار؛ نوبت باز با خطوطش می‌ماند
-            c.execute("UPDATE purchase_receipts SET note='مغایرت' WHERE id=?", (R['id'],))
+        if a == 'recv_bad':  # مغایرت تأیید شد: برگشت به پشتیبانی خریدار؛ این نوبت کنار گذاشته می‌شود
+            c.execute("UPDATE purchase_receipts SET status='rejected', note='مغایرت — برگشت به پشتیبانی' WHERE id=?", (R['id'],))
             c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
             nxt = purchase_stage_of(c, P)
             notes.append('مغایرت ' + '؛ '.join(bad))
-        elif a == 'recv_partial':  # نوبت بسته؛ درخواست در اعلام وصول می‌ماند و برای باقی‌مانده به انبار برمی‌گردد
-            grn, code = close_receipt(c, u, P, R, 'partial')
-            c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL, holder_id=? WHERE id=?',
-                      (delivery_holder(c, P), P['id']))
-            pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s؛ باقی‌مانده به انبار' % code,
-                  '؛ '.join(['کسری: ' + '، '.join(short)] + ([note] if note else [])))
-            return {'ok': True}
-        elif any(abs(to_num(l['recv_qty']) - remaining_receive(c, itm[l['item_id']])) > 1e-9 and
-                 to_num(l['recv_qty']) < remaining_receive(c, itm[l['item_id']]) and not l['diff_note']
-                 for l in rows(c.execute('SELECT * FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],)))):
-            # تأیید تحویل‌گیرنده روی تحویل بخشی انبار: نوبت بسته؛ باقی‌مانده نزد انباردار می‌ماند تا تکمیل
-            grn, code = close_receipt(c, u, P, R, 'partial')
-            c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL, holder_id=? WHERE id=?',
-                      (delivery_holder(c, P), P['id']))
-            pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s (بخشی)؛ باقی‌مانده نزد انباردار' % code, note)
-            return {'ok': True}
-        else:  # recv_ok: نوبت بسته و چون همه اقلام کامل شده‌اند، اعلام وصول درخواست کامل است
-            grn, code = close_receipt(c, u, P, R, 'full')
-            c.execute('UPDATE purchases SET recv_by=?, recv_at=? WHERE id=?', (u['id'], now(), P['id']))
-            P = dict(P, recv_at=now(), grn_no=grn)
+        else:  # recv_ok: نوبت صادر می‌شود؛ اگر همه اقلام کامل و نوبت منتظری نمانده، اعلام وصول درخواست کامل است
+            grn, code, done = close_receipt(c, u, P, R)
+            if not done:
+                c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (delivery_holder(c, P), P['id']))
+                pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s صادر شد' % code, note)
+                return {'ok': True}
+            c.execute('UPDATE purchases SET recv_by=?, recv_at=?, wh_by=?, wh_at=? WHERE id=?',
+                      (u['id'], now(), R['wh_by'], R['wh_at'], P['id']))
+            P = dict(P, recv_at=now(), wh_at=R['wh_at'], grn_no=grn)
             nxt = after_delivery(c, P)
             notes.append('اعلام وصول کامل شد (تحویل‌گیرنده و انباردار) — %s' % code)
             if nxt == 'done':

@@ -158,13 +158,35 @@ class T06to10Receipt(Base):
     def partial(self):
         pid = self.to_delivery()
         self.act('mk-anbar', pid, 'wh_partial', items=self.lines(pid, 6, 5))
-        self.assertEqual(self.get(pid)['doc']['holder_id'], self.u('mk-zali')['id'])
+        # ۳.۷: باقی‌مانده نزد انباردار می‌ماند و تحویل‌گیرنده هم‌زمان نوبت ثبت‌شده را تأیید می‌کند
+        self.assertEqual(self.get(pid)['doc']['holder_id'], self.u('mk-anbar')['id'])
+        self.assertIn('recv_ok', self.get(pid, 'mk-zali')['actions'])
         self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 6, 5))  # تأیید نهایی نوبت بخشی
         d = self.get(pid)
         self.assertEqual(d['receipts'][0]['status'], 'closed'); self.assertEqual(d['doc']['stage'], 'delivery')
         self.assertEqual(d['doc']['holder_id'], self.u('mk-anbar')['id'])
         self.assertEqual([i['remaining_receive'] for i in d['items']], ['4', '0'])
         return pid
+
+    def test_08e_warehouse_records_rest_before_receiver(self):
+        """۱۰۰۰ عدد خریداری شده؛ ۳۰۰ رسید و پیش از تأیید تحویل‌گیرنده ۷۰۰ دیگر هم رسید (نسخه ۳.۷)."""
+        pid = self.to_delivery()
+        its = self.get(pid)['items']
+        self.c.execute("UPDATE purchase_items SET bought_qty='1000' WHERE id=?", (its[0]['id'],)); self.c.commit()
+        self.act('mk-anbar', pid, 'wh_partial', items=self.lines(pid, 300, 5))
+        self.assertEqual(self.get(pid, 'mk-anbar')['items'][0]['remaining_wh'], '700')
+        self.assertIn('wh_ok', self.get(pid, 'mk-anbar')['actions'])  # بدون انتظار برای تحویل‌گیرنده
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 700, 0)[:1])
+        d = self.get(pid)
+        self.assertEqual([r['status'] for r in d['receipts']], ['pending', 'pending'])
+        self.assertEqual(d['doc']['holder_id'], self.u('mk-zali')['id'])  # انبار کارش تمام شد
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 300, 5))   # نوبت ۱
+        self.assertEqual(self.get(pid)['doc']['stage'], 'delivery')
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 700, 0)[:1])  # نوبت ۲
+        d = self.get(pid); g = d['doc']['grn_no']
+        self.assertEqual([r['code'] for r in d['receipts']], [g + '/1', g + '/2'])
+        self.assertEqual([i['recv_qty'] for i in d['items']], ['1000', '5'])
+        self.assertEqual(d['doc']['stage'], 'done')
 
     def test_08b_second_receipt(self):
         pid = self.partial()
@@ -275,7 +297,7 @@ class TMigration(Base):
               for r in app.rows(c.execute('SELECT DISTINCT purchase_id FROM purchase_receipts'))}
         self.assertEqual(len(rs[done]), 1); self.assertEqual(rs[done][0]['status'], 'closed')
         self.assertEqual(rs[done][0]['code'], 'GRN-0900')
-        self.assertEqual(len(rs[wait]), 1); self.assertEqual(rs[wait][0]['status'], 'open')
+        self.assertEqual(len(rs[wait]), 1); self.assertEqual(rs[wait][0]['status'], 'pending')
         ln = app.one(c.execute('SELECT * FROM purchase_receipt_lines WHERE receipt_id=?', (rs[wait][0]['id'],)))
         self.assertEqual((ln['wh_qty'], ln['recv_qty']), ('9', ''))
         self.assertEqual(c.execute('SELECT recv_qty FROM purchase_items WHERE purchase_id=?', (wait,)).fetchone()[0], '')
