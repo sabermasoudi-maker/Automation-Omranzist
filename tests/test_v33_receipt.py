@@ -278,6 +278,33 @@ class THandover(Base):
         self.assertEqual(self.get(pid)['doc']['holder_id'], site)  # خرید هم با پشتیبانی کارگاه
 
 
+class TAdminNoWorkflow(Base):
+    """نسخه ۳.۹: مدیر سیستم در هیچ گردش کاری نقش ندارد."""
+    def test_no_referral_role_or_finance(self):
+        adm = self.u('admin')['id']
+        with self.assertRaises(app.ApiError):  # ارجاع نامه به مدیر سیستم
+            app.make_referrals(self.c, self.u('secretary'), 'letter', 1, [adm], 'اقدام', '', '')
+        with self.assertRaises(app.ApiError):  # مدیر سیستم به‌عنوان مدیر مالی
+            self.call('POST', '/api/admin/settings', 'admin', {'finance_manager': str(adm)})
+        with self.assertRaises(app.ApiError):  # مدیر سیستم به‌عنوان انباردار پروژه
+            self.call('POST', '/api/projects/2/update', 'admin', {'name': 'موادکاران', 'members': {'warehouse': adm}})
+        self.assertFalse(app.is_finance(self.c, self.u('admin')))
+        self.assertEqual(self.call('GET', '/api/cartable', 'admin')['pur_pay'], [])
+        self.assertNotIn(adm, [x['id'] for x in self.call('GET', '/api/meta', 'admin')['wf_users']])
+
+    def test_cleanup_of_old_assignments(self):
+        adm = self.u('admin')['id']
+        self.c.execute("UPDATE settings SET value=? WHERE key='support_manager'", (str(adm),))
+        self.c.execute("INSERT OR REPLACE INTO project_members(project_id,role_key,user_id) VALUES(2,'warehouse',?)", (adm,))
+        self.c.execute("INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,created_at) VALUES('request',1,2,?,'اقدام',?)",
+                       (adm, app.now()))
+        self.c.execute("DELETE FROM settings WHERE key='fix_v39'"); self.c.commit(); self.c.close()
+        app.init_db(); self.c = app.db()
+        self.assertEqual(app.settings(self.c).get('support_manager'), '')
+        self.assertIsNone(self.c.execute("SELECT 1 FROM project_members WHERE user_id=?", (adm,)).fetchone())
+        self.assertEqual(self.c.execute("SELECT status FROM referrals WHERE to_id=?", (adm,)).fetchone()[0], 'closed')
+
+
 class TMigration(Base):
     def test_mig(self):
         c = self.c

@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.8'
+VERSION = '3.9'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -398,6 +398,19 @@ def init_db():
     migrate_v24(c)
     purge_v35(c)
     migrate_v33(c)
+    if not settings(c).get('fix_v39'):  # ۳.۹: مدیر سیستم از همه نقش‌ها و ارجاع‌های گردش کار کنار گذاشته می‌شود
+        adm = [r[0] for r in c.execute("SELECT id FROM users WHERE role='admin'")]
+        if adm:
+            qs = ','.join('?' * len(adm))
+            c.execute("UPDATE referrals SET status='closed', done_at=?, reply='مدیر سیستم در گردش کار نقشی ندارد (نسخه ۳.۹)' "
+                      "WHERE to_id IN (%s) AND status IN ('new','seen','doing')" % qs, [now()] + adm)
+            c.execute('DELETE FROM project_members WHERE user_id IN (%s)' % qs, adm)
+            c.execute('DELETE FROM project_team WHERE user_id IN (%s)' % qs, adm)
+            c.execute('UPDATE projects SET manager_id=NULL WHERE manager_id IN (%s)' % qs, adm)
+            for k in HQ_SETTING_USERS:
+                if (settings(c).get(k) or '') in [str(a) for a in adm]:
+                    c.execute("UPDATE settings SET value='' WHERE key=?", (k,))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('fix_v39','1')")
     if not settings(c).get('mig_v37'):  # ۳.۷: نوبتی که انباردار ثبت کرده، «منتظر تحویل‌گیرنده» است
         c.execute("UPDATE purchase_receipts SET status='pending' WHERE status='open' AND wh_at IS NOT NULL")
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v37','1')")
@@ -678,6 +691,20 @@ def is_mgr(u):
     return u['role'] in TOP_ROLES
 
 
+def is_board(u):
+    """هیات مدیره. مدیر سیستم در هیچ گردش کاری نقش ندارد (نسخه ۳.۹) و فقط وظایف ذاتی خودش را دارد:
+    کاربران و رمزها، پروژه‌ها و ارکان، سمت‌ها، تنظیمات، سربرگ و امضا، HTTPS و اعلان‌ها، حذف و اصلاح اسناد."""
+    return u['role'] == 'manager'
+
+
+def is_admin_id(c, uid):
+    return bool(uid) and c.execute("SELECT 1 FROM users WHERE id=? AND role='admin'", (int(uid),)).fetchone() is not None
+
+
+def need_not_admin(c, uid, what):
+    need(not is_admin_id(c, uid), 'مدیر سیستم در گردش کار نقشی ندارد؛ برای «%s» کاربر دیگری انتخاب کنید' % what, 400)
+
+
 def sees_all(u):
     return u['role'] in ('admin', 'manager', 'secretariat')
 
@@ -816,6 +843,8 @@ def make_referrals(c, u, dt, did, to_ids, action, instruction, due, parent_id=No
         allowed = set(colleagues_of(c, u['id']))
         need(all(t in allowed for t in to_ids), 'کارکنان کارگاه فقط به همکاران پروژه خود ارجاع می‌دهند', 400)
     need(action in ACTIONS, 'نوع اقدام نامعتبر', 400)
+    for t in to_ids:  # هیچ سند و ارجاعی به مدیر سیستم نمی‌رود
+        need_not_admin(c, t, 'گیرنده ارجاع')
     need(not due or due >= today(), 'مهلت انجام نمی‌تواند قبل از امروز باشد', 400)
     names = []
     for t in to_ids:
@@ -982,6 +1011,7 @@ def api_meta(h, c, u, b, q):
             'notify_interval': max(15, int(S.get('notify_interval') or 30)), 'is_admin': u['role'] == 'admin',
             'https_port': HTTPS_RUNNING[0],
             'users': rows(c.execute('SELECT id,full_name,title,role FROM users WHERE active=1 ORDER BY id')),
+            'wf_users': rows(c.execute("SELECT id,full_name,title,role FROM users WHERE active=1 AND role!='admin' ORDER BY id")),
             'projects': rows(c.execute('SELECT id,name,code,manager_id FROM projects WHERE active=1 ORDER BY id')),
             'roles': ROLES, 'letter_kinds': LETTER_KINDS, 'actions': ACTIONS, 'sources': SOURCES,
             'request_kinds': REQUEST_KINDS, 'default_due_days': int(S.get('default_due_days') or 3),
@@ -1025,13 +1055,13 @@ def api_cartable(h, c, u, b, q):
         "SELECT q.*, p.name project FROM requests q LEFT JOIN projects p ON p.id=q.project_id "
         "WHERE q.requester_id=? AND q.status IN ('pending','returned','approved') ORDER BY q.id DESC", (u['id'],)))
     pay = []
-    if u['role'] == 'finance' or is_mgr(u):
+    if u['role'] == 'finance' or is_board(u):
         pay = rows(c.execute(
             "SELECT q.*, p.name project, ru.full_name requester FROM requests q LEFT JOIN projects p ON p.id=q.project_id "
             "LEFT JOIN users ru ON ru.id=q.requester_id WHERE q.status='approved' OR (q.status='paid' AND q.sepidar_no='') "
             "ORDER BY q.id"))
     desk = []
-    if u['role'] == 'secretariat' or is_mgr(u):
+    if u['role'] == 'secretariat' or is_board(u):
         # اول: صادره‌های امضاشده (یا بی‌امضاکننده) که منتظر ثبت و شماره دبیرخانه‌اند
         desk = rows(c.execute(
             "SELECT l.*, 1 to_register FROM letters l WHERE l.status='draft' AND (l.signer_id IS NULL OR "
@@ -1198,13 +1228,13 @@ def dispatch_letter(c, u, lid, instruction='', due=''):
 def api_letter_new(h, c, u, b, q):
     f = letter_fields(b)
     if f['kind'] == 'in':
-        need(u['role'] in ('admin', 'secretariat', 'manager'), 'ثبت نامه وارده فقط توسط دبیرخانه انجام می‌شود')
+        need(u['role'] in ('secretariat', 'manager'), 'ثبت نامه وارده فقط توسط دبیرخانه انجام می‌شود')
     if f['signer_id']:
         need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (f['signer_id'],)).fetchone(), 'امضاکننده نامعتبر', 400)
         if is_site_only(c, u):
             need(f['signer_id'] in colleagues_of(c, u['id']) + [u['id']], 'امضاکننده باید از همکاران پروژه باشد', 400)
     # صادره: شماره فقط هنگام ثبت در دبیرخانه؛ مگر دبیرخانه نامه امضاشده کاغذی را مستقیم ثبت کند
-    draft = f['kind'] == 'out' and (f['signer_id'] or u['role'] not in ('admin', 'secretariat'))
+    draft = f['kind'] == 'out' and (f['signer_id'] or u['role'] != 'secretariat')
     y, seq, number = (None, None, None) if draft else next_letter_number(c, f['kind'])
     cur = c.execute('INSERT INTO letters(kind,year,seq,number,subject,counterpart,their_number,their_date,letter_date,'
                     'project_id,priority,confidential,summary,source,created_by,created_at,body,signer_id,status,'
@@ -1261,7 +1291,7 @@ def api_letter_sign(h, c, u, b, q, lid):
 def api_letter_register(h, c, u, b, q, lid):
     """ثبت صادره در دبیرخانه و دریافت شماره."""
     L = get_doc(c, u, 'letter', int(lid))
-    need(u['role'] in ('admin', 'secretariat'), 'ثبت و شماره‌گذاری صادره فقط توسط دبیرخانه انجام می‌شود')
+    need(u['role'] == 'secretariat', 'ثبت و شماره‌گذاری صادره فقط توسط دبیرخانه انجام می‌شود')
     need(L['status'] == 'draft', 'این نامه قبلاً ثبت شده است', 400)
     need(not L['signer_id'] or L['signed_at'], 'نامه هنوز امضا نشده است', 400)
     y, seq, number = next_letter_number(c, L['kind'])
@@ -1354,7 +1384,7 @@ def api_letter_get(h, c, u, b, q, lid):
     return {'doc': L, 'attachments': att, 'referrals': refs, 'log': lg,
             'can_sign': L['signer_id'] == u['id'] and not L['signed_at'],
             'my_stamp': bool(me and me['sig_path']),
-            'can_register': L['status'] == 'draft' and u['role'] in ('admin', 'secretariat')
+            'can_register': L['status'] == 'draft' and u['role'] == 'secretariat'
             and (not L['signer_id'] or bool(L['signed_at']))}
 
 
@@ -1383,11 +1413,11 @@ def api_letter_update(h, c, u, b, q, lid):
 @route('POST', r'/api/letters/(\d+)/archive')
 def api_letter_archive(h, c, u, b, q, lid):
     L = get_doc(c, u, 'letter', int(lid))
-    need(u['role'] in ('admin', 'secretariat', 'manager'), 'بایگانی توسط دبیرخانه یا هیات مدیره انجام می‌شود')
+    need(u['role'] in ('secretariat', 'manager'), 'بایگانی توسط دبیرخانه یا هیات مدیره انجام می‌شود')
     open_n = c.execute("SELECT COUNT(*) FROM referrals WHERE doc_type='letter' AND doc_id=? AND status IN %s" % str(OPEN),
                        (L['id'],)).fetchone()[0]
     if open_n:
-        need(is_mgr(u) and b.get('force'), 'این نامه هنوز %d ارجاع باز دارد؛ ابتدا باید انجام یا بسته شوند' % open_n, 400)
+        need(is_board(u) and b.get('force'), 'این نامه هنوز %d ارجاع باز دارد؛ ابتدا باید انجام یا بسته شوند' % open_n, 400)
         c.execute("UPDATE referrals SET status='closed', done_at=?, reply=reply||' [بسته شد با بایگانی]' "
                   "WHERE doc_type='letter' AND doc_id=? AND status IN %s" % str(OPEN), (now(), L['id']))
     c.execute("UPDATE letters SET status='archived', archive_code=?, closed_at=? WHERE id=?",
@@ -1399,7 +1429,7 @@ def api_letter_archive(h, c, u, b, q, lid):
 @route('POST', r'/api/letters/(\d+)/reopen')
 def api_letter_reopen(h, c, u, b, q, lid):
     L = get_doc(c, u, 'letter', int(lid))
-    need(u['role'] in ('admin', 'secretariat', 'manager'))
+    need(u['role'] in ('secretariat', 'manager'))
     c.execute("UPDATE letters SET status='open', closed_at=NULL WHERE id=?", (L['id'],))
     log(c, 'letter', L['id'], u['id'], 'بازگشایی از بایگانی')
     return {'ok': True}
@@ -1646,7 +1676,7 @@ def api_request_resubmit(h, c, u, b, q, rid):
 @route('POST', r'/api/requests/(\d+)/cancel')
 def api_request_cancel(h, c, u, b, q, rid):
     R = get_doc(c, u, 'request', int(rid))
-    need((R['requester_id'] == u['id'] or is_mgr(u)) and R['status'] in ('pending', 'returned'),
+    need((R['requester_id'] == u['id'] or is_board(u)) and R['status'] in ('pending', 'returned'),
          'لغو فقط پیش از تأیید نهایی و توسط درخواست‌کننده ممکن است')
     c.execute("UPDATE requests SET status='cancelled', closed_at=? WHERE id=?", (now(), R['id']))
     c.execute("UPDATE steps SET status='skipped' WHERE request_id=? AND status IN ('waiting','pending')", (R['id'],))
@@ -1657,7 +1687,7 @@ def api_request_cancel(h, c, u, b, q, rid):
 @route('POST', r'/api/requests/(\d+)/pay')
 def api_request_pay(h, c, u, b, q, rid):
     R = get_doc(c, u, 'request', int(rid))
-    need(u['role'] == 'finance' or is_mgr(u), 'ثبت پرداخت فقط توسط مالی یا هیات مدیره')
+    need(u['role'] == 'finance' or is_board(u), 'ثبت پرداخت فقط توسط مالی یا هیات مدیره')
     if R['status'] == 'approved':
         try:
             amt = int(str(b.get('paid_amount') or R['amount']).replace(',', ''))
@@ -1704,6 +1734,7 @@ def api_project_update(h, c, u, b, q, pid):
         v = int(mem.get(key) or 0)
         if v:
             need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (v,)).fetchone(), 'کاربر «%s» نامعتبر است' % label, 400)
+            need_not_admin(c, v, label)
         if key == 'pm':
             sync_pm(c, pr['id'], v)
         elif v:
@@ -1716,6 +1747,7 @@ def api_project_update(h, c, u, b, q, pid):
             for v in (b['team'] or {}).get(key) or []:
                 v = int(v)
                 need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (v,)).fetchone(), 'کاربر «%s» نامعتبر است' % label, 400)
+                need_not_admin(c, v, label)
                 c.execute('INSERT OR REPLACE INTO project_team(project_id,user_id,role_key) VALUES(?,?,?)', (pr['id'], v, key))
     log(c, 'project', pr['id'], u['id'], 'ویرایش پروژه و ارکان', name)
     return {'ok': True}
@@ -1901,7 +1933,7 @@ def pur_fields(c, u, b, pid_fixed=None, req_date=None):
     pr = one(c.execute("SELECT * FROM projects WHERE id=? AND active=1 AND code!='HQ'", (pid,)))
     need(pr, 'پروژه را انتخاب کنید', 400)
     if not pid_fixed:
-        need(is_mgr(u) or is_member(c, u, pid), 'فقط ارکان پروژه «%s» می‌توانند برای آن درخواست کالا ثبت کنند' % pr['name'])
+        need(is_board(u) or is_member(c, u, pid), 'فقط ارکان پروژه «%s» می‌توانند برای آن درخواست کالا ثبت کنند' % pr['name'])
     unit = b.get('unit')
     need(unit in dict(UNITS), 'واحد درخواست‌کننده را انتخاب کنید', 400)
     cat = b.get('category') or ''
@@ -2140,9 +2172,9 @@ def can_edit(u, P):
 def can_cancel(c, u, P):
     if P['status'] not in ('open', 'returned') or P['stage'] not in CANCEL_STAGES:
         return False
-    if is_warehouse(c, u, P) and P['requester_id'] != u['id'] and not is_mgr(u):  # انباردار درخواست را لغو نمی‌کند
+    if is_warehouse(c, u, P) and P['requester_id'] != u['id'] and not is_board(u):  # انباردار درخواست را لغو نمی‌کند
         return False
-    return (P['holder_id'] == u['id'] or is_mgr(u)
+    return (P['holder_id'] == u['id'] or is_board(u)
             or (P['requester_id'] == u['id'] and P['stage'] in ('unit_approval', 'returned')))
 
 
@@ -2345,7 +2377,7 @@ def can_edit_grn(c, u, P):
 
 
 def is_finance(c, u):
-    return u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager') or u['role'] == 'admin'
+    return u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager')
 
 
 def move(c, u, P, stage, label, note='', status='open'):
@@ -2992,6 +3024,7 @@ def api_admin_project(h, c, u, b, q):
     need(is_mgr(u))
     need((b.get('name') or '').strip(), 'نام پروژه الزامی است', 400)
     mid = int(b['manager_id']) if b.get('manager_id') else None
+    need_not_admin(c, mid, 'مدیر پروژه')
     if b.get('id'):
         c.execute('UPDATE projects SET name=?,manager_id=?,active=? WHERE id=?',
                   (b['name'].strip(), mid, 1 if b.get('active', True) else 0, int(b['id'])))
@@ -3039,6 +3072,9 @@ def api_admin_settings(h, c, u, b, q):
         if k in b:
             need(str(b[k]).isdigit(), 'عدد نامعتبر در تنظیمات', 400)
             need(k != 'notify_interval' or int(b[k]) >= 15, 'فاصله بررسی اعلان حداقل ۱۵ ثانیه است', 400)
+    for k in HQ_SETTING_USERS:
+        if b.get(k):
+            need_not_admin(c, b[k], HQ_ROLES.get(k) or 'سمت گردش کار')
     for k in DEFAULT_SETTINGS:
         if k in b:
             c.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', (k, str(b[k]).replace(',', '')
