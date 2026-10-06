@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '3.4'
+VERSION = '3.5'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -97,6 +97,7 @@ P_FLOW = {
     # خرید دفتر مرکزی: همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود
     'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول و پرداخت مالی')},
     'delivery': {'recv_ok': (None, 'تأیید تحویل توسط تحویل‌گیرنده'), 'recv_bad': (None, 'تأیید مغایرت توسط تحویل‌گیرنده — برگشت به پشتیبانی'),
+                 'recv_partial': (None, 'تحویل بخشی — باقی‌مانده بعداً'),
                  'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
@@ -136,9 +137,9 @@ CANCEL_STAGES = EDIT_STAGES
 CATEGORIES = [('main', 'خرید از دفتر مرکزی'), ('general', 'خرید در کارگاه')]  # عنوان‌ها از نسخه ۳.۰
 URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
 # رویدادهای جانبی گردش که درخواست را جابه‌جا نمی‌کنند (پیوست، ویرایش، پرداخت، اصلاح اعلام وصول، فاکتور رسمی)
-SIDE_ACTIONS = ('attach', 'edit', 'delatt', 'pay_done', 'grn_edit', 'official_inv')
+SIDE_ACTIONS = ('attach', 'edit', 'delatt', 'pay_done', 'grn_edit', 'official_inv', 'receipt_partial', 'receipt_full')
 INV_KINDS = ('فاکتور', 'پیش‌فاکتور')
-ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
+ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'عکس وصول', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
 DEFAULT_CANCEL_REASONS = 'نیاز نیست\nبودجه تأمین نیست\nتکراری است\nزمان‌بندی اجازه نمی‌دهد\nسایر'
 P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل کامل از موجودی انبار',
             'closed': 'پایان یافت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
@@ -211,6 +212,16 @@ CREATE TABLE IF NOT EXISTS purchase_invoice_lines(id INTEGER PRIMARY KEY, invoic
 CREATE INDEX IF NOT EXISTS ix_pur_inv ON purchase_invoices(purchase_id);
 CREATE TABLE IF NOT EXISTS project_team(project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_key TEXT NOT NULL,
   PRIMARY KEY(project_id, user_id));
+CREATE TABLE IF NOT EXISTS purchase_receipts(
+  id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, seq INTEGER NOT NULL, code TEXT DEFAULT '',
+  status TEXT DEFAULT 'open',
+  wh_by INTEGER, wh_at TEXT, recv_by INTEGER, recv_at TEXT,
+  delivery_date TEXT DEFAULT '', delivery_ref TEXT DEFAULT '', note TEXT DEFAULT '', closed_at TEXT);
+CREATE INDEX IF NOT EXISTS ix_pur_rcpt ON purchase_receipts(purchase_id);
+CREATE TABLE IF NOT EXISTS purchase_receipt_lines(
+  id INTEGER PRIMARY KEY, receipt_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
+  wh_qty TEXT DEFAULT '', recv_qty TEXT DEFAULT '', disc_note TEXT DEFAULT '', diff_note TEXT DEFAULT '');
+CREATE INDEX IF NOT EXISTS ix_pur_rcpt_ln ON purchase_receipt_lines(receipt_id);
 CREATE TABLE IF NOT EXISTS purchase_versions(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, version INTEGER,
   data TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
 CREATE INDEX IF NOT EXISTS ix_pur_ver ON purchase_versions(purchase_id);
@@ -383,6 +394,8 @@ def init_db():
     migrate_v15(c)
     migrate_v16(c)
     migrate_v24(c)
+    purge_v35(c)
+    migrate_v33(c)
     # نام کامل دو مهندس دفتر فنی موادکاران (فقط اگر هنوز نام قبلی ثبت است)
     for un, old, new in (('mk-bajelani', 'خانم مهندس باجلانی', 'دینا باجلانی'),
                          ('mk-hosseini', 'خانم مهندس حسینی', 'سارینا حسینی')):
@@ -414,9 +427,11 @@ def add_columns(c):
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
                                ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''"),
-                               ('disc_note', "TEXT DEFAULT ''")],  # ۳.۰: مغایرت هر قلم در اعلام وصول
+                               ('disc_note', "TEXT DEFAULT ''"),
+                               ('wh_qty', "TEXT DEFAULT ''")],  # ۳.۵: جمع مقدار شمرده‌شده انبار در نوبت‌های بسته  # ۳.۰: مغایرت هر قلم در اعلام وصول
             'attachments': [('kind', "TEXT DEFAULT ''"), ('deleted_at', 'TEXT'), ('deleted_by', 'INTEGER'),
-                            ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0'), ('archived', 'INTEGER DEFAULT 0')],
+                            ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0'), ('archived', 'INTEGER DEFAULT 0'),
+                            ('receipt_id', 'INTEGER')],  # ۳.۵: عکس وصول هر نوبت اعلام وصول
             'letters': [('body', "TEXT DEFAULT ''"), ('signer_id', 'INTEGER'), ('signed_at', 'TEXT'),
                         ('sig_name', "TEXT DEFAULT ''"), ('sig_title', "TEXT DEFAULT ''"), ('sig_file', "TEXT DEFAULT ''"),
                         ('registered_at', 'TEXT'), ('main_to_id', 'INTEGER'), ('cc_text', "TEXT DEFAULT ''"),
@@ -449,6 +464,74 @@ def migrate(c):
         pid = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (name, '', mid)).lastrowid
         sync_pm(c, pid, mid)
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v12','1')")
+
+
+def migrate_v33(c):
+    """CR-PUR-02: نوبت‌های اعلام وصول برای درخواست‌های موجود (یک بار)."""
+    if settings(c).get('mig_v33'):
+        return
+    for P in rows(c.execute("SELECT * FROM purchases")):
+        if c.execute('SELECT 1 FROM purchase_receipts WHERE purchase_id=?', (P['id'],)).fetchone():
+            continue
+        its = rows(c.execute("SELECT * FROM purchase_items WHERE purchase_id=? AND bought_status IN ('bought','partial')",
+                             (P['id'],)))
+        if P['grn_no'] and P['recv_at'] and P['wh_at']:  # اعلام وصول صادرشده: یک نوبت بسته
+            rid = c.execute("INSERT INTO purchase_receipts(purchase_id,seq,code,status,wh_by,wh_at,recv_by,recv_at,note,closed_at) "
+                            "VALUES(?,1,?,'closed',?,?,?,?,?,?)",
+                            (P['id'], P['grn_no'], P['wh_by'], P['wh_at'], P['recv_by'], P['recv_at'],
+                             'مهاجرت از نسخه ۳.۲؛ مقدار انبار و تحویل‌گیرنده جدا ثبت نشده بود',
+                             max(P['wh_at'], P['recv_at']))).lastrowid
+            for it in its:
+                c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id,wh_qty,recv_qty) VALUES(?,?,?,?)',
+                          (rid, it['id'], it['recv_qty'] or '', it['recv_qty'] or ''))
+                c.execute('UPDATE purchase_items SET wh_qty=recv_qty WHERE id=?', (it['id'],))
+        elif P['stage'] == 'delivery' and P['status'] == 'open' and P['wh_at'] and not P['recv_at']:  # انبار تأیید کرده
+            rid = c.execute("INSERT INTO purchase_receipts(purchase_id,seq,status,wh_by,wh_at) VALUES(?,1,'open',?,?)",
+                            (P['id'], P['wh_by'], P['wh_at'])).lastrowid
+            for it in its:
+                c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id,wh_qty,recv_qty,disc_note) VALUES(?,?,?,?,?)',
+                          (rid, it['id'], it['recv_qty'] or '', '', it['disc_note'] or ''))
+                c.execute("UPDATE purchase_items SET recv_qty='' WHERE id=?", (it['id'],))
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v33','1')")
+
+
+PURGE_TABLES = ('purchase_receipt_lines', 'purchase_receipts', 'purchase_invoice_lines', 'purchase_invoices',
+                'purchase_payments', 'purchase_versions', 'purchase_flow', 'purchase_items', 'purchases', 'letters')
+
+
+def purge_v35(c):
+    """نسخه ۳.۵ (درخواست کاربر): پاک کردن یک‌باره همه مکاتبات و درخواست‌های کالا برای شروع کار واقعی.
+    کاربران، پروژه‌ها و ارکان، تنظیمات، سربرگ‌ها و کلیشه‌های امضا و درخواست‌های مالی دست نمی‌خورند.
+    پیش از پاک کردن، از پایگاه داده نسخه پشتیبان کامل گرفته و فایل‌های پیوست به پوشه پشتیبان منتقل می‌شوند."""
+    if settings(c).get('purge_v35'):
+        return
+    has = c.execute('SELECT (SELECT COUNT(*) FROM letters)+(SELECT COUNT(*) FROM purchases)').fetchone()[0]
+    if has:
+        stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+        keep = os.path.join(BACK, 'pre-v35-purge-' + stamp)
+        os.makedirs(keep, exist_ok=True)
+        c.commit()
+        bk = sqlite3.connect(os.path.join(keep, 'oa.db'))  # پشتیبان کامل پایگاه داده پیش از پاک کردن
+        c.backup(bk); bk.close()
+        for a in rows(c.execute("SELECT path FROM attachments WHERE doc_type IN ('letter','purchase')")):
+            src = os.path.join(FILES, a['path'])
+            if a['path'] and os.path.isfile(src):
+                dst = os.path.join(keep, 'files', a['path'])
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(src, dst)
+        for sub in (PUR_DIR, SIG_COPY_DIR):  # پوشه پیوست‌های درخواست کالا و کلیشه‌های امضای نامه‌ها
+            src = os.path.join(FILES, sub)
+            if os.path.isdir(src):
+                shutil.move(src, os.path.join(keep, 'files', sub))
+        c.execute("DELETE FROM referrals WHERE doc_type IN ('letter','purchase')")
+        c.execute("DELETE FROM attachments WHERE doc_type IN ('letter','purchase')")
+        c.execute("DELETE FROM log WHERE doc_type IN ('letter','purchase')")
+        for t in PURGE_TABLES:
+            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone():
+                c.execute('DELETE FROM %s' % t)
+        c.execute("DELETE FROM doc_serials WHERE dtype IN ('MR','PO','GRN','PAY')")  # شماره‌ها از نو (MR-0001)
+        log(c, 'admin', 0, None, 'پاک کردن سوابق مکاتبات و درخواست‌های کالا (نسخه ۳.۵)', 'پشتیبان: ' + keep)
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('purge_v35','1')")
 
 
 def migrate_v24(c):
@@ -1378,6 +1461,9 @@ def can_del_att(c, u, P, a):
     """پیوست را فقط خودِ بارگذارنده حذف می‌کند، آن هم فقط در همان نوبتی که درخواست در کارتابلش است."""
     if a['uploaded_by'] != u['id'] or (a.get('flow_id') or 0) <= handover_id(c, P):
         return False
+    if a.get('receipt_id') and c.execute("SELECT 1 FROM purchase_receipts WHERE id=? AND status='closed'",
+                                         (a['receipt_id'],)).fetchone():
+        return False  # عکس وصول نوبت صادرشده قفل است
     if P['holder_id'] == u['id'] and P['status'] in ('open', 'returned'):
         return True
     return a.get('kind') in INV_KINDS and post_purchase_support(c, u, P)  # فاکتوری که پشتیبانی پس از خرید گذاشته
@@ -1423,8 +1509,11 @@ def api_attach(h, c, u, b, q):
     # مدارک قیمت برای کارگاه دیده نمی‌شود؛ فاکتور خرید دفتر مرکزی هم که پس از خرید پیوست شود
     hq_only = 1 if dt == 'purchase' and (D['stage'] in HQ_ONLY_STAGES or (
         kind in INV_KINDS and not site_path(c, D) and is_bought(c, D))) else 0
-    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id,hq_only) '
-              'VALUES(?,?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid, hq_only))
+    rid = None
+    if dt == 'purchase' and kind == 'عکس وصول' and D['stage'] == 'delivery':  # عکس وصول به نوبت باز تعلق دارد
+        rid, hq_only = open_receipt(c, D)['id'], 0
+    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id,hq_only,receipt_id) '
+              'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid, hq_only, rid))
     log(c, dt, did, u['id'], 'پیوست' + (' — ' + kind if kind else ''), name)
     return {'ok': True}
 
@@ -1949,9 +2038,16 @@ PUR_CSV_HEAD = ['شماره', 'تاریخ', 'پروژه', 'واحد درخواس
                 'تاریخ نیاز', 'جهت استفاده', 'درخواست‌کننده', 'نسخه',
                 'سفارش خرید', 'اعلام وصول', 'ردیف',
                 'شرح کالا', 'مقدار', 'واحد', 'مشخصات فنی', 'توضیحات', 'تحویل از انبار', 'مانده برای خرید',
-                'مقدار خریداری‌شده', 'واحد خرید', 'وضعیت خرید', 'توضیح خرید', 'مقدار تحویل‌گرفته',
+                'مقدار خریداری‌شده', 'واحد خرید', 'وضعیت خرید', 'توضیح خرید', 'مقدار تحویل‌گرفته', 'مقدار انبار',
                 'وضعیت', 'مرحله', 'در دست', 'جمع پرداخت (ریال)',
                 'کد بایگانی', 'علت لغو']
+
+
+def grn_codes(c, P):
+    """همه کدهای اعلام وصول درخواست (هر نوبت یک کد)."""
+    cs = [r[0] for r in c.execute("SELECT code FROM purchase_receipts WHERE purchase_id=? AND status='closed' ORDER BY seq",
+                                  (P['id'],))]
+    return '، '.join(cs) or (P['grn_no'] or '')
 
 
 def pur_csv(c, lst, fname):
@@ -1964,11 +2060,11 @@ def pur_csv(c, lst, fname):
             wr.writerow([P['number'], P['req_date'], P['project'] or '', units.get(P['unit'], ''),
                          P['warehouse'], cats.get(P['category'], ''), urgs.get(P['urgency'], ''), P['need_date'],
                          P['purpose'], P['requester'] or '', P['version'],
-                         P['po_no'] or '', P['grn_no'] or '', it.get('row_no', ''), it.get('title', ''),
+                         P['po_no'] or '', grn_codes(c, P), it.get('row_no', ''), it.get('title', ''),
                          it.get('qty', ''), it.get('unit', ''), it.get('spec', ''), it.get('note', ''),
                          it.get('stock_qty', ''), fmt_num(remaining(it)) if it else '', it.get('bought_qty', ''),
                          it.get('bought_unit', ''), BUY_STATUS.get(it.get('bought_status') or '', ''), it.get('bought_note', ''),
-                         it.get('recv_qty', ''),
+                         it.get('recv_qty', ''), it.get('wh_qty', ''),
                          P_STATUS.get(P['status'], P['status']), P_STAGES.get(P['stage'], P['stage']), P['holder'] or '',
                          P['paid_amount'] or '',
                          P['archive_code'], (P['cancel_reason'] or '') + (' — ' + P['cancel_note'] if P['cancel_note'] else '')])
@@ -2078,6 +2174,13 @@ def api_purchase_get(h, c, u, b, q, pid):
                 mgmt.append(dict(f, note=txt))
     for it in items:
         it['remaining'] = fmt_num(remaining(it))
+        it['remaining_receive'] = fmt_num(remaining_receive(c, it))
+    receipts = rows(c.execute('SELECT r.*, w.full_name wh_name, v.full_name recv_name FROM purchase_receipts r '
+                              'LEFT JOIN users w ON w.id=r.wh_by LEFT JOIN users v ON v.id=r.recv_by '
+                              'WHERE r.purchase_id=? ORDER BY r.seq', (P['id'],)))
+    for R in receipts:
+        R['lines'] = rows(c.execute('SELECT l.*, i.title, i.unit, i.spec, i.bought_qty, i.bought_unit FROM purchase_receipt_lines l '
+                                    'JOIN purchase_items i ON i.id=l.item_id WHERE l.receipt_id=? ORDER BY i.row_no', (R['id'],)))
     bought = is_bought(c, P)
     fin = is_finance(c, u) and not site
     mem = pmembers(c, P['project_id'])
@@ -2087,7 +2190,7 @@ def api_purchase_get(h, c, u, b, q, pid):
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
             'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in allowed_actions(c, u, P) else [],
             'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
-            'buy_status': BUY_STATUS, 'site_view': site, 'can_edit_grn': can_edit_grn(c, u, P),
+            'buy_status': BUY_STATUS, 'site_view': site, 'receipts': receipts, 'jtoday': jtoday(), 'can_edit_grn': can_edit_grn(c, u, P),
             'support_attach': not can_attach_turn(c, u, P) and post_purchase_support(c, u, P),
             'can_pay': fin and bool(P['pay_req_at']) and not P['pay_done_at'] and P['status'] not in ('cancelled', 'rejected'),
             'can_official': fin and bool(P['docs_at']) and not P['official_inv'],
@@ -2100,6 +2203,26 @@ def site_view(c, u, P):
         'SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND stage IN (%s) AND action NOT IN (%s)' % (
             ','.join('?' * len(HQ_ONLY_STAGES)), ','.join('?' * len(SIDE_ACTIONS))),
         (P['id'], u['id']) + HQ_ONLY_STAGES + SIDE_ACTIONS).fetchone())
+
+
+purchase_site_view = site_view  # نام سند CR-PUR-02
+
+
+def file_payload(c, u, aid, q):
+    """فایل پیوست با بررسی دسترسی: دیدن سند، پیوست حذف‌شده و مدارک قیمت دفتر مرکزی (CHG-00)."""
+    need(u, 'ابتدا وارد شوید', 401)
+    a = one(c.execute('SELECT * FROM attachments WHERE id=?', (aid,)))
+    need(a, 'فایل پیدا نشد', 404)
+    D = get_doc(c, u, a['doc_type'], a['doc_id'])
+    if a['deleted_at'] and u['role'] != 'admin':
+        raise ApiError('فایل پیدا نشد', 404)
+    if a['doc_type'] == 'purchase' and a['hq_only']:
+        need(not purchase_site_view(c, u, D), 'این پیوست فقط برای دفتر مرکزی است')
+    with open(os.path.join(FILES, a['path']), 'rb') as f:
+        data = f.read()
+    ct = mimetypes.guess_type(a['name'])[0] or 'application/octet-stream'
+    disp = 'inline' if ('dl' not in q) else 'attachment'
+    return data, ct, {'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(a['name']))}
 
 
 def is_warehouse(c, u, P):
@@ -2117,7 +2240,7 @@ def allowed_actions(c, u, P):
         if is_warehouse(c, u, P) and not P['wh_at']:
             out += ['wh_ok', 'wh_bad']
         if u['id'] == P['requester_id'] and not P['recv_at'] and (P['wh_at'] or not wh):  # پس از انبار
-            out += ['recv_ok', 'recv_bad']
+            out += ['recv_ok', 'recv_bad', 'recv_partial']
         return out
     if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
         return acts if in_group(c, u, P) else []
@@ -2197,13 +2320,8 @@ def api_purchase_handover(h, c, u, b, q, pid):
 
 
 def can_edit_grn(c, u, P):
-    """ویرایش اعلام وصول (مقدار تحویل‌گرفته) با تحویل‌گیرنده و انباردار، پس از خرید و تا پیش از کنترل مدارک مالی."""
-    if P['status'] not in ('open', 'closed') or P['stage'] not in ('delivery', 'finance_settle', 'invoice_fix',
-                                                                   'discrepancy', 'done') or P['docs_at']:
-        return False
-    if not is_bought(c, P):
-        return False
-    return u['id'] == P['requester_id'] or is_warehouse(c, u, P) or u['role'] == 'admin'
+    """نسخه ۳.۵: اعلام وصول پس از صدور برای هیچ‌کس قابل تغییر نیست (برای سازگاری نگه داشته شده است)."""
+    return False
 
 
 def is_finance(c, u):
@@ -2219,6 +2337,77 @@ def move(c, u, P, stage, label, note='', status='open'):
     c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
               (status, stage, holder, now() if stage == 'done' else None, P['id']))
     pflow(c, P['id'], u, P['stage'], label[0], label[1], note)
+
+
+# ---------- نوبت‌های اعلام وصول (نسخه ۳.۵): مقدار جدای انباردار و تحویل‌گیرنده، تحویل بخشی، قفل پس از صدور
+def received_sum(c, item_id):
+    """جمع مقدار تحویل‌گرفته یک قلم در نوبت‌های بسته‌شده."""
+    return sum(to_num(r[0]) or 0 for r in c.execute(
+        "SELECT l.recv_qty FROM purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id "
+        "WHERE l.item_id=? AND r.status='closed'", (item_id,)))
+
+
+def remaining_receive(c, it):
+    """باقی‌مانده برای وصول = خریداری‌شده − تحویل‌شده؛ قلمی که «پذیرش با توضیح» خورده کامل است."""
+    if (it.get('bought_status') or '') not in ('bought', 'partial'):
+        return 0.0
+    if c.execute("SELECT 1 FROM purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id "
+                 "WHERE l.item_id=? AND r.status='closed' AND l.diff_note!=''", (it['id'],)).fetchone():
+        return 0.0
+    return max(0.0, (to_num(it.get('bought_qty')) or 0) - received_sum(c, it['id']))
+
+
+def closed_receipts(c, pid):
+    return rows(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='closed' ORDER BY seq", (pid,)))
+
+
+def open_receipt(c, P, create=True):
+    """نوبت باز اعلام وصول؛ خطوطش با اقلامی که باقی‌مانده دارند هماهنگ می‌شود."""
+    R = one(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],)))
+    if not R:
+        if not create:
+            return None
+        seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchase_receipts WHERE purchase_id=?', (P['id'],)).fetchone()[0]
+        c.execute('INSERT INTO purchase_receipts(purchase_id,seq) VALUES(?,?)', (P['id'], seq))
+        R = one(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],)))
+    have = {r[0] for r in c.execute('SELECT item_id FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],))}
+    for it in rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],))):
+        left = remaining_receive(c, it)
+        if left > 0 and it['id'] not in have:
+            c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id) VALUES(?,?)', (R['id'], it['id']))
+        elif left <= 0 and it['id'] in have:
+            c.execute('DELETE FROM purchase_receipt_lines WHERE receipt_id=? AND item_id=?', (R['id'], it['id']))
+    return R
+
+
+def refresh_item_totals(c, pid):
+    """جمع تجمعی مقدار انبار و تحویل‌گیرنده در اقلام (برای فرم چاپی و CSV)."""
+    for it in rows(c.execute('SELECT id FROM purchase_items WHERE purchase_id=?', (pid,))):
+        ls = rows(c.execute("SELECT l.wh_qty, l.recv_qty FROM purchase_receipt_lines l JOIN purchase_receipts r "
+                            "ON r.id=l.receipt_id WHERE l.item_id=? AND r.status='closed'", (it['id'],)))
+        c.execute('UPDATE purchase_items SET recv_qty=?, wh_qty=? WHERE id=?',
+                  (fmt_num(sum(to_num(x['recv_qty']) or 0 for x in ls)) if ls else '',
+                   fmt_num(sum(to_num(x['wh_qty']) or 0 for x in ls)) if ls else '', it['id']))
+
+
+def close_receipt(c, u, P, R, kind):
+    """بستن نوبت: کد GRN (اولین نوبت کد درخواست را می‌سازد؛ با دومین نوبت، کدها /1، /2، ... می‌شوند)."""
+    grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
+    c.execute('UPDATE purchases SET grn_no=? WHERE id=?', (grn, P['id']))
+    prev = closed_receipts(c, P['id'])
+    code = grn if not prev else '%s/%d' % (grn, len(prev) + 1)
+    if len(prev) == 1 and prev[0]['code'] == grn:  # تنها تغییر مجاز روی نوبت بسته: برچسب
+        c.execute('UPDATE purchase_receipts SET code=? WHERE id=?', ('%s/1' % grn, prev[0]['id']))
+    c.execute("UPDATE purchase_receipts SET status='closed', closed_at=?, code=?, recv_by=?, recv_at=? WHERE id=?",
+              (now(), code, u['id'], now(), R['id']))
+    refresh_item_totals(c, P['id'])
+    pflow(c, P['id'], u, P['stage'], 'receipt_' + kind, 'اعلام وصول %s' % code,
+          'تحویل بخشی — باقی‌مانده بعداً' if kind == 'partial' else 'تحویل کامل')
+    return grn, code
+
+
+def has_closed_receipt(c, pid):
+    return c.execute("SELECT 1 FROM purchase_receipts WHERE purchase_id=? AND status='closed'", (pid,)).fetchone() is not None
 
 
 def delivery_holder(c, P):
@@ -2309,6 +2498,9 @@ def api_purchase_act(h, c, u, b, q, pid):
             if stt != 'none':
                 need(bq and bq > 0, 'مقدار خریداری‌شده «%s» را وارد کنید' % it['title'], 400)
             need(stt == 'bought' or (x.get('note') or '').strip(), 'برای «%s» علت خرید ناقص یا نشدن را بنویسید' % it['title'], 400)
+            rs = received_sum(c, it['id'])  # نوبت‌های بسته‌شده هرگز تغییر نمی‌کنند
+            need(((bq or 0) if stt != 'none' else 0) >= rs - 1e-9,
+                 'مقدار خریداری‌شده «%s» از مقدار تحویل‌شده (%s) کمتر است' % (it['title'], fmt_num(rs)), 400)
             c.execute('UPDATE purchase_items SET bought_qty=?, bought_unit=?, bought_status=?, bought_note=? WHERE id=?',
                       (fmt_num(bq) if stt != 'none' else '0', (x.get('unit') or it['unit'] or '').strip(), stt,
                        (x.get('note') or '').strip(), it['id']))
@@ -2319,57 +2511,109 @@ def api_purchase_act(h, c, u, b, q, pid):
             notes.append('همزمان برای پرداخت به امور مالی ارسال شد')
         c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
         c.execute("UPDATE purchase_items SET disc_note='' WHERE purchase_id=?", (P['id'],))  # مغایرت رفع شد
-    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad'):
-        # نسخه ۳.۰: انباردار و تحویل‌گیرنده هر دو مقدار تحویل‌گرفته را ثبت می‌کنند؛ مغایرت برای هر قلم جدا
-        who = 'انباردار' if a.startswith('wh') else 'تحویل‌گیرنده'
-        bad = []
-        for it in its:
-            x = posted.get(it['id'])
-            if x is None:
-                continue
+        c.execute("UPDATE purchase_receipt_lines SET disc_note='' WHERE receipt_id IN "
+                  "(SELECT id FROM purchase_receipts WHERE purchase_id=? AND status='open')", (P['id'],))
+        its2 = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))
+        last = closed_receipts(c, P['id'])
+        if last and all(remaining_receive(c, it) <= 0 for it in its2):
+            # کسری با کاهش مقدار خریداری‌شده بسته شد: همه اقلام پیش‌تر تحویل شده‌اند؛ تکمیل بدون نوبت تازه
+            c.execute("DELETE FROM purchase_receipt_lines WHERE receipt_id IN (SELECT id FROM purchase_receipts "
+                      "WHERE purchase_id=? AND status='open')", (P['id'],))
+            c.execute("DELETE FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],))
+            L = last[-1]
+            c.execute('UPDATE purchases SET recv_by=?, recv_at=?, wh_by=?, wh_at=? WHERE id=?',
+                      (L['recv_by'], L['recv_at'], L['wh_by'], L['wh_at'], P['id']))
+            P = dict(P, recv_at=L['recv_at'], wh_at=L['wh_at'])
+            nxt = after_delivery(c, P)
+            notes.append('همه اقلام پیش‌تر تحویل شده‌اند — اعلام وصول کامل شد (%s)' % '، '.join(r['code'] for r in last))
+    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad', 'recv_partial'):
+        # نسخه ۳.۵: هر نوبت اعلام وصول مقدار انباردار و تحویل‌گیرنده را جدا نگه می‌دارد؛ تفاوت با باقی‌مانده
+        # خرید باید «مغایرت»، «پذیرش با توضیح» یا (برای تحویل‌گیرنده) «تحویل بخشی» باشد
+        wh_act = a.startswith('wh')
+        who = 'انباردار' if wh_act else 'تحویل‌گیرنده'
+        R = open_receipt(c, P)
+        itm = {it['id']: it for it in its}
+        lines = rows(c.execute('SELECT * FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],)))
+        need(lines, 'قلمی برای اعلام وصول باقی نمانده است', 400)
+        bad, short = [], []
+        for ln in lines:
+            it, x = itm[ln['item_id']], posted.get(ln['item_id']) or {}
+            left = remaining_receive(c, it)
             if x.get('qty') not in (None, ''):
-                c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(to_num(x.get('qty'))), it['id']))
+                qv = to_num(x.get('qty'))
+            elif not wh_act and ln['wh_qty'] != '':
+                qv = to_num(ln['wh_qty'])
+            else:
+                qv = left
+            need(qv is not None and qv >= 0, 'مقدار «%s» باید عدد باشد' % it['title'], 400)
+            upd = {'wh_qty' if wh_act else 'recv_qty': fmt_num(qv)}
             if x.get('bad'):
                 dn_ = (x.get('note') or '').strip()
                 need(dn_, 'علت مغایرت «%s» را بنویسید' % it['title'], 400)
                 # مغایرت انبار که تحویل‌گیرنده تأیید کرده، با همان متن می‌ماند
-                dn_ = it['disc_note'] + ' — تأیید تحویل‌گیرنده' if dn_ == it['disc_note'] else '%s: %s' % (who, dn_)
-                c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', (dn_, it['id']))
+                dn_ = ln['disc_note'] + ' — تأیید تحویل‌گیرنده' if ln['disc_note'] and dn_ == ln['disc_note'] \
+                    else '%s: %s' % (who, dn_)
+                upd['disc_note'] = dn_
                 bad.append('%s (%s)' % (it['title'], dn_))
+            else:
+                upd['disc_note'] = ''
+                if abs(qv - left) > 1e-9:
+                    dfn = (x.get('diff_note') or '').strip()
+                    if x.get('diff_ok'):
+                        need(dfn, 'توضیح «پذیرش با توضیح» برای «%s» را بنویسید' % it['title'], 400)
+                        upd['diff_note'] = '%s: %s' % (who, dfn)
+                    elif not wh_act and ln['diff_note'] and ln['wh_qty'] != '' and abs(qv - (to_num(ln['wh_qty']) or 0)) < 1e-9:
+                        pass  # همان مقدار انباردار که با توضیح پذیرفته شده بود
+                    elif a == 'recv_partial' and qv < left:
+                        short.append('%s: %s از %s' % (it['title'], fmt_num(qv), fmt_num(left)))
+                    else:
+                        need(a != 'recv_partial', 'در تحویل بخشی مقدار «%s» نمی‌تواند از باقی‌مانده (%s) بیشتر باشد'
+                             % (it['title'], fmt_num(left)), 400)
+                        raise ApiError('مقدار «%s» با باقی‌مانده خرید (%s %s) برابر نیست؛ «مغایرت» یا «پذیرش با توضیح» را بزنید'
+                                       % (it['title'], fmt_num(left), it['bought_unit'] or it['unit']), 400)
+                elif not wh_act:
+                    upd['diff_note'] = ''  # تحویل‌گیرنده کامل گرفت؛ تفاوت انبار دیگر معنا ندارد
+            c.execute('UPDATE purchase_receipt_lines SET %s WHERE id=?' % ', '.join('%s=?' % k for k in upd),
+                      tuple(upd.values()) + (ln['id'],))
+            c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', (upd['disc_note'], it['id']))
         if a.endswith('_bad'):
             need(bad, 'برای هر قلمی که مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید', 400)
         else:
             need(not bad, 'قلم دارای مغایرت انتخاب شده؛ «ثبت مغایرت» را بزنید', 400)
-        if a == 'recv_ok':  # تحویل‌گیرنده مغایرت اعلام‌شده انبار را رفع کرد (یا مغایرتی نبود)
-            old = [i['title'] for i in its if i['disc_note']]
-            if old:
-                notes.append('مغایرت اعلام‌شده انبار توسط تحویل‌گیرنده رفع شد: ' + '، '.join(old))
-            c.execute("UPDATE purchase_items SET disc_note='' WHERE purchase_id=?", (P['id'],))
-            c.execute('UPDATE purchases SET recv_by=?, recv_at=? WHERE id=?', (u['id'], now(), P['id']))
-            P = dict(P, recv_at=now())
-        elif a == 'wh_bad':  # نسخه ۳.۱: مغایرت انبار به پشتیبانی نمی‌رود؛ تحویل‌گیرنده آن را رفع یا تأیید می‌کند
+        if a == 'recv_partial':
+            need(short, 'برای «تحویل بخشی» دست‌کم یک قلم باید کمتر از باقی‌مانده تحویل شود', 400)
+        if wh_act:  # انبار (تأیید یا مغایرت) ← تحویل‌گیرنده
+            dd = need_jdate(b.get('delivery_date'), 'تاریخ تحویل', required=False, max_=jtoday(),
+                            max_msg='تاریخ تحویل نمی‌تواند بعد از امروز باشد')
+            ref = (b.get('delivery_ref') or '').strip()
+            need(len(ref) <= 60, 'شماره حواله یا بارنامه حداکثر ۶۰ نویسه است', 400)
+            c.execute("UPDATE purchase_receipts SET wh_by=?, wh_at=?, delivery_date=?, delivery_ref=?, note='' WHERE id=?",
+                      (u['id'], now(), dd, ref, R['id']))
             c.execute('UPDATE purchases SET wh_by=?, wh_at=?, holder_id=? WHERE id=?', (u['id'], now(), P['requester_id'], P['id']))
-            pflow(c, P['id'], u, P['stage'], a, label + ' — ارسال به تحویل‌گیرنده برای رفع یا تأیید مغایرت',
-                  '؛ '.join(['مغایرت ' + '؛ '.join(bad)] + ([note] if note else [])))
+            pflow(c, P['id'], u, P['stage'], a, label + (' — ارسال به تحویل‌گیرنده برای رفع یا تأیید مغایرت' if bad
+                                                          else ' — ارسال به تحویل‌گیرنده'),
+                  '؛ '.join((['مغایرت ' + '؛ '.join(bad)] if bad else []) + ([note] if note else [])))
             return {'ok': True}
-        elif a == 'wh_ok':
-            c.execute('UPDATE purchases SET wh_by=?, wh_at=? WHERE id=?', (u['id'], now(), P['id']))
-            P = dict(P, wh_at=now())
-        if a.endswith('_bad'):  # مغایرت: برمی‌گردد به پشتیبانی برای اقدام اصلاحی؛ کار تا رفع مغایرت باز می‌ماند
+        if a == 'recv_bad':  # مغایرت تأیید شد: برگشت به پشتیبانی خریدار؛ نوبت باز با خطوطش می‌ماند
+            c.execute("UPDATE purchase_receipts SET note='مغایرت' WHERE id=?", (R['id'],))
             c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
             nxt = purchase_stage_of(c, P)
             notes.append('مغایرت ' + '؛ '.join(bad))
-        elif P['recv_at'] and P['wh_at']:  # رسید تحویل کالا صادر می‌شود
+        elif a == 'recv_partial':  # نوبت بسته؛ درخواست در اعلام وصول می‌ماند و برای باقی‌مانده به انبار برمی‌گردد
+            grn, code = close_receipt(c, u, P, R, 'partial')
+            c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL, holder_id=? WHERE id=?',
+                      (delivery_holder(c, P), P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s؛ باقی‌مانده به انبار' % code,
+                  '؛ '.join(['کسری: ' + '، '.join(short)] + ([note] if note else [])))
+            return {'ok': True}
+        else:  # recv_ok: نوبت بسته و چون همه اقلام کامل شده‌اند، اعلام وصول درخواست کامل است
+            grn, code = close_receipt(c, u, P, R, 'full')
+            c.execute('UPDATE purchases SET recv_by=?, recv_at=? WHERE id=?', (u['id'], now(), P['id']))
+            P = dict(P, recv_at=now(), grn_no=grn)
             nxt = after_delivery(c, P)
-            grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
-            c.execute('UPDATE purchases SET grn_no=? WHERE id=?', (grn, P['id']))
-            notes.append('اعلام وصول کامل شد (تحویل‌گیرنده و انباردار) — %s' % grn)
+            notes.append('اعلام وصول کامل شد (تحویل‌گیرنده و انباردار) — %s' % code)
             if nxt == 'done':
                 notes.append('پایان و بایگانی خودکار')
-        else:  # انبار تأیید کرد ← به تحویل‌گیرنده
-            c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (P['requester_id'], P['id']))
-            pflow(c, P['id'], u, P['stage'], a, label + ' — ارسال به تحویل‌گیرنده', note)
-            return {'ok': True}
     elif a == 'docs_ok':  # امور مالی: کنترل مدارک؛ پرداخت و تسویه در سامانه نیست
         # فاکتور رسمی و مدارک ارزش افزوده یک مدرک‌اند (نسخه ۲.۶)
         oi = str(b.get('official_inv', ''))
@@ -2393,6 +2637,8 @@ def api_purchase_act(h, c, u, b, q, pid):
 def api_purchase_edit(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
     need(can_edit(u, P), 'ویرایش فقط وقتی ممکن است که درخواست در کارتابل شما باشد، و فقط تا مرحله مدیر پروژه')
+    # ویرایش اقلام را حذف و دوباره درج می‌کند و مقدارهای وصول را از بین می‌برد؛ حتی برای مدیر سیستم بسته است
+    need(not has_closed_receipt(c, P['id']), 'درخواستی که اعلام وصول دارد قابل ویرایش نیست')
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'], req_date=P['req_date'])
     write_fields(c, P['id'], f, items)
     note = (b.get('note') or '').strip()
@@ -2438,9 +2684,9 @@ def api_purchase_cancel(h, c, u, b, q, pid):
 
 @route('POST', r'/api/purchases/(\d+)/receipt')
 def api_purchase_receipt(h, c, u, b, q, pid):
-    """ویرایش اعلام وصول: مقدار تحویل‌گرفته هر قلم، توسط تحویل‌گیرنده یا انباردار."""
+    """ویرایش اعلام وصول: از نسخه ۳.۵ بسته است (اعلام وصول پس از صدور قابل تغییر نیست)."""
     P = get_doc(c, u, 'purchase', int(pid))
-    need(can_edit_grn(c, u, P), 'ویرایش اعلام وصول فقط با تحویل‌گیرنده و انباردار و تا پیش از کنترل مدارک مالی است')
+    raise ApiError('اعلام وصول پس از صدور قابل تغییر نیست', 403)
     posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
     ch = []
     for it in rows(c.execute("SELECT * FROM purchase_items WHERE purchase_id=? AND bought_status IN ('bought','partial') "
@@ -2814,11 +3060,14 @@ def api_admin_doc_delete(h, c, u, b, q, dt, did):
     tbl = {'letter': 'letters', 'purchase': 'purchases', 'request': 'requests'}[dt]
     D = one(c.execute('SELECT * FROM %s WHERE id=?' % tbl, (did,)))
     need(D, 'سند پیدا نشد', 404)
+    need(dt != 'purchase' or not has_closed_receipt(c, did), 'درخواستی که اعلام وصول صادرشده دارد حذف نمی‌شود')
     c.execute('DELETE FROM referrals WHERE doc_type=? AND doc_id=?', (dt, did))
     c.execute('DELETE FROM attachments WHERE doc_type=? AND doc_id=?', (dt, did))  # فایل‌ها در پوشه data\files می‌مانند
     if dt == 'purchase':
         for t in ('purchase_items', 'purchase_flow', 'purchase_versions', 'purchase_payments'):
             c.execute('DELETE FROM %s WHERE purchase_id=?' % t, (did,))
+        c.execute('DELETE FROM purchase_receipt_lines WHERE receipt_id IN (SELECT id FROM purchase_receipts WHERE purchase_id=?)', (did,))
+        c.execute('DELETE FROM purchase_receipts WHERE purchase_id=?', (did,))
         c.execute('DELETE FROM purchase_invoice_lines WHERE invoice_id IN (SELECT id FROM purchase_invoices WHERE purchase_id=?)', (did,))
         c.execute('DELETE FROM purchase_invoices WHERE purchase_id=?', (did,))
     if dt == 'request':
@@ -3488,20 +3737,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps(notify_count(c, self.headers.get('X-Notify-Token') or q.get('t'), u)))
             m = re.match(r'^/files/(\d+)$', path)
             if m and method == 'GET':
-                need(u, 'ابتدا وارد شوید', 401)
-                a = one(c.execute('SELECT * FROM attachments WHERE id=?', (int(m.group(1)),)))
-                need(a, 'فایل پیدا نشد', 404)
-                D = get_doc(c, u, a['doc_type'], a['doc_id'])
-                # همان قاعده صفحه درخواست: پیوست حذف‌شده فقط برای مدیر سیستم، مدارک قیمت دفتر مرکزی نه برای کارگاه
-                need(not a['deleted_at'] or u['role'] == 'admin', 'فایل پیدا نشد', 404)
-                need(not (a['doc_type'] == 'purchase' and a['hq_only'] and site_view(c, u, D)),
-                     'این مدرک برای کارکنان کارگاه نمایش داده نمی‌شود', 403)
-                with open(os.path.join(FILES, a['path']), 'rb') as f:
-                    data = f.read()
-                ct = mimetypes.guess_type(a['name'])[0] or 'application/octet-stream'
-                disp = 'inline' if ('dl' not in q) else 'attachment'
-                return self.send(200, data, ct, {'Content-Disposition': "%s; filename*=UTF-8''%s" %
-                                                 (disp, urllib.parse.quote(a['name']))})
+                data, ct, hdr = file_payload(c, u, int(m.group(1)), q)
+                return self.send(200, data, ct, hdr)
             n = int(self.headers.get('Content-Length') or 0)
             need(n <= MAX_UPLOAD, 'حجم فایل بیش از حد مجاز است', 413)
             raw = self.rfile.read(n) if n else b''

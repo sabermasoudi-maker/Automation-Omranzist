@@ -182,7 +182,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='3.4'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='3.5'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -698,20 +698,24 @@ function purSheet(P,items,edit,flow,d){
   ${note?`<div class="mut" style="margin-top:4px">${note}</div>`:''}
   ${edit?`<div class="noprint" style="margin-top:6px"><button class="btn l sm" onclick="addPurRow()">+ ردیف</button></div><datalist id="purUnits">${PUR_UNITS.map(u=>`<option value="${u}">`).join('')}</datalist>`:''}
   <table class="sign"><tr><td><label>درخواست کننده:</label>${P.unit?'واحد '+e(unitName(P.unit)):''}${sig(['draft','returned']).replace('<div class="sg">','<div class="sg">تنظیم: ')||`<div class="sg">تنظیم: ${e(P.requester||M.me.full_name)}</div>`}${headSig}</td><td><label>مدیریت پروژه / سرپرست کارگاه:</label>${pmSig}</td></tr></table></div>`}
-function receiptSheet(P,items,flow,d){const e=v=>esc(v||'');
-  const bought=items.filter(i=>i.bought_status&&i.bought_status!='none');
-  const conf=(at,who)=>at?`<div class="sg">${esc(who)} — ${jd(at,1)}</div>`:'<div class="sg mut">منتظر تأیید</div>';
+// فرم اعلام وصول یک نوبت (نسخه ۳.۵): مقدار انباردار و تحویل‌گیرنده جدا، تاریخ تحویل و شماره حواله
+function receiptSheet(P,items,flow,d){const e=v=>esc(v||'');const rs=d.receipts||[];
+  const R=rs.find(r=>r.id==purView.rcpt)||[...rs].reverse().find(r=>r.status=='closed')||rs.find(r=>r.status=='open');
+  const conf=(at,who)=>at?`<div class="sg">${esc(who||'')} — ${jd(at,1)}</div>`:'<div class="sg mut">منتظر تأیید</div>';
   const st=i=>(d.buy_status[i.bought_status]||'')+(i.bought_note?' — '+i.bought_note:'');
+  const ln=R?R.lines:items.filter(i=>i.bought_status&&i.bought_status!='none').map(i=>({title:i.title,bought_qty:i.bought_qty,bought_unit:i.bought_unit,unit:i.unit,spec:i.spec,wh_qty:i.wh_qty,recv_qty:i.recv_qty,diff_note:'',disc_note:i.disc_note}));
   return `<div class="sheet">
   <table><tr><td><div class="hd"><img src="/logo.png" class="logo" onerror="this.remove()"><div><div class="co">${esc(M.company)}</div><div class="ttl">اعلام وصول کالا</div></div></div></td>
-   <td class="meta"><div><label>تاریخ:</label>${P.wh_at&&P.recv_at?jd(P.wh_at>P.recv_at?P.wh_at:P.recv_at):fa(todayJ())}</div><div><label>شماره:</label>${P.grn_no?dn(P.grn_no):'<span class="mut">پس از تأیید تحویل‌گیرنده و انباردار</span>'}</div></td></tr></table>
+   <td class="meta"><div><label>تاریخ:</label>${R&&R.recv_at?jd(R.recv_at):fa(todayJ())}</div><div><label>شماره:</label>${R&&R.code?dn(R.code):'<span class="mut">پس از تأیید انباردار و تحویل‌گیرنده</span>'}</div></td></tr></table>
   <table><tr><td><label>نام پروژه:</label>${e(P.project)}</td><td><label>شماره درخواست کالا:</label>${dn(P.number)}</td>
-   <td rowspan="2" class="w35"><label>جهت استفاده:</label><div style="white-space:pre-wrap">${e(P.purpose)}</div></td></tr>
-   <tr><td><label>واحد درخواست کننده:</label>${e(unitName(P.unit))}</td><td><label>انبار محل تحویل:</label>${e(P.warehouse)}${P.po_no?` <label style="margin-right:10px">سفارش خرید:</label>${dn(P.po_no)}`:''}</td></tr></table>
-  <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا</th><th style="width:90px">مقدار</th><th style="width:105px">واحد</th><th>مشخصات فنی</th><th>توضیحات</th><th style="width:110px">مقدار تحویل‌گرفته</th></tr></thead>
-   <tbody>${bought.map((i,k)=>purRow(k+1,{title:i.title,qty:i.bought_qty,unit:i.bought_unit||i.unit,spec:i.spec,note:i.bought_status=='bought'?i.bought_note:st(i),recv:i.recv_qty},0,['title','qty','unit','spec','note','recv'])).join('')}</tbody></table>
+   <td rowspan="3" class="w35"><label>جهت استفاده:</label><div style="white-space:pre-wrap">${e(P.purpose)}</div></td></tr>
+   <tr><td><label>واحد درخواست کننده:</label>${e(unitName(P.unit))}</td><td><label>انبار محل تحویل:</label>${e(P.warehouse)}${P.po_no?` <label style="margin-right:10px">سفارش خرید:</label>${dn(P.po_no)}`:''}</td></tr>
+   <tr><td><label>تاریخ تحویل:</label>${R&&R.delivery_date?fa(R.delivery_date):'—'}</td><td><label>شماره حواله / بارنامه:</label>${R&&R.delivery_ref?e(fa(R.delivery_ref)):'—'}</td></tr></table>
+  <table class="items"><thead><tr><th class="c">ردیف</th><th>شرح کالا</th><th style="width:90px">خریداری‌شده</th><th style="width:90px">واحد</th><th>مشخصات فنی</th><th style="width:90px">انباردار</th><th style="width:90px">تحویل‌گیرنده</th><th>توضیحات</th></tr></thead>
+   <tbody>${ln.map((i,k)=>`<tr><td class="c">${fa(k+1)}</td><td>${e(i.title)}</td><td>${e(fa(i.bought_qty))}</td><td>${e(i.bought_unit||i.unit)}</td><td>${e(i.spec)}</td><td>${e(fa(i.wh_qty))}</td><td>${e(fa(i.recv_qty))}</td><td>${e([i.diff_note,i.disc_note].filter(Boolean).join('؛ '))}</td></tr>`).join('')}</tbody></table>
   ${items.some(i=>i.bought_status=='none')?`<div class="mut" style="margin-top:4px">خریداری نشد: ${items.filter(i=>i.bought_status=='none').map(i=>esc(i.title)+(i.bought_note?' ('+esc(i.bought_note)+')':'')).join('، ')}</div>`:''}
-  <table class="sign"><tr><td><label>تحویل گیرنده:</label>${e(P.requester)}${conf(P.recv_at,P.requester)}</td><td><label>انباردار:</label>${e(d.warehouse_name)}${conf(P.wh_at,d.warehouse_name)}</td></tr></table></div>`}
+  ${R&&R.note&&R.status=='closed'?`<div class="mut" style="margin-top:4px">${e(R.note)}</div>`:''}
+  <table class="sign"><tr><td><label>تحویل گیرنده:</label>${e(P.requester)}${conf(R&&R.recv_at,R&&R.recv_name||P.requester)}</td><td><label>انباردار:</label>${e(R&&R.wh_name||d.warehouse_name)}${conf(R&&R.wh_at,R&&R.wh_name||d.warehouse_name)}</td></tr></table></div>`}
 function addPurRow(){const b=$('#puItems');b.insertAdjacentHTML('beforeend',purRow(b.rows.length+1,{},1))}
 function purProj(init){const pid=+val('puP');const p=M.projects.find(x=>x.id==pid);
   if(p&&!val('puW'))$('#puW').value='انبار کارگاه '+p.name;
@@ -750,7 +754,7 @@ const PUR_ACT={draft:[['submit','ارسال درخواست','ok']],unit_approval
   hq_quotes:[['quoted','ارسال پیش‌فاکتورها برای تأیید قیمت','ok']],
   price_approve:[['approve','تأیید قیمت — ارسال برای خرید','ok'],['requote','برگشت برای استعلام مجدد','l']],
   hq_purchase:[['purchased','خرید انجام شد — ارسال به انبار (اعلام وصول) و مالی (پرداخت)','ok']],
-  delivery:[['recv_ok','کالا را تحویل گرفتم (تحویل‌گیرنده)','ok'],['wh_ok','دریافت در انبار تأیید شد (انباردار)','ok']],
+  delivery:[['recv_ok','کالا را تحویل گرفتم (تحویل‌گیرنده)','ok'],['recv_partial','تحویل بخشی — باقی‌مانده بعداً','l'],['wh_ok','دریافت در انبار تأیید شد (انباردار)','ok']],
   finance_settle:[['docs_ok','مدارک کامل است — پایان و بایگانی خودکار','ok'],['need_docs','برگشت به پشتیبانی برای بارگذاری فاکتور','l'],['to_disc','ارسال مغایرت برای تصمیم','bad']],
   discrepancy:[['accept','پذیرش مغایرت و ادامه','ok'],['fix','برگشت به پشتیبانی برای اصلاح','l']],
   invoice_fix:[['fixed','فاکتور بارگذاری شد — ارسال به مالی','ok']],archive:[['archived','بایگانی','ok']]};
@@ -783,9 +787,9 @@ const SIDE_ACT=['attach','delatt','payment','archive_code','edit','pay_done','gr
 const numIn=(id,v,w)=>`<input id="${id}" value="${esc(v??'')}" class="num" style="max-width:${w||110}px">`;
 async function purchaseView(id,editing){
   const d=await api('GET','/api/purchases/'+id);const P=d.doc;const fl=d.flow.filter(f=>!SIDE_ACT.includes(f.action));
-  if(purView.id!=P.id){purView.id=P.id;purView.showReq=0}markBad.on={};markBad.wh={};
+  if(purView.id!=P.id){purView.id=P.id;purView.showReq=0;purView.rcpt=0}RS.rows={};
   const title=d.receipt&&!purView.showReq&&!editing?'اعلام وصول کالا':'درخواست کالا';
-  let h=`<div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">${title} <span>${dn(d.receipt&&!purView.showReq&&P.grn_no?P.grn_no:P.number)}</span> ${pTag(P)}${P.urgency=='emergency'?' <span class="tag bad">اضطراری</span>':''} <span class="tag">${esc(catName(P.category))}</span></h1>
+  let h=`<div class="row noprint" style="justify-content:space-between;margin-bottom:10px"><h1 style="margin:0">${title} <span>${dn(d.receipt&&!purView.showReq&&P.grn_no?(d.receipts||[]).filter(r=>r.status=='closed').map(r=>r.code).join('، ')||P.grn_no:P.number)}</span> ${pTag(P)}${P.urgency=='emergency'?' <span class="tag bad">اضطراری</span>':''} <span class="tag">${esc(catName(P.category))}</span></h1>
    <div class="row">${d.receipt&&!editing?`<button class="btn l" onclick="purView.showReq=!purView.showReq;route()">${purView.showReq?'نمایش اعلام وصول':'نمایش فرم درخواست کالا'}</button>`:''}<button class="btn l" onclick="printPur('${esc(title+' '+P.number)}')">خروجی PDF</button><a class="btn l" href="/api/purchases/${P.id}.csv">خروجی CSV</a>${P.project_id?`<a class="btn l" href="#/project/${P.project_id}">پروژه ${esc(P.project)}</a>`:''}</div></div>
   <div class="card noprint"><div style="margin-bottom:8px"><b>اکنون در دست: </b>${P.holder?`<span class="tag pri">${esc(P.holder)} — ${esc(M.p_stages[P.stage])}</span>`:'<span class="mut">—</span>'}${d.referrals.length?` <span class="mut">— رونوشت: ${d.referrals.map(r=>esc(r.to_name)).join('، ')}</span>`:''}</div>${purChain(P,fl)}
   ${P.status=='cancelled'?`<div class="tag bad" style="margin-top:8px">لغو شد — علت: ${esc(P.cancel_reason)}${P.cancel_note?' — '+esc(P.cancel_note):''}</div>`:''}</div>`;
@@ -795,7 +799,7 @@ async function purchaseView(id,editing){
   else if(editing&&d.can_edit){h+=purSheet(P,d.items,1,fl)+`<div class="card noprint" style="border-color:var(--pri)"><label>شرح ویرایش (مثلاً «مقدار میلگرد طبق متره اصلاح شد»)</label><input id="puRN"><div class="row" style="margin-top:8px"><button class="btn" onclick="purEdit(${P.id})">ذخیره نسخه ${fa(P.version+1)}</button><button class="btn l" onclick="route()">انصراف</button></div></div>`}
   else h+=purSheet(P,d.items,0,fl,d);
   const kv=[],chosen=d.attachments.find(a=>a.id==P.chosen_att);if(P.po_no)kv.push(['سفارش خرید',dn(P.po_no)]);
-  if(chosen)kv.push(['پیش‌فاکتور منتخب',`<a href="/files/${chosen.id}" target="_blank">${esc(chosen.name)}</a>`]);if(P.grn_no)kv.push(['اعلام وصول',dn(P.grn_no)]);
+  if(chosen)kv.push(['پیش‌فاکتور منتخب',`<a href="/files/${chosen.id}" target="_blank">${esc(chosen.name)}</a>`]);if(P.grn_no)kv.push(['اعلام وصول',dn((d.receipts||[]).filter(r=>r.status=='closed').map(r=>r.code).join('، ')||P.grn_no)]);
   if(P.pay_req_at)kv.push(['پرداخت مالی',P.pay_done_at?`<span class="tag ok">پرداخت شد — ${jd(P.pay_done_at,1)}</span>${P.pay_note?' '+esc(P.pay_note):''}`:`<span class="tag warn">منتظر پرداخت — ارسال ${jd(P.pay_req_at,1)}</span>`]);
   if(P.docs_at)kv.push(['کنترل مدارک مالی',`<span class="tag ok">تکمیل — ${jd(P.docs_at,1)}</span> فاکتور رسمی و ارزش افزوده: <b>${P.official_inv?'دریافت شد':'<span style="color:var(--bad)">دریافت نشد</span>'}</b>`]);
   if(P.archive_code)kv.push(['محل بایگانی',esc(P.archive_code)]);
@@ -806,8 +810,8 @@ async function purchaseView(id,editing){
   h+=`<div class="noprint">${attachBlock('purchase',P.id,d.attachments,d.can_attach,defKind,P.chosen_att)}${d.support_attach?'<div class="mut" style="margin:-8px 0 14px">پشتیبانی پس از خرید در همه مراحل (حتی پس از بایگانی) می‌تواند فاکتور یا پیش‌فاکتور پیوست کند.</div>':''}</div>`;
   if(d.can_pay&&!editing)h+=`<div class="card noprint" style="border-color:var(--warn)"><h2>پرداخت — امور مالی</h2><div class="mut" style="margin-bottom:8px">خرید انجام شده و همزمان با اعلام وصول در انبار، برای پرداخت به امور مالی آمده است. پس از پرداخت، آن را ثبت کنید.</div><label>توضیح پرداخت (اختیاری — مثلاً نحوه پرداخت یا شماره سند)</label><input id="payN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purPaid(${P.id})">پرداخت انجام شد</button></div></div>`;
   if(d.can_official&&!editing)h+=`<div class="card noprint" style="border-color:var(--bad)"><h2>فاکتور رسمی و ارزش افزوده دریافت نشده</h2><div class="mut" style="margin-bottom:8px">فاکتور رسمی را در بخش پیوست‌ها بارگذاری کنید و پس از دریافت، ثبت کنید تا از فهرست «فاکتورهای رسمی دریافت‌نشده» خارج شود.</div><label>توضیح (اختیاری)</label><input id="oiN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purOfficial(${P.id})">فاکتور رسمی و ارزش افزوده دریافت شد</button></div></div>`;
-  if(d.can_edit_grn&&!editing&&!d.actions.some(a=>a=='recv_ok'||a=='wh_ok')){const bi=d.items.filter(i=>i.bought_status&&i.bought_status!='none');
-    h+=`<div class="card noprint"><details><summary style="cursor:pointer;font-weight:bold">ویرایش اعلام وصول (تحویل‌گیرنده / انباردار)</summary><table style="margin-top:8px"><tr><th>شرح کالا</th><th>مقدار خریداری‌شده</th><th>مقدار تحویل‌گرفته</th></tr>${bi.map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit||i.unit)}</td><td>${numIn('ge'+i.id,fa(i.recv_qty||(P.recv_at?'':i.bought_qty)),100)}</td></tr>`).join('')}</table><label style="margin-top:8px">شرح ویرایش</label><input id="geN"><div class="row" style="margin-top:8px"><button class="btn" onclick="purGrnEdit(${P.id})">ذخیره ویرایش اعلام وصول</button></div><div class="mut" style="margin-top:6px">تا پیش از کنترل مدارک امور مالی ممکن است؛ هر ویرایش در گردش درخواست ثبت می‌شود.</div></details></div>`}
+  // نوبت‌های اعلام وصول (نسخه ۳.۵)؛ پس از صدور قابل تغییر نیستند
+  if((d.receipts||[]).length&&!editing)h+=`<div class="card"><h2>نوبت‌های اعلام وصول</h2><table><tr><th>کد</th><th>وضعیت</th><th>تاریخ تحویل</th><th>شماره حواله</th><th>انباردار</th><th>تحویل‌گیرنده</th><th>تعداد اقلام</th><th class="noprint"></th></tr>${d.receipts.map(r=>`<tr><td>${r.code?dn(r.code):'—'}</td><td>${r.status=='closed'?'<span class="tag ok">صادر شد (قفل)</span>':'<span class="tag warn">در جریان'+(r.note?' — '+esc(r.note):'')+'</span>'}</td><td>${r.delivery_date?fa(r.delivery_date):'—'}</td><td>${esc(fa(r.delivery_ref||''))||'—'}</td><td>${esc(r.wh_name||'')}${r.wh_at?'<div class="mut">'+jd(r.wh_at,1)+'</div>':''}</td><td>${esc(r.recv_name||'')}${r.recv_at&&r.status=='closed'?'<div class="mut">'+jd(r.recv_at,1)+'</div>':''}</td><td>${fa(r.lines.length)}</td><td class="noprint"><a style="cursor:pointer" onclick="rcptPrint(${P.id},${r.id})">نمایش / چاپ</a></td></tr>`).join('')}</table></div>`;
   if(d.actions.length&&!editing)h+=actionCard(d);
   else if(d.can_edit&&!editing&&!ret&&!d.is_admin)h+=`<div class="noprint" style="margin-bottom:14px"><button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button></div>`;
   if(d.docs&&!d.site_path)h+=docsCard(d);
@@ -819,6 +823,7 @@ async function purchaseView(id,editing){
     <button class="btn bad" onclick="adminDel('purchase',${P.id},'${esc(P.number)}')">حذف کامل این درخواست</button></div><div class="mut" style="margin-top:6px">ویرایش مدیر سیستم در هر مرحله (حتی پس از بایگانی) ممکن است و به‌صورت نسخه جدید ثبت می‌شود.</div></div>`;
   $('#pg').innerHTML=h;$('#pg').classList.add('purpg');purView.d=d;markRefresh()}
 function purView(){}
+const rcptPrint=(pid,rid)=>run(async()=>{purView.rcpt=rid;purView.showReq=0;await purchaseView(pid);const R=purView.d.receipts.find(r=>r.id==rid);printPur('اعلام وصول '+(R&&R.code||''))});
 function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   const rows=d.items;
   if(st=='warehouse_check'){x=`<table><tr><th>شرح کالا</th><th>مقدار درخواست</th><th>واحد</th><th>موجودی قابل تحویل از انبار</th></tr>${rows.map(i=>`<tr><td>${esc(i.title)}</td><td>${fa(i.qty)}</td><td>${esc(i.unit)}</td><td>${numIn('stk'+i.id,i.stock_qty?fa(i.stock_qty):'',120)}</td></tr>`).join('')}</table>`;
@@ -834,10 +839,20 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
     x=`<table><tr><th>شرح کالا</th><th>مقدار</th><th>مقدار خریداری‌شده</th><th>واحد</th><th>وضعیت</th><th>توضیح (برای ناقص یا نشده الزامی)</th></tr>${buy.map(i=>`<tr${i.disc_note?' style="background:#fdecea"':''}><td>${esc(i.title)}${i.disc_note?`<div style="color:var(--bad);font-size:12px">مغایرت — ${esc(i.disc_note)}</div>`:''}</td><td>${fa(i.remaining)} ${esc(i.unit)}</td><td>${numIn('bq'+i.id,fa(i.bought_qty||i.remaining),90)}</td><td><input id="bu${i.id}" value="${esc(i.bought_unit||i.unit)}" style="max-width:100px"></td><td><select id="bs${i.id}">${opts(Object.entries(d.buy_status),i.bought_status||'bought')}</select></td><td><input id="bn${i.id}" value="${esc(i.bought_note||'')}"></td></tr>`).join('')}</table>`;
     hint=(st=='site_purchase'?'فاکتور (یا پیش‌فاکتور) خرید را در بخش پیوست‌ها بارگذاری کنید (الزامی). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود'+(st=='hq_purchase'?'؛ همزمان برای پرداخت به امور مالی ارسال می‌شود.':'.')+' پس از خرید هم می‌توانید فاکتور یا پیش‌فاکتور پیوست کنید.'}
   if(st=='delivery'){const wh=A.includes('wh_ok');
-    // انباردار و تحویل‌گیرنده یک فرم دارند؛ مغایرت هر قلم با دکمه همان ردیف
-    x=A.length?`<table><tr><th>شرح کالا</th><th>مقدار اعلام‌شده</th><th>مقدار تحویل‌گرفته</th><th>مغایرت</th></tr>${rows.filter(i=>i.bought_status&&i.bought_status!='none').map(i=>`<tr id="dr${i.id}"><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit)}</td><td>${numIn('rq'+i.id,fa(i.recv_qty||i.bought_qty),100)}</td><td>${!wh&&i.disc_note?(markBad.on[i.id]=1,markBad.wh[i.id]=1,`<div style="color:var(--bad);font-size:12px">${esc(i.disc_note)}</div>`):''}<button class="btn bad sm" type="button" id="mb${i.id}" onclick="markBad(${i.id})">مغایرت</button><input id="mn${i.id}" value="${!wh&&i.disc_note?esc(i.disc_note):''}" placeholder="علت مغایرت این قلم *" style="display:none;margin-top:4px"></td></tr>`).join('')}</table>`:'';
-    hint=wh?'شما انباردار هستید: مقدار دریافتی هر قلم را ثبت کنید. اگر قلمی مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید. پس از ثبت شما (تأیید یا مغایرت)، درخواست به تحویل‌گیرنده می‌رود.'
-     :A.length?(rows.some(i=>i.disc_note)?'انباردار برای قلم‌های قرمز مغایرت اعلام کرده است. اگر مغایرت برطرف شده، «رفع مغایرت» همان ردیف را بزنید و تحویل را تأیید کنید (کار طبق روال ادامه می‌یابد)؛ اگر مغایرت را تأیید می‌کنید، درخواست برای اقدام اصلاحی به همان پشتیبانی که خرید کرده برمی‌گردد و تا رفع مغایرت باز می‌ماند.':'انباردار دریافت را تأیید کرده است؛ مقدار، نوع و کیفیت را بررسی و تأیید کنید. اگر قلمی مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید؛ درخواست برای اقدام اصلاحی به پشتیبانی برمی‌گردد.'):'منتظر بررسی و تأیید انباردار.'}
+    // هر نوبت: انباردار مقدار شمرده‌شده، سپس تحویل‌گیرنده مقدار خودش؛ تفاوت با باقی‌مانده ← مغایرت، پذیرش با توضیح یا تحویل بخشی
+    const R=(d.receipts||[]).find(r=>r.status=='open');const L={};if(R)R.lines.forEach(l=>L[l.item_id]=l);
+    const rr=rows.filter(i=>+en(i.remaining_receive)>0);RS.wh=wh;RS.rows={};
+    rr.forEach(i=>{const l=L[i.id]||{};const pre=!wh&&l.disc_note;RS.rows[i.id]={left:+en(i.remaining_receive),whq:l.wh_qty===undefined||l.wh_qty===''?null:+en(l.wh_qty),whdiff:!wh&&!!l.diff_note,st:pre?'bad':'',pre:!!pre}});
+    x=A.length?`<table><tr><th>شرح کالا</th><th>خریداری‌شده</th><th>باقی‌مانده برای وصول</th>${wh?'<th>مقدار شمرده‌شده انبار</th>':'<th>انباردار</th><th>مقدار تحویل‌گرفته</th>'}<th>مغایرت / تفاوت</th></tr>${rr.map(i=>{const l=L[i.id]||{};const r=RS.rows[i.id];
+      const def=wh?(l.wh_qty!==undefined&&l.wh_qty!==''?l.wh_qty:i.remaining_receive):(l.wh_qty!==undefined&&l.wh_qty!==''?l.wh_qty:i.remaining_receive);
+      return `<tr id="dr${i.id}"><td>${esc(i.title)}</td><td>${fa(i.bought_qty)} ${esc(i.bought_unit||i.unit)}</td><td>${fa(i.remaining_receive)}</td>${wh?'':`<td>${l.wh_qty!==undefined&&l.wh_qty!==''?fa(l.wh_qty):'—'}${l.disc_note?`<div style="color:var(--bad);font-size:12px">${esc(l.disc_note)}</div>`:''}${l.diff_note?`<div style="color:#8a6100;font-size:12px">${esc(l.diff_note)}</div>`:''}</td>`}
+       <td>${numIn('rq'+i.id,fa(def),100).replace('<input','<input oninput="rowRefresh('+i.id+')"')}</td>
+       <td><button class="btn bad sm" type="button" id="mb${i.id}" onclick="rowSet(${i.id},'bad')">مغایرت</button> <span id="mo${i.id}" style="display:none"><button class="btn l sm" type="button" id="md${i.id}" onclick="rowSet(${i.id},'diff')">پذیرش با توضیح</button>${wh?'':` <button class="btn l sm" type="button" id="mp${i.id}" onclick="rowSet(${i.id},'partial')">تحویل بخشی</button>`}</span>
+       <input id="mn${i.id}" value="${r.pre?esc(l.disc_note):''}" placeholder="علت / توضیح این قلم *" style="display:none;margin-top:4px"></td></tr>`}).join('')}</table>
+      ${wh?`<div class="grid" style="margin-top:8px"><div><label>تاریخ تحویل</label>${dIn('dvD',R&&R.delivery_date||d.jtoday,{max:d.jtoday,w:170})}</div><div><label>شماره حواله یا بارنامه فروشنده</label><input id="dvR" maxlength="60" value="${esc(R&&R.delivery_ref||'')}"></div></div>`:''}
+      <div class="row" style="margin-top:8px"><label class="btn l" style="cursor:pointer">📷 عکس وصول<input type="file" id="rcC" accept="image/*" capture="environment" style="display:none" onchange="rcptPhoto(${P.id})"></label><span class="mut">عکس با نوع «عکس وصول» به همین نوبت پیوست می‌شود.</span></div>`:'';
+    hint=wh?'شما انباردار هستید: مقدار شمرده‌شده هر قلم را ثبت کنید. اگر با باقی‌مانده فرق دارد، ردیف زرد می‌شود و باید «مغایرت» یا «پذیرش با توضیح» (مثلاً تفاوت واحد شمارش) را بزنید. پس از ثبت شما، درخواست به تحویل‌گیرنده می‌رود.'
+     :A.length?'مقدار تحویل‌گرفته هر قلم را ثبت کنید (پیش‌فرض: عدد انباردار). قلمی که انباردار برایش مغایرت زده قرمز است: «رفع مغایرت» یا تأیید آن (برگشت به پشتیبانی). اگر بقیه کالا بعداً می‌رسد، «تحویل بخشی» بزنید؛ نوبت با کد خودش صادر می‌شود و باقی‌مانده دوباره به انبار می‌آید. اعلام وصول صادرشده قابل تغییر نیست.':'منتظر بررسی و ثبت انباردار.'}
   if(st=='finance_settle'){const yn=(n,t)=>`<div><label>${t} *</label><label style="display:inline-flex;gap:6px;color:var(--ink);font-size:14px;margin-left:18px"><input type="radio" name="${n}" value="1" style="width:auto"> دریافت شد</label><label style="display:inline-flex;gap:6px;color:var(--ink);font-size:14px"><input type="radio" name="${n}" value="0" style="width:auto"> دریافت نشد</label></div>`;
     x=d.docs&&d.docs.ok?`<div class="grid">${yn('oiSel','فاکتور رسمی و مدارک ارزش افزوده')}</div>`:'';
     hint=d.docs&&d.docs.ok?'امور مالی فقط مدارک را کنترل می‌کند (پرداخت و تسویه در سامانه نیست). هر سه مدرک (درخواست کالا، اعلام وصول و فاکتور یا پیش‌فاکتور) موجود است؛ وضعیت فاکتور رسمی (ارزش افزوده) را مشخص کنید و «مدارک کامل است» را بزنید تا کار پایان یابد و خودکار بایگانی شود. اگر دریافت نشده، درخواست در فهرست «فاکتورهای رسمی دریافت‌نشده» می‌ماند.':'فاکتور (یا پیش‌فاکتور) بارگذاری نشده؛ آن را خودتان در بخش پیوست‌ها بارگذاری کنید یا درخواست را برای بارگذاری فاکتور به پشتیبانی برگردانید.'}
@@ -854,21 +869,33 @@ function docsCard(d){const m=d.docs,P=d.doc;const row=(t,ok,v)=>`<tr><td>${t}</t
    <div class="mut" style="margin-top:6px">فقط وجود این سه مدرک بررسی می‌شود؛ مقدار، مبلغ و شماره فاکتور کنترل نمی‌شود.</div></div>`}
 function mgmtNotes(d){return (d.mgmt_notes||[]).length?`<div class="mgmt"><b>نظر مدیر پروژه / هیات مدیره:</b>${d.mgmt_notes.map(f=>`<div>• ${esc(f.user_name)} (${esc(M.p_stages[f.stage]||'')} — ${jd(f.at,1)}): ${esc(f.note)}</div>`).join('')}</div>`:''}
 function printPur(num){const t=document.title;document.title=num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
-// مغایرت هر قلم در اعلام وصول؛ قلم‌هایی که انبار مغایرت زده، برای تحویل‌گیرنده از ابتدا علامت دارند
-function markBad(id){markBad.on[id]=!markBad.on[id];markRefresh()}
-markBad.on={};markBad.wh={};
-function markRefresh(){for(const id in markBad.on){const on=markBad.on[id];if(!$('#dr'+id))continue;
-    $('#mn'+id).style.display=on?'':'none';$('#dr'+id).style.background=on?'#fdecea':'';$('#mb'+id).textContent=on?(markBad.wh[id]?'رفع مغایرت':'لغو مغایرت'):'مغایرت'}
-  const any=Object.values(markBad.on).some(Boolean);document.querySelectorAll('button[onclick*="_ok\'"]').forEach(b=>{b.dataset.t=b.dataset.t||b.textContent;
+// حالت هر ردیف اعلام وصول: '' | bad (مغایرت) | diff (پذیرش با توضیح) | partial (تحویل بخشی، فقط تحویل‌گیرنده)
+const RS={rows:{},wh:false};
+function rowMis(id){const r=RS.rows[id];const q=+en(val('rq'+id));if(Math.abs(q-r.left)<1e-9)return false;return !(r.whdiff&&r.whq!==null&&Math.abs(q-r.whq)<1e-9)}
+function rowSet(id,st){const r=RS.rows[id];r.st=r.st==st?'':st;if(st!='bad')r.pre=false;rowRefresh(id)}
+function rowRefresh(id){const r=RS.rows[id];if(!r||!$('#dr'+id))return;const mis=rowMis(id);if(!mis&&r.st!='bad')r.st='';
+  $('#dr'+id).style.background=r.st=='bad'?'#fdecea':mis?'#fff6db':'';$('#mo'+id).style.display=mis?'':'none';
+  $('#mn'+id).style.display=r.st=='bad'||r.st=='diff'?'':'none';$('#mn'+id).placeholder=r.st=='diff'?'توضیح پذیرش (مثلاً تفاوت واحد شمارش) *':'علت مغایرت این قلم *';
+  $('#mb'+id).textContent=r.st=='bad'?(r.pre?'رفع مغایرت':'لغو مغایرت'):'مغایرت';
+  [['md','diff','پذیرش با توضیح'],['mp','partial','تحویل بخشی']].forEach(([k,s_,t])=>{const b=$('#'+k+id);if(b){b.textContent=r.st==s_?'لغو '+t:t;b.classList.toggle('ok',r.st==s_)}});
+  const any=Object.values(RS.rows).some(x=>x.st=='bad');document.querySelectorAll('button[onclick*="_ok\'"]').forEach(b=>{b.dataset.t=b.dataset.t||b.textContent;
     b.textContent=any?(b.getAttribute('onclick').includes('wh_ok')?'ثبت مغایرت و ارسال به تحویل‌گیرنده':'تأیید مغایرت و برگشت به پشتیبانی'):b.dataset.t;b.classList.toggle('bad',any)})}
+function markRefresh(){for(const id in RS.rows)rowRefresh(id)}
+const rcptPhoto=id=>run(async()=>{await uploadFiles('purchase',id,'rcC','عکس وصول');flash('عکس وصول بارگذاری شد');route()});
 const radio=n=>(document.querySelector(`input[name="${n}"]:checked`)||{}).value||'';
 const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action:a,note:val('paN'),archive_code:val('paC'),chosen_att:radio('pfSel'),official_inv:radio('oiSel'),return_to:a=='return'?val('paRt'):''};
   if(a=='approve'&&d.doc.stage=='price_approve'&&!b.chosen_att)throw new Error('یکی از پیش‌فاکتورها را انتخاب کنید');
   if(a=='docs_ok'&&b.official_inv==='')throw new Error('مشخص کنید فاکتور رسمی (ارزش افزوده) دریافت شده یا نه');
   if(a=='stock')b.items=its.map(i=>({id:i.id,stock:en(val('stk'+i.id))}));
   if(a=='purchased')b.items=its.filter(i=>$('#bs'+i.id)).map(i=>({id:i.id,qty:en(val('bq'+i.id)),unit:val('bu'+i.id),status:val('bs'+i.id),note:val('bn'+i.id)}));
-  if(a=='recv_ok'||a=='wh_ok'){b.items=its.filter(i=>$('#rq'+i.id)).map(i=>({id:i.id,qty:en(val('rq'+i.id)),bad:!!markBad.on[i.id],note:val('mn'+i.id)}));
-    if(b.items.some(i=>i.bad)){if(b.items.some(i=>i.bad&&!i.note.trim()))throw new Error('علت مغایرت هر قلم را بنویسید');a=b.action=a.replace('_ok','_bad')}}
+  if(['recv_ok','wh_ok','recv_partial'].includes(a)){
+    b.items=its.filter(i=>$('#rq'+i.id)).map(i=>{const r=RS.rows[i.id];return{id:i.id,qty:en(val('rq'+i.id)),bad:r.st=='bad',note:r.st=='bad'?val('mn'+i.id):'',diff_ok:r.st=='diff',diff_note:r.st=='diff'?val('mn'+i.id):''}});
+    if(a=='wh_ok'){b.delivery_date=en(val('dvD'));b.delivery_ref=val('dvR')}
+    if(b.items.some(i=>(i.bad&&!i.note.trim())||(i.diff_ok&&!i.diff_note.trim())))throw new Error('علت مغایرت یا توضیح پذیرش هر قلم را بنویسید');
+    if(b.items.some(i=>i.bad))a=b.action=a=='wh_ok'?'wh_bad':'recv_bad';
+    else if(a=='recv_ok'&&its.some(i=>RS.rows[i.id]&&RS.rows[i.id].st=='partial'))a=b.action='recv_partial';
+    if(a!='recv_partial'){const u=its.find(i=>RS.rows[i.id]&&!['bad','diff'].includes(RS.rows[i.id].st)&&rowMis(i.id));
+      if(u)throw new Error('مقدار «'+u.title+'» با باقی‌مانده خرید ('+fa(u.remaining_receive)+') برابر نیست؛ «مغایرت» یا «پذیرش با توضیح» را بزنید')}}
   const lbl=((PUR_ACT[d.doc.stage]||[]).find(x=>x[0]==a)||[])[1]||a;
   if(!await ask(a.endsWith('_bad')?(a=='wh_bad'?'مغایرت ثبت و درخواست برای رفع یا تأیید مغایرت به تحویل‌گیرنده فرستاده می‌شود.':'مغایرت تأیید و درخواست برای اقدام اصلاحی به پشتیبانی برگردانده می‌شود.'):'«'+lbl+'»'))return;
   await api('POST',`/api/purchases/${id}/act`,b);refreshCount();if(a=='submit'){flash('ثبت شد');route()}else await goNext('purchase',id)});
@@ -886,8 +913,6 @@ const purHandover=id=>run(async()=>{const t=purView.d.handover_to;if(!await ask(
   await api('POST',`/api/purchases/${id}/handover`,{note:val('paN')});refreshCount();await goNext('purchase',id)});
 const purPaid=id=>run(async()=>{if(!await ask('پرداخت این خرید ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/paid`,{note:val('payN')});flash('پرداخت ثبت شد');refreshCount();route()});
 const purOfficial=id=>run(async()=>{if(!await ask('دریافت فاکتور رسمی و ارزش افزوده ثبت شود؟'))return;await api('POST',`/api/purchases/${id}/official_inv`,{note:val('oiN')});flash('ثبت شد');route()});
-const purGrnEdit=id=>run(async()=>{const its=purView.d.items.filter(i=>$('#ge'+i.id));if(!await ask('اعلام وصول ویرایش شود؟'))return;
-  await api('POST',`/api/purchases/${id}/receipt`,{items:its.map(i=>({id:i.id,qty:en(val('ge'+i.id))})),note:val('geN')});flash('اعلام وصول ویرایش شد');route()});
 const purArcCode=id=>run(async()=>{await api('POST',`/api/purchases/${id}/archive_code`,{archive_code:val('admArc')});flash('محل بایگانی ذخیره شد');route()});
 const purCancel=id=>run(async()=>{if(!val('cxR'))throw new Error('علت لغو را انتخاب کنید');if(!await ask('درخواست کالا لغو و بایگانی شود؟'))return;await api('POST',`/api/purchases/${id}/cancel`,{reason:val('cxR'),note:val('cxN')});flash('لغو و بایگانی شد');refreshCount();route()});
 
