@@ -3801,9 +3801,22 @@ OLD_PAGE = """<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-
 <title>به‌روزرسانی ناقص</title></head><body style="font-family:Tahoma,sans-serif;background:#f4f5f7;padding:20px;line-height:2.2">
 <div style="max-width:640px;margin:8vh auto;background:#fff;border:2px solid #b42318;border-radius:10px;padding:18px 22px">
 <h2 style="color:#b42318;margin-top:0">فایل index.html با برنامه سرور هم‌نسخه نیست</h2>
-برنامه سرور (app.py) نسخه %s است، ولی فایل صفحه (index.html) کنار آن از نسخه دیگری است.<br>
-۱. فایل <b>index.html</b> نسخه %s را از فایل ZIP در همان پوشه‌ای که app.py هست کپی و جایگزین کنید.<br>
-۲. این صفحه را با <b>Ctrl+F5</b> دوباره باز کنید (نیازی به راه‌اندازی مجدد سرور نیست).</div></body></html>"""
+برنامه‌ای که الان روی سرور <b>در حال اجراست</b> نسخه <b dir="ltr">%(srv)s</b> است، ولی فایل صفحه (index.html) نسخه <b dir="ltr">%(page)s</b> است.<br>
+%(steps)s</div></body></html>"""
+OLD_STEPS_PAGE_NEWER = """<b>راه‌حل:</b> فایل <b>app.py</b> نسخه %(page)s را هم کنار index.html (در همان پوشه) بگذارید و جایگزین کنید، سپس روی کامپیوتر سرور فایل <b>4-restart.bat</b> را با «Run as administrator» اجرا کنید (یا کامپیوتر سرور را یک بار ری‌استارت کنید). <b>تا سرور دوباره راه‌اندازی نشود، همین پیام می‌ماند</b>، حتی اگر app.py جدید را جایگزین کرده باشید.<br>
+بعد از راه‌اندازی، این صفحه را با <b>Ctrl+F5</b> دوباره باز کنید."""
+OLD_STEPS_PAGE_OLDER = """<b>راه‌حل:</b> فایل <b>index.html</b> نسخه %(srv)s را در همان پوشه‌ای که app.py هست جایگزین کنید و این صفحه را با <b>Ctrl+F5</b> دوباره باز کنید (نیازی به راه‌اندازی مجدد سرور نیست)."""
+
+
+def version_page(page_bytes):
+    """صفحه راهنمای ناهم‌نسخه‌بودن app.py (در حال اجرا) و index.html؛ جهت ناهم‌خوانی تشخیص داده می‌شود."""
+    m = re.search(rb"PAGE_VERSION='([^']*)'", page_bytes)
+    pv = m.group(1).decode() if m else '؟'
+    key = lambda v: tuple(int(x) if x.isdigit() else 0 for x in v.split('.'))
+    newer = m is not None and key(pv) > key(VERSION)
+    d = {'srv': VERSION, 'page': pv}
+    d['steps'] = (OLD_STEPS_PAGE_NEWER if newer or not m else OLD_STEPS_PAGE_OLDER) % d
+    return (OLD_PAGE % d)
 SW_JS = """// سرویس‌ورکر اتوماسیون عمران زیست: نمایش اعلان و باز کردن کارتابل با لمس اعلان
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
@@ -3879,7 +3892,7 @@ class H(BaseHTTPRequestHandler):
             with open(os.path.join(BASE, 'index.html'), 'rb') as f:
                 page = f.read()
             if ("PAGE_VERSION='%s'" % VERSION).encode() not in page:  # index.html با app.py هم‌نسخه نیست
-                return self.send(200, OLD_PAGE % (VERSION, VERSION), 'text/html; charset=utf-8')
+                return self.send(200, version_page(page).encode('utf-8'), 'text/html; charset=utf-8')
             return self.send(200, page, 'text/html; charset=utf-8')
         if method == 'GET' and path == '/logo.png':  # آرم شرکت (اختیاری): فایل logo.png کنار app.py
             lp = os.path.join(BASE, 'logo.png')
