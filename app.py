@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.2'
+VERSION = '4.3'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -101,11 +101,9 @@ P_FLOW = {
                       'requote': ('hq_quotes', 'برگشت برای استعلام مجدد')},
     # خرید دفتر مرکزی: همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود
     'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول و پرداخت مالی')},
-    'delivery': {'recv_ok': (None, 'تأیید تحویل توسط تحویل‌گیرنده'), 'recv_bad': (None, 'تأیید مغایرت توسط تحویل‌گیرنده — برگشت به پشتیبانی'),
-                 'recv_partial': (None, 'تحویل بخشی — باقی‌مانده بعداً'),  # تا نسخه ۳.۵ (تحویل‌گیرنده)
-                 'wh_partial': (None, 'تحویل بخشی توسط انبار — باقی‌مانده بعداً'),
-                 'followup': (None, 'ارجاع به پشتیبانی برای پیگیری تحویل'),
-                 'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
+    # ۴.۳: انباردار و تحویل‌گیرنده هر کدام برای هر قلم یکی از پنج وضعیت (تأیید، کسری، اضافی، مرجوعی، تحویل بخشی) را اعلام می‌کنند
+    'delivery': {'wh_ok': (None, 'ثبت انباردار'), 'recv_ok': (None, 'نظر نهایی تحویل‌گیرنده'),
+                 'followup': (None, 'ارجاع به پشتیبانی برای پیگیری تحویل')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
                        'to_disc': ('discrepancy', 'مغایرت — ارسال برای تصمیم')},  # to_disc فقط برای درخواست‌های نسخه ۲.۱
@@ -227,7 +225,8 @@ CREATE TABLE IF NOT EXISTS purchase_receipts(
 CREATE INDEX IF NOT EXISTS ix_pur_rcpt ON purchase_receipts(purchase_id);
 CREATE TABLE IF NOT EXISTS purchase_receipt_lines(
   id INTEGER PRIMARY KEY, receipt_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
-  wh_qty TEXT DEFAULT '', recv_qty TEXT DEFAULT '', disc_note TEXT DEFAULT '', diff_note TEXT DEFAULT '');
+  wh_qty TEXT DEFAULT '', recv_qty TEXT DEFAULT '', disc_note TEXT DEFAULT '', diff_note TEXT DEFAULT '',
+  wh_status TEXT DEFAULT '', wh_note TEXT DEFAULT '', recv_status TEXT DEFAULT '', recv_note TEXT DEFAULT '', exp_qty TEXT DEFAULT '');
 CREATE INDEX IF NOT EXISTS ix_pur_rcpt_ln ON purchase_receipt_lines(receipt_id);
 CREATE TABLE IF NOT EXISTS purchase_versions(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, version INTEGER,
   data TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
@@ -459,6 +458,9 @@ def add_columns(c):
                           # ۳.۶: پشتیبانی‌ای که کار به او واگذار شده (کارگاه یا دفتر مرکزی) در مراحل بعدی هم کار را دارد
                           ('support_by', 'INTEGER'), ('support_side', "TEXT DEFAULT ''")],
             'purchase_payments': [('code', "TEXT DEFAULT ''")],
+            'purchase_receipt_lines': [('wh_status', "TEXT DEFAULT ''"), ('wh_note', "TEXT DEFAULT ''"),
+                                       ('recv_status', "TEXT DEFAULT ''"), ('recv_note', "TEXT DEFAULT ''"),
+                                       ('exp_qty', "TEXT DEFAULT ''")],  # ۴.۳: وضعیت پنج‌گانه هر قلم
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
                                ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''"),
@@ -2022,10 +2024,30 @@ def unit_head_key(c, P):
     return SUPERIOR[own[0]] if own else UNIT_HEAD[P['unit']]
 
 
+def is_direct_orderer(c, u, f):
+    """مدیر پروژه یا عضو هیات مدیره: درخواست کالای او دستور خرید است و از زیردستش (سرپرست کارگاه) تأیید نمی‌گیرد."""
+    return u['role'] == 'manager' or u['id'] == pmembers(c, f['project_id']).get('pm')
+
+
+def after_direct_order(c, u, P, stage):
+    """پس از ثبت دستور خرید مستقیم: سفارش خرید برای خرید دفتر مرکزی، و فقط یک رونوشت جهت اطلاع به سرپرست کارگاه."""
+    if stage == 'hq_purchase' and not P['po_no']:
+        c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
+    sup = pmembers(c, P['project_id']).get('supervisor')
+    if sup and sup != u['id'] and not c.execute(
+            "SELECT 1 FROM referrals WHERE doc_type='purchase' AND doc_id=? AND to_id=? AND status IN ('new','seen')",
+            (P['id'], sup)).fetchone():
+        c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
+                  ('purchase', P['id'], u['id'], sup, 'جهت اطلاع', 'رونوشت دستور خرید %s' % u['full_name'], now()))
+
+
 def start_stage(c, u, f):
     """نسخه ۴.۰: هر درخواست کالا مستقیم به سرپرست کارگاه می‌رود (بدون تأیید معاون یا رئیس واحد).
     اگر خود سرپرست کارگاه درخواست‌دهنده باشد، ثبت او همان تأیید است."""
     mem = pmembers(c, f['project_id'])
+    if is_direct_orderer(c, u, f):  # نسخه ۴.۳: مدیر پروژه یا هیات مدیره مستقیم به پشتیبانی دستور می‌دهند
+        nxt = 'site_purchase' if is_general(f) else 'hq_purchase'
+        return nxt, 'دستور خرید مستقیم — ارسال به ' + P_STAGES[nxt]
     if u['id'] == mem.get('supervisor'):
         nxt = after_supervisor(c, f, [])
         return nxt, 'ثبت و تأیید سرپرست کارگاه — ارسال به ' + P_STAGES[nxt]
@@ -2190,7 +2212,12 @@ def can_edit(u, P):
 
 
 def can_cancel(c, u, P):
-    if P['status'] not in ('open', 'returned') or P['stage'] not in CANCEL_STAGES:
+    if P['status'] not in ('open', 'returned'):
+        return False
+    if P['stage'] in ('site_purchase', 'hq_purchase') and not is_bought(c, P) and (
+            is_board(u) or (P['requester_id'] == u['id'] and is_direct_orderer(c, u, P))):
+        return True  # دستور خرید مستقیم را صادرکننده تا پیش از خرید لغو می‌کند
+    if P['stage'] not in CANCEL_STAGES:
         return False
     if is_warehouse(c, u, P) and P['requester_id'] != u['id'] and not is_board(u):  # انباردار درخواست را لغو نمی‌کند
         return False
@@ -2307,9 +2334,9 @@ def allowed_actions(c, u, P):
         its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))
         # ۳.۷: انباردار تا وقتی باقی‌مانده دارد ثبت می‌کند (حتی اگر نوبت قبلی هنوز منتظر تحویل‌گیرنده است)
         if (is_warehouse(c, u, P) or (not wh and u['id'] == P['requester_id'])) and any(wh_remaining(c, it) > 0 for it in its):
-            out += ['wh_ok', 'wh_bad', 'wh_partial', 'followup']
+            out += ['wh_ok', 'followup']
         if u['id'] == P['requester_id'] and pending_receipts(c, P['id']):  # تأیید نهایی هر نوبت ثبت‌شده انبار
-            out += ['recv_ok', 'recv_bad']
+            out += ['recv_ok']
         return out
     if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
         return acts if in_group(c, u, P) else []
@@ -2427,6 +2454,27 @@ def remaining_receive(c, it):
                  "WHERE l.item_id=? AND r.status='closed' AND l.diff_note!=''", (it['id'],)).fetchone():
         return 0.0
     return max(0.0, (to_num(it.get('bought_qty')) or 0) - received_sum(c, it['id']))
+
+
+# وضعیت هر قلم در اعلام وصول (انباردار و تحویل‌گیرنده، هر دو): تأیید، کسری، اضافی، مرجوعی، تحویل بخشی
+LINE_STATUS = {'ok': 'تأیید', 'short': 'کسری', 'extra': 'اضافی', 'returned': 'مرجوعی', 'partial': 'تحویل بخشی'}
+DISC_STATUS = ('short', 'extra', 'returned')  # با تأیید تحویل‌گیرنده، کار برای اقدام اصلاحی به پشتیبانی برمی‌گردد
+
+
+def check_line(it, exp, qv, stt, note):
+    """بررسی وضعیت یک قلم نسبت به مقدار مورد انتظار؛ در صورت خطا ApiError."""
+    t = it['title']
+    need(stt in LINE_STATUS, 'وضعیت «%s» را انتخاب کنید (تأیید، کسری، اضافی، مرجوعی یا تحویل بخشی)' % t, 400)
+    u_ = it['bought_unit'] or it['unit'] or ''
+    if stt == 'ok':
+        need(abs(qv - exp) < 1e-9, 'مقدار «%s» با باقی‌مانده (%s %s) برابر نیست؛ کسری، اضافی، مرجوعی یا تحویل بخشی را انتخاب کنید'
+             % (t, fmt_num(exp), u_), 400)
+    elif stt == 'extra':
+        need(qv > exp + 1e-9, 'برای «اضافی» مقدار «%s» باید از باقی‌مانده (%s) بیشتر باشد' % (t, fmt_num(exp)), 400)
+    else:  # کسری، مرجوعی، تحویل بخشی
+        need(qv < exp - 1e-9, 'برای «%s» مقدار «%s» باید از باقی‌مانده (%s) کمتر باشد' % (LINE_STATUS[stt], t, fmt_num(exp)), 400)
+    if stt in DISC_STATUS:
+        need(note, 'توضیح «%s» برای «%s» را بنویسید' % (LINE_STATUS[stt], t), 400)
 
 
 def pending_receipts(c, pid):
@@ -2570,6 +2618,8 @@ def api_purchase_act(h, c, u, b, q, pid):
         return {'ok': True}
     if a == 'submit':
         nxt, label = start_stage(c, u, P)
+        if is_direct_orderer(c, u, P):
+            after_direct_order(c, u, P, nxt)
     elif a == 'stock':  # انبار موجودی هر قلم را ثبت می‌کند؛ مانده برای خرید می‌رود
         full = part = 0
         for it in its:
@@ -2643,10 +2693,12 @@ def api_purchase_act(h, c, u, b, q, pid):
         left = [it['title'] + ' ' + fmt_num(wh_remaining(c, it)) for it in its if wh_remaining(c, it) > 0]
         if left:
             notes.append('باقی‌مانده: ' + '، '.join(left))
-    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad', 'wh_partial'):
-        # نسخه ۳.۷: نوبت‌ها موازی‌اند. انباردار هر رسیدن کالا را یک نوبت ثبت می‌کند (حتی پیش از تأیید نوبت قبلی)؛
-        # تحویل‌گیرنده قدیمی‌ترین نوبت منتظر را با عدد انباردار مقایسه و تأیید نهایی می‌کند
-        wh_act = a.startswith('wh')
+    elif a in ('wh_ok', 'recv_ok'):
+        # نسخه ۴.۳: برای هر قلم، انباردار یکی از پنج وضعیت (تأیید، کسری، اضافی، مرجوعی، تحویل بخشی) را با مقدار و توضیح
+        # ثبت می‌کند و نوبت به تحویل‌گیرنده می‌رود؛ او دقیقاً همان ستون را می‌بیند و نظر خودش را اعلام می‌کند.
+        # نوبت‌ها موازی‌اند: انباردار برای ثبت باقی‌مانده منتظر تأیید تحویل‌گیرنده نمی‌ماند.
+        wh_act = a == 'wh_ok'
+        pre = 'wh' if wh_act else 'recv'
         who = 'انباردار' if wh_act else 'تحویل‌گیرنده'
         if wh_act:
             R = open_receipt(c, P)
@@ -2657,70 +2709,54 @@ def api_purchase_act(h, c, u, b, q, pid):
         itm = {it['id']: it for it in its}
         lines = rows(c.execute('SELECT * FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],)))
         need(lines, 'قلمی برای اعلام وصول باقی نمانده است', 400)
-        bad, short = [], []
+        disc, part = [], []
         for ln in lines:
             it, x = itm[ln['item_id']], posted.get(ln['item_id']) or {}
             whq = to_num(ln['wh_qty']) if ln['wh_qty'] != '' else None
-            left = wh_remaining(c, it) if wh_act else (whq if whq is not None else remaining_receive(c, it))
-            qv = to_num(x.get('qty')) if x.get('qty') not in (None, '') else left
+            exp = wh_remaining(c, it) if wh_act else (to_num(ln['exp_qty']) if ln['exp_qty'] != '' else remaining_receive(c, it))
+            qv = to_num(x.get('qty')) if x.get('qty') not in (None, '') else (exp if wh_act or whq is None else whq)
             need(qv is not None and qv >= 0, 'مقدار «%s» باید عدد باشد' % it['title'], 400)
-            upd = {'wh_qty' if wh_act else 'recv_qty': fmt_num(qv)}
-            if x.get('bad'):
-                dn_ = (x.get('note') or '').strip()
-                need(dn_, 'علت مغایرت «%s» را بنویسید' % it['title'], 400)
-                # مغایرت انبار که تحویل‌گیرنده تأیید کرده، با همان متن می‌ماند
-                dn_ = ln['disc_note'] + ' — تأیید تحویل‌گیرنده' if ln['disc_note'] and dn_ == ln['disc_note'] \
-                    else '%s: %s' % (who, dn_)
-                upd['disc_note'] = dn_
-                bad.append('%s (%s)' % (it['title'], dn_))
-            else:
-                upd['disc_note'] = ''
-                if abs(qv - left) > 1e-9:  # انباردار: با باقی‌مانده؛ تحویل‌گیرنده: با عدد انباردار
-                    dfn = (x.get('diff_note') or '').strip()
-                    if x.get('diff_ok'):
-                        need(dfn, 'توضیح «پذیرش با توضیح» برای «%s» را بنویسید' % it['title'], 400)
-                        upd['diff_note'] = '؛ '.join(filter(None, [ln['diff_note'], '%s: %s' % (who, dfn)]))
-                    elif a == 'wh_partial' and qv < left:
-                        short.append('%s: %s از %s' % (it['title'], fmt_num(qv), fmt_num(left)))
-                    else:
-                        need(a != 'wh_partial', 'در تحویل بخشی مقدار «%s» نمی‌تواند از باقی‌مانده (%s) بیشتر باشد'
-                             % (it['title'], fmt_num(left)), 400)
-                        raise ApiError('مقدار «%s» با %s (%s %s) برابر نیست؛ «مغایرت» یا «پذیرش با توضیح» را بزنید'
-                                       % (it['title'], 'باقی‌مانده خرید' if wh_act else 'عدد انباردار', fmt_num(left),
-                                          it['bought_unit'] or it['unit']), 400)
+            stt = (x.get('status') or '').strip() or ('ok' if abs(qv - exp) < 1e-9 else '')
+            nt = (x.get('note') or '').strip()
+            check_line(it, exp, qv, stt, nt)
+            txt = '%s: %s%s' % (who, LINE_STATUS[stt], (' — ' + nt) if nt else '')
+            upd = {pre + '_qty': fmt_num(qv), pre + '_status': stt, pre + '_note': nt,
+                   'disc_note': txt if stt in DISC_STATUS else ''}
+            if wh_act:
+                upd['exp_qty'] = fmt_num(exp)
             c.execute('UPDATE purchase_receipt_lines SET %s WHERE id=?' % ', '.join('%s=?' % k for k in upd),
                       tuple(upd.values()) + (ln['id'],))
             c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', (upd['disc_note'], it['id']))
-        if a.endswith('_bad'):
-            need(bad, 'برای هر قلمی که مغایرت دارد، دکمه «مغایرت» همان ردیف را بزنید و علت را بنویسید', 400)
-        else:
-            need(not bad, 'قلم دارای مغایرت انتخاب شده؛ «ثبت مغایرت» را بزنید', 400)
-        if a == 'wh_partial':
-            need(short, 'برای «تحویل بخشی» دست‌کم یک قلم باید کمتر از باقی‌مانده تحویل شود', 400)
-        if wh_act:  # نوبت ثبت شد و منتظر تأیید تحویل‌گیرنده است؛ انباردار برای باقی‌مانده منتظر نمی‌ماند
+            if stt in DISC_STATUS:
+                disc.append('%s (%s%s)' % (it['title'], LINE_STATUS[stt], (' — ' + nt) if nt else ''))
+            elif stt == 'partial':
+                part.append('%s: %s از %s' % (it['title'], fmt_num(qv), fmt_num(exp)))
+        if wh_act:  # نوبت ثبت شد و منتظر نظر تحویل‌گیرنده است
             dd = need_jdate(b.get('delivery_date'), 'تاریخ تحویل', required=False, max_=jtoday(),
                             max_msg='تاریخ تحویل نمی‌تواند بعد از امروز باشد')
             ref = (b.get('delivery_ref') or '').strip()
             need(len(ref) <= 60, 'شماره حواله یا بارنامه حداکثر ۶۰ نویسه است', 400)
             c.execute("UPDATE purchase_receipts SET status='pending', wh_by=?, wh_at=?, delivery_date=?, delivery_ref=?, note=? "
-                      "WHERE id=?", (u['id'], now(), dd, ref, 'تحویل بخشی' if a == 'wh_partial' else '', R['id']))
+                      "WHERE id=?", (u['id'], now(), dd, ref, 'مغایرت' if disc else ('تحویل بخشی' if part else ''), R['id']))
             hold = delivery_holder(c, P)
             c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (hold, P['id']))
-            pflow(c, P['id'], u, P['stage'], a, label + ' — نوبت %s برای تأیید تحویل‌گیرنده' % fa_num(str(R['seq']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — نوبت %s برای نظر تحویل‌گیرنده' % fa_num(str(R['seq']))
                   + ('؛ باقی‌مانده نزد انباردار' if hold != P['requester_id'] else ''),
-                  '؛ '.join((['مغایرت ' + '؛ '.join(bad)] if bad else []) + (['کسری: ' + '، '.join(short)] if short else [])
+                  '؛ '.join((['مغایرت: ' + '؛ '.join(disc)] if disc else []) + (['تحویل بخشی: ' + '، '.join(part)] if part else [])
                             + ([note] if note else [])))
             return {'ok': True}
-        if a == 'recv_bad':  # مغایرت تأیید شد: برگشت به پشتیبانی خریدار؛ این نوبت کنار گذاشته می‌شود
+        if disc:  # تحویل‌گیرنده مغایرت را تأیید کرد: برگشت به پشتیبانی خریدار؛ این نوبت کنار گذاشته می‌شود
             c.execute("UPDATE purchase_receipts SET status='rejected', note='مغایرت — برگشت به پشتیبانی' WHERE id=?", (R['id'],))
             c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
             nxt = purchase_stage_of(c, P)
-            notes.append('مغایرت ' + '؛ '.join(bad))
-        else:  # recv_ok: نوبت صادر می‌شود؛ اگر همه اقلام کامل و نوبت منتظری نمانده، اعلام وصول درخواست کامل است
+            label = 'تأیید مغایرت توسط تحویل‌گیرنده — برگشت به پشتیبانی'
+            notes.append('مغایرت: ' + '؛ '.join(disc))
+        else:  # نوبت صادر می‌شود؛ اگر همه اقلام کامل و نوبت منتظری نمانده، اعلام وصول درخواست کامل است
             grn, code, done = close_receipt(c, u, P, R)
             if not done:
                 c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (delivery_holder(c, P), P['id']))
-                pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s صادر شد' % code, note)
+                pflow(c, P['id'], u, P['stage'], a, label + ' — اعلام وصول %s صادر شد' % code,
+                      '؛ '.join((['تحویل بخشی: ' + '، '.join(part)] if part else []) + ([note] if note else [])))
                 return {'ok': True}
             c.execute('UPDATE purchases SET recv_by=?, recv_at=?, wh_by=?, wh_at=? WHERE id=?',
                       (u['id'], now(), R['wh_by'], R['wh_at'], P['id']))
@@ -2772,6 +2808,8 @@ def api_purchase_resubmit(h, c, u, b, q, pid):
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'], req_date=P['req_date'])
     stage, label = start_stage(c, u, dict(P, **f))
     holder = stage_holder(c, dict(P, **f), stage)
+    if is_direct_orderer(c, u, P):
+        after_direct_order(c, u, P, stage)
     write_fields(c, P['id'], f, items)
     c.execute("UPDATE purchases SET version=version+1, stage=?, status='open', holder_id=? WHERE id=?",
               (stage, holder, P['id']))

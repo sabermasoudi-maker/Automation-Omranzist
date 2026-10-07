@@ -75,10 +75,13 @@ class Base(unittest.TestCase):
             {'id': its[0]['id'], 'qty': str(q1), 'unit': 'عدد', 'status': 'bought'},
             {'id': its[1]['id'], 'qty': str(q2), 'unit': 'کیسه', 'status': 'bought'}])
 
-    def lines(self, pid, q1, q2, **extra):
+    def lines(self, pid, q1, q2, s1=None, s2=None, n1='', n2=''):
+        """اقلام اعلام وصول؛ s1 و s2 وضعیت هر قلم (ok، short، extra، returned، partial) و n1 و n2 توضیح."""
         its = self.get(pid)['items']
-        a = dict(id=its[0]['id'], qty=str(q1)); a.update(extra.get('first', {}))
-        return [a, dict(id=its[1]['id'], qty=str(q2))]
+        a, b = dict(id=its[0]['id'], qty=str(q1), note=n1), dict(id=its[1]['id'], qty=str(q2), note=n2)
+        if s1: a['status'] = s1
+        if s2: b['status'] = s2
+        return [a, b]
 
     def receipts(self, pid):
         return self.get(pid)['receipts']
@@ -127,40 +130,61 @@ class T06to10Receipt(Base):
             self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5))
         self.assertEqual(e.exception.code, 400); self.assertIn('پیچ', e.exception.msg)
 
-    def test_07b_accept_with_note(self):
+    def test_07b_status_rules(self):
         pid = self.to_delivery()
-        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5, first={'diff_ok': True, 'diff_note': 'بسته ۸تایی'}))
+        for st, q, n in (('ok', 8, ''), ('extra', 8, 'x'), ('short', 12, 'x'), ('short', 8, ''), ('returned', 8, ''), ('partial', 12, '')):
+            with self.assertRaises(app.ApiError, msg=st) as e:
+                self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, q, 5, s1=st, n1=n))
+            self.assertEqual(e.exception.code, 400)
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5, s1='short', n1='دو عدد کم بود'))
         ln = self.receipts(pid)[0]['lines'][0]
-        self.assertIn('بسته ۸تایی', ln['diff_note']); self.assertEqual(ln['wh_qty'], '8')
-        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 8, 5))  # همان عدد انباردار
-        self.assertEqual(self.get(pid)['doc']['stage'], 'done')
+        self.assertEqual((ln['wh_status'], ln['wh_qty'], ln['wh_note'], ln['exp_qty']), ('short', '8', 'دو عدد کم بود', '10'))
 
     def test_07c_partial_cannot_exceed(self):
         pid = self.to_delivery()
         with self.assertRaises(app.ApiError) as e:
-            self.act('mk-anbar', pid, 'wh_partial', items=self.lines(pid, 12, 5))
+            self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 12, 5, s1='partial'))
         self.assertEqual(e.exception.code, 400)
 
-    def test_07d_receiver_has_no_partial_and_compares_to_warehouse(self):
+    def test_07d_receiver_sees_same_column_and_has_no_other_buttons(self):
         pid = self.to_delivery()
         self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5))
-        with self.assertRaises(app.ApiError) as e:
-            self.act('mk-zali', pid, 'recv_partial', items=self.lines(pid, 6, 5))
-        self.assertEqual(e.exception.code, 403)
-        with self.assertRaises(app.ApiError) as e:  # با عدد انباردار فرق دارد و انتخابی نشده
-            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 9, 5))
-        self.assertIn('انباردار', e.exception.msg)
+        self.assertEqual(self.get(pid, 'mk-zali')['actions'], ['recv_ok'])
+        self.assertEqual(self.get(pid, 'mk-anbar')['actions'], [])  # همه ثبت شد
+        with self.assertRaises(app.ApiError) as e:  # با باقی‌مانده فرق دارد ولی «تأیید» زده شده
+            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 9, 5, s1='ok'))
+        self.assertEqual(e.exception.code, 400)
+
+    def test_07e_receiver_resolves_warehouse_shortage(self):
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5, s1='short', n1='کم بود'))
+        d = self.get(pid, 'mk-zali'); self.assertEqual(d['receipts'][0]['lines'][0]['wh_status'], 'short')
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='ok'))  # کالا را کامل تحویل گرفت
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], d['receipts'][0]['status']), ('done', 'closed'))
+        self.assertEqual([(l['wh_qty'], l['wh_status'], l['recv_qty'], l['recv_status']) for l in d['receipts'][0]['lines']],
+                         [('8', 'short', '10', 'ok'), ('5', 'ok', '5', 'ok')])
+
+    def test_07f_receiver_confirms_discrepancy_back_to_support(self):
+        for st, q in (('short', 8), ('extra', 12), ('returned', 7)):
+            pid = self.to_delivery()
+            self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, q, 5, s1=st, n1='علت'))
+            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, q, 5, s1=st, n1='تأیید می‌کنم'))
+            d = self.get(pid)
+            self.assertEqual((d['doc']['stage'], d['receipts'][0]['status']), ('site_purchase', 'rejected'), st)
+            self.assertEqual(d['doc']['holder_id'], self.u('mk-poshtibani')['id'])
+            self.assertIn(app.LINE_STATUS[st], d['items'][0]['disc_note'])
 
     def test_08a_partial(self):
         self.partial()
 
     def partial(self):
         pid = self.to_delivery()
-        self.act('mk-anbar', pid, 'wh_partial', items=self.lines(pid, 6, 5))
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 6, 5, s1='partial'))
         # ۳.۷: باقی‌مانده نزد انباردار می‌ماند و تحویل‌گیرنده هم‌زمان نوبت ثبت‌شده را تأیید می‌کند
         self.assertEqual(self.get(pid)['doc']['holder_id'], self.u('mk-anbar')['id'])
         self.assertIn('recv_ok', self.get(pid, 'mk-zali')['actions'])
-        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 6, 5))  # تأیید نهایی نوبت بخشی
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 6, 5, s1='partial'))  # نظر نهایی: تحویل بخشی
         d = self.get(pid)
         self.assertEqual(d['receipts'][0]['status'], 'closed'); self.assertEqual(d['doc']['stage'], 'delivery')
         self.assertEqual(d['doc']['holder_id'], self.u('mk-anbar')['id'])
@@ -172,14 +196,14 @@ class T06to10Receipt(Base):
         pid = self.to_delivery()
         its = self.get(pid)['items']
         self.c.execute("UPDATE purchase_items SET bought_qty='1000' WHERE id=?", (its[0]['id'],)); self.c.commit()
-        self.act('mk-anbar', pid, 'wh_partial', items=self.lines(pid, 300, 5))
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 300, 5, s1='partial'))
         self.assertEqual(self.get(pid, 'mk-anbar')['items'][0]['remaining_wh'], '700')
         self.assertIn('wh_ok', self.get(pid, 'mk-anbar')['actions'])  # بدون انتظار برای تحویل‌گیرنده
         self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 700, 0)[:1])
         d = self.get(pid)
         self.assertEqual([r['status'] for r in d['receipts']], ['pending', 'pending'])
         self.assertEqual(d['doc']['holder_id'], self.u('mk-zali')['id'])  # انبار کارش تمام شد
-        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 300, 5))   # نوبت ۱
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 300, 5, s1='partial'))   # نوبت ۱
         self.assertEqual(self.get(pid)['doc']['stage'], 'delivery')
         self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 700, 0)[:1])  # نوبت ۲
         d = self.get(pid); g = d['doc']['grn_no']
@@ -354,6 +378,38 @@ class TPurge(Base):
         self.assertTrue(os.path.isfile(os.path.join(r['backup'], 'oa.db')))
         pid = self.to_delivery()  # شماره‌ها از نو
         self.assertEqual(self.get(pid)['doc']['number'], 'MR-0001')
+
+
+class TDirectOrder(Base):
+    """نسخه ۴.۳: درخواست کالای مدیر پروژه یا هیات مدیره دستور خرید است و به سرپرست کارگاه نمی‌رود."""
+    def order(self, un, cat):
+        pid = self.call('POST', '/api/purchases', un, {
+            'project_id': 2, 'unit': 'exec', 'category': cat, 'warehouse': 'انبار', 'purpose': 'آزمون',
+            'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'}]})['id']
+        self.act(un, pid, 'submit')
+        return pid
+
+    def test_pm_and_board_order_directly(self):
+        sup = self.u('mk-sarparast')['id']
+        for un in ('kasaeian', 'ceo'):
+            d = self.get(self.order(un, 'general'))
+            self.assertEqual((d['doc']['stage'], d['doc']['holder_id']), ('site_purchase', self.u('mk-poshtibani')['id']))
+            self.assertEqual([r['to_id'] for r in d['referrals']], [sup])  # فقط رونوشت جهت اطلاع
+            self.assertEqual(d['referrals'][0]['action'], 'جهت اطلاع')
+            d = self.get(self.order(un, 'main'))
+            self.assertEqual((d['doc']['stage'], d['doc']['holder_id']), ('hq_purchase', self.u('support')['id']))
+            self.assertTrue(d['doc']['po_no'])
+            self.assertEqual([r['to_id'] for r in d['referrals']], [sup])
+
+    def test_normal_user_still_goes_to_supervisor(self):
+        d = self.get(self.order('mk-zali', 'general'))['doc']
+        self.assertEqual(d['stage'], 'supervisor_approve')
+
+    def test_issuer_can_cancel_before_purchase(self):
+        pid = self.order('kasaeian', 'main')
+        self.assertTrue(self.get(pid, 'kasaeian')['can_cancel'])
+        self.call('POST', '/api/purchases/%d/cancel' % pid, 'kasaeian', {'reason': 'نیاز نیست'})
+        self.assertEqual(self.get(pid)['doc']['status'], 'cancelled')
 
 
 class TAdminNoWorkflow(Base):
