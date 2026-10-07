@@ -124,21 +124,36 @@ class T06to10Receipt(Base):
         self.assertEqual([(l['wh_qty'], l['recv_qty']) for l in R['lines']], [('10', '10'), ('5', '5')])
         self.assertEqual(d['doc']['stage'], 'done')
 
-    def test_07a_mismatch_needs_choice(self):
+    def test_07a_default_status(self):
+        """۴.۴: بدون انتخاب وضعیت، مقدار کمتر «تأیید» است (بقیه بعداً) و مقدار بیشتر «اضافی» (توضیح لازم دارد)."""
         pid = self.to_delivery()
         with self.assertRaises(app.ApiError) as e:
-            self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5))
+            self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 12, 5))
         self.assertEqual(e.exception.code, 400); self.assertIn('پیچ', e.exception.msg)
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5))
+        self.assertEqual(self.receipts(pid)[0]['lines'][0]['wh_status'], 'ok')
+        self.assertEqual(self.get(pid, 'mk-anbar')['items'][0]['remaining_wh'], '2')
 
     def test_07b_status_rules(self):
         pid = self.to_delivery()
-        for st, q, n in (('ok', 8, ''), ('extra', 8, 'x'), ('short', 12, 'x'), ('short', 8, ''), ('returned', 8, ''), ('partial', 12, '')):
+        for st, q, n in (('ok', 12, ''), ('extra', 8, 'x'), ('short', 12, 'x'), ('short', 10, 'x'), ('short', 8, ''),
+                         ('returned', 8, ''), ('returned', 0, 'x'), ('partial', 12, ''), ('partial', 10, '')):
             with self.assertRaises(app.ApiError, msg=st) as e:
                 self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, q, 5, s1=st, n1=n))
             self.assertEqual(e.exception.code, 400)
         self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5, s1='short', n1='دو عدد کم بود'))
         ln = self.receipts(pid)[0]['lines'][0]
         self.assertEqual((ln['wh_status'], ln['wh_qty'], ln['wh_note'], ln['exp_qty']), ('short', '8', 'دو عدد کم بود', '10'))
+
+    def test_07b2_ok_with_less_and_full_return(self):
+        """۴.۴: «تأیید» با مقدار کمتر مجاز است؛ «مرجوعی» می‌تواند همه کالا باشد و از باقی‌مانده انبار کم نمی‌شود."""
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 3, s1='returned', s2='ok', n1='مشخصات فنی رعایت نشده'))
+        d = self.get(pid, 'mk-anbar')
+        self.assertEqual([i['remaining_wh'] for i in d['items']], ['10', '2'])
+        self.assertIn('wh_ok', d['actions'])  # پیچ مرجوعی دوباره باید برسد
+        with self.assertRaises(app.ApiError):  # همه صفر
+            self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 0, 0))
 
     def test_07c_partial_cannot_exceed(self):
         pid = self.to_delivery()
@@ -151,8 +166,8 @@ class T06to10Receipt(Base):
         self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5))
         self.assertEqual(self.get(pid, 'mk-zali')['actions'], ['recv_ok'])
         self.assertEqual(self.get(pid, 'mk-anbar')['actions'], [])  # همه ثبت شد
-        with self.assertRaises(app.ApiError) as e:  # با باقی‌مانده فرق دارد ولی «تأیید» زده شده
-            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 9, 5, s1='ok'))
+        with self.assertRaises(app.ApiError) as e:  # بیشتر از مورد انتظار ولی «تأیید» زده شده
+            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 11, 5, s1='ok'))
         self.assertEqual(e.exception.code, 400)
 
     def test_07e_receiver_resolves_warehouse_shortage(self):
@@ -166,14 +181,46 @@ class T06to10Receipt(Base):
                          [('8', 'short', '10', 'ok'), ('5', 'ok', '5', 'ok')])
 
     def test_07f_receiver_confirms_discrepancy_back_to_support(self):
-        for st, q in (('short', 8), ('extra', 12), ('returned', 7)):
+        """۴.۴: تأیید تحویل‌گیرنده نوبت را با مقدار پذیرفته‌شده صادر می‌کند؛ سپس مغایرت به پشتیبانی می‌رود."""
+        for st, q, got in (('short', 8, '8'), ('extra', 12, '12'), ('returned', 7, '0')):
             pid = self.to_delivery()
             self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, q, 5, s1=st, n1='علت'))
             self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, q, 5, s1=st, n1='تأیید می‌کنم'))
             d = self.get(pid)
-            self.assertEqual((d['doc']['stage'], d['receipts'][0]['status']), ('site_purchase', 'rejected'), st)
+            self.assertEqual((d['doc']['stage'], d['receipts'][0]['status']), ('site_purchase', 'closed'), st)
+            self.assertEqual(d['doc']['grn_no'], d['receipts'][0]['code'])
+            self.assertEqual([i['recv_qty'] for i in d['items']], [got, '5'], st)
             self.assertEqual(d['doc']['holder_id'], self.u('mk-poshtibani')['id'])
             self.assertIn(app.LINE_STATUS[st], d['items'][0]['disc_note'])
+
+    def test_07g_receiver_returns_everything(self):
+        """هیچ کالایی پذیرفته نشد: نوبت بدون اعلام وصول کنار می‌رود و پشتیبانی جایگزین می‌خرد."""
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='returned', s2='returned', n1='خراب', n2='خیس'))
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], d['receipts'][0]['status'], d['doc']['grn_no']), ('site_purchase', 'rejected', ''))
+        self.assertEqual([i['remaining_receive'] for i in d['items']], ['10', '5'])
+        self.buy(pid, 10, 5)  # جایگزین رسید
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5))
+        self.assertEqual(self.get(pid)['doc']['stage'], 'done')
+
+    def test_07h_receiver_accepts_what_warehouse_returned(self):
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5, s1='returned', n1='بسته‌بندی باز'))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='ok', s2='ok'))
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], [i['recv_qty'] for i in d['items']]), ('done', ['10', '5']))
+
+    def test_07i_receiver_ok_less_keeps_rest_open(self):
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 9, 5, s1='ok'))
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], d['receipts'][0]['status']), ('delivery', 'closed'))
+        self.assertEqual(d['doc']['holder_id'], self.u('mk-anbar')['id'])
+        self.assertEqual(d['items'][0]['remaining_wh'], '1')
 
     def test_08a_partial(self):
         self.partial()
