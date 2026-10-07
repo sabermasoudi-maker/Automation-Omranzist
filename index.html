@@ -886,7 +886,7 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
     rr.forEach(i=>{const l=L[i.id]||{};const exp=wh?+en(i.remaining_wh):+en(l.exp_qty||i.remaining_receive||'0');
       const whq=l.wh_qty===undefined||l.wh_qty===''?null:+en(l.wh_qty);const q0=wh?exp:(whq===null?exp:whq);
       const wst=l.wh_status||(l.disc_note?'short':'ok');
-      RS.rows[i.id]=wh?{exp,st:'ok',whq:null}:{exp,st:wst,whq,note:l.wh_note||''}});
+      RS.rows[i.id]=wh?{exp,st:'ok',whq:null}:{exp,st:wst,whq,note:''}}); // توضیح انباردار در ستون «نظر انباردار» است؛ کادر تحویل‌گیرنده خالی است
     x=A.length&&rr.length?`${!wh&&R?`<div class="tag pri" style="margin-bottom:6px">نوبت ${fa(R.seq)} — ثبت انباردار ${esc(R.wh_name||'')} ${jd(R.wh_at,1)}${R.delivery_ref?' — حواله '+esc(fa(R.delivery_ref)):''}${pend.length>1?` — ${fa(pend.length-1)} نوبت دیگر هم منتظر نظر شماست`:''}</div>`:''}
       <table><tr><th>شرح کالا</th><th>خریداری‌شده</th><th>${wh?'باقی‌مانده برای ثبت':'مورد انتظار'}</th>${wh?'':'<th>نظر انباردار</th>'}<th>${wh?'مقدار رسیده (این نوبت)':'مقدار تحویل‌گرفته'}</th><th>وضعیت و نظر شما</th></tr>${rr.map(i=>{const l=L[i.id]||{};const r=RS.rows[i.id];
       const q0=wh?r.exp:(l.wh_qty!==undefined&&l.wh_qty!==''?+en(l.wh_qty):r.exp);
