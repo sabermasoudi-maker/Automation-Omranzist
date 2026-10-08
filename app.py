@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.5'
+VERSION = '4.6'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -108,7 +108,8 @@ P_FLOW = {
     'delivery': {'wh_fix': (None, 'اصلاح برگه اعلام وصول طبق تصمیم پشتیبانی (انباردار)'),
                  'wh_ok': (None, 'ثبت انباردار'), 'recv_ok': (None, 'تأیید تحویل‌گیرنده'),
                  'followup': (None, 'ارجاع به پشتیبانی برای پیگیری تحویل')},
-    'disc_review': {'decide': ('delivery', 'تصمیم پشتیبانی درباره مغایرت — بازگشت به انبار برای اصلاح برگه اعلام وصول')},
+    'disc_review': {'decide': ('delivery', 'تصمیم پشتیبانی درباره مغایرت — بازگشت به انبار برای اصلاح برگه اعلام وصول'),
+                    'wh_fix': (None, 'اصلاح برگه اعلام وصول طبق تصمیم پشتیبانی (انباردار)')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
                        'to_disc': ('discrepancy', 'مغایرت — ارسال برای تصمیم')},  # to_disc فقط برای درخواست‌های نسخه ۲.۱
@@ -152,7 +153,7 @@ INV_KINDS = ('فاکتور', 'پیش‌فاکتور')
 ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'عکس وصول', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
 DEFAULT_CANCEL_REASONS = 'نیاز نیست\nبودجه تأمین نیست\nتکراری است\nزمان‌بندی اجازه نمی‌دهد\nسایر'
 P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل کامل از موجودی انبار',
-            'closed': 'پایان یافت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
+            'closed': 'پایان یافت و بایگانی شد', 'site_done': 'تحویل شد — پایان کار کارگاه', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
 SEED_PROJECTS = ['موادکاران', 'پروژه بدون نام ۱', 'پروژه بدون نام ۲']
 # حساب‌های سمت‌های پروژه موادکاران (موقت؛ مدیر سیستم بعداً نام، شخص یا حساب را عوض می‌کند)
 # چارت سازمانی کارگاه موادکاران (۱۴۰۵/۰۷): (نام کاربری، نام، سمت، کلید سمت)
@@ -249,7 +250,7 @@ CREATE TABLE IF NOT EXISTS notify_devices(token TEXT PRIMARY KEY, user_id INTEGE
   agent TEXT DEFAULT '');
 """
 
-DEFAULT_SETTINGS = {'company': 'شرکت گسترش فناوری عمران زیست', 'ceo_threshold': '1000000000',
+DEFAULT_SETTINGS = {'company': 'عمران زیست', 'ceo_threshold': '1000000000',
                     'ceo_user': '', 'office_approver': '', 'warehouse_user': '', 'default_due_days': '3',
                     'support_manager': '', 'finance_manager': '',
                     'cancel_reasons': DEFAULT_CANCEL_REASONS,
@@ -392,6 +393,9 @@ def init_db():
         c.execute("UPDATE settings SET value=? WHERE key='warehouse_user'", (str(ids['aliasghari']),))
         c.execute("INSERT INTO projects(name,code,manager_id) VALUES('دفتر مرکزی','HQ',NULL)")
     add_columns(c)
+    # ۴.۶: نام شرکت در همه جا «عمران زیست»
+    c.execute("UPDATE settings SET value='عمران زیست' WHERE key='company' AND value IN "
+              "('شرکت گسترش فناوری عمران زیست','گسترش فناوری عمران زیست','شرکت گسترش فناوري عمران زيست','گسترش فناوري عمران زيست')")
     apply_custom_roles(c)
     if not settings(c).get('fix_v32'):  # ۳.۲: رونوشت‌های باز درخواست کالا که به پشتیبانی رفته بود، بسته می‌شوند
         sup = support_users(c)
@@ -1145,12 +1149,16 @@ def cart_count(c, u):
 PUR_HELD_SQL = ("((x.holder_id=? AND x.status IN ('open','returned') AND NOT (x.stage='delivery' AND x.recv_at IS NOT NULL)) "
                 "OR (x.stage='delivery' AND x.status='open' AND x.requester_id=? AND EXISTS(SELECT 1 FROM purchase_receipts r "
                 "WHERE r.purchase_id=x.id AND r.status='pending')) "
+                "OR (x.stage='disc_review' AND x.status='open' AND EXISTS(SELECT 1 FROM project_members m WHERE "
+                "m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?) AND EXISTS(SELECT 1 FROM "
+                "purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id WHERE r.purchase_id=x.id AND "
+                "l.need_dec=1 AND l.sup_dec!='' AND l.fix_at IS NULL)) "
                 "OR (x.status='open' AND x.stage IN ('pm_approve','price_approve','discrepancy') AND x.requester_id!=? AND (?=1 "
                 "OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=x.project_id AND m.role_key='pm' AND m.user_id=?))))")
 
 
 def held_args(u):
-    return (u['id'], u['id'], u['id'], 1 if u['role'] == 'manager' else 0, u['id'])
+    return (u['id'], u['id'], u['id'], u['id'], 1 if u['role'] == 'manager' else 0, u['id'])
 # منتظر پرداخت امور مالی: خرید دفتر مرکزی انجام شده و پرداختش ثبت نشده (همزمان با اعلام وصول، نسخه ۲.۶)
 PUR_PAYWAIT_SQL = "(x.pay_req_at IS NOT NULL AND x.pay_done_at IS NULL AND x.status NOT IN ('cancelled','rejected'))"
 # فاکتور رسمی (ارزش افزوده) هنگام کنترل مدارک دریافت نشده
@@ -2121,6 +2129,19 @@ def pur_filter(c, u, q):
     return ' AND '.join(w), p
 
 
+# ۴.۶: مراحل پس از اعلام وصول (کنترل مدارک مالی و تکمیل فاکتور) کار دفتر مرکزی است؛ برای کارکنان کارگاه کار تمام شده است
+POST_DELIVERY = ('finance_settle', 'finance_pay', 'invoice_fix', 'discrepancy', 'archive')
+
+
+def site_mask(P, uid):
+    """نمایش درخواست برای کارمند کارگاه: پس از اعلام وصول «تحویل شد — پایان کار کارگاه» و بدون مراحل مالی."""
+    if P['status'] == 'open' and P['stage'] in POST_DELIVERY and P.get('holder_id') != uid:
+        P['status'], P['site_done'] = 'site_done', 1
+    for k in ('pay_req_at', 'pay_done_at', 'docs_at'):
+        P[k] = None
+    return P
+
+
 @route('GET', '/api/purchases')
 def api_purchases(h, c, u, b, q):
     w, p = pur_filter(c, u, q)
@@ -2129,6 +2150,7 @@ def api_purchases(h, c, u, b, q):
         for P in res:
             for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no'):
                 P[k] = None
+            site_mask(P, u['id'])
     return res
 
 
@@ -2268,6 +2290,9 @@ def api_purchase_get(h, c, u, b, q, pid):
                 f['note'] = ''
         for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no', 'pay_note'):
             P[k] = None
+        site_mask(P, u['id'])
+        if P.get('site_done'):  # ادامه مراحل (مالی) برای کارکنان کارگاه نمایش داده نمی‌شود
+            flow = [f for f in flow if f['stage'] not in POST_DELIVERY]
     # نظر مدیر پروژه و هیات مدیره هنگام تأیید یا برگشت (برای پشتیبانی به رنگ قرمز)
     mgmt = []
     for f in ([] if site else flow):  # فقط متن خودِ تأییدکننده (نه یادداشت خودکار سامانه)
@@ -2311,7 +2336,7 @@ def api_purchase_get(h, c, u, b, q, pid):
     fin = is_finance(c, u) and not site
     mem = pmembers(c, P['project_id'])
     wh = one(c.execute('SELECT full_name FROM users WHERE id=?', (P['wh_by'] or mem.get('warehouse') or 0,))) or {}
-    return {'docs': docs_check(c, P) if bought else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
+    return {'docs': docs_check(c, P) if bought and not site else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
             'site_path': site_path(c, P), 'is_admin': u['role'] == 'admin',
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
             'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in allowed_actions(c, u, P) else [],
@@ -2373,6 +2398,12 @@ def allowed_actions(c, u, P):
             out += ['wh_ok', 'followup']
         if u['id'] == P['requester_id'] and pending_receipts(c, P['id']):  # تأیید نهایی هر نوبت ثبت‌شده انبار
             out += ['recv_ok']
+        return out
+    if P['stage'] == 'disc_review':  # ۴.۶: پشتیبانی تصمیم می‌گیرد و انباردار هم‌زمان اقلام تصمیم‌گرفته را اصلاح می‌کند
+        wh = pmembers(c, P['project_id']).get('warehouse')
+        out = ['decide'] if P['holder_id'] == u['id'] and undecided_lines(c, P['id']) else []
+        if (is_warehouse(c, u, P) or (not wh and u['id'] == P['requester_id'])) and unfixed_lines(c, P['id']):
+            out.append('wh_fix')
         return out
     if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
         return acts if in_group(c, u, P) else []
@@ -2534,7 +2565,7 @@ def check_line(it, exp, qv, stt, note):
         need(qv > 1e-9, 'مقدار کالای اشتباه «%s» را بنویسید' % t, 400)
     else:  # کسری، تحویل بخشی
         need(qv < exp - 1e-9, 'برای «%s» مقدار «%s» باید از مورد انتظار (%s) کمتر باشد' % (LINE_STATUS[stt], t, fmt_num(exp)), 400)
-    if stt in DISC_STATUS:
+    if stt == 'wrong':  # ۴.۶: برای کسری و اضافی توضیح اختیاری است
         need(note, 'توضیح «%s» برای «%s» را بنویسید' % (LINE_STATUS[stt], t), 400)
 
 
@@ -2806,7 +2837,8 @@ def api_purchase_act(h, c, u, b, q, pid):
             stt = (x.get('status') or '').strip() or (ln['wh_status'] if not wh_act and ln['wh_status'] in IN_STATUS else
                                                       ('ok' if qv <= exp + 1e-9 else 'extra'))
             nt = (x.get('note') or '').strip()
-            check_line(it, exp, qv, stt, nt)
+            # ۴.۶: تحویل‌گیرنده‌ای که با وضعیت انباردار موافق است، لازم نیست توضیح او را دوباره بنویسد
+            check_line(it, exp, qv, stt, nt or (ln['wh_note'] if not wh_act and stt == ln['wh_status'] else ''))
             txt = '%s: %s%s' % (who, LINE_STATUS[stt], (' — ' + nt) if nt else '')
             upd = {pre + '_qty': fmt_num(qv), pre + '_status': stt, pre + '_note': nt,
                    'disc_note': txt if stt in DISC_STATUS else ''}
@@ -2818,6 +2850,10 @@ def api_purchase_act(h, c, u, b, q, pid):
             c.execute('UPDATE purchase_receipt_lines SET %s WHERE id=?' % ', '.join('%s=?' % k for k in upd),
                       tuple(upd.values()) + (ln['id'],))
             c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', (upd['disc_note'], it['id']))
+            if wh_act and qv <= 1e-9 and stt != 'extra':  # ۴.۶: قلمی که در این نوبت نرسیده نزد انباردار می‌ماند
+                c.execute('DELETE FROM purchase_receipt_lines WHERE id=?', (ln['id'],))
+                c.execute("UPDATE purchase_items SET disc_note='' WHERE id=?", (it['id'],))
+                continue
             arrived += qv
             u_ = it['bought_unit'] or it['unit'] or ''
             if stt in DISC_STATUS:
@@ -2854,10 +2890,15 @@ def api_purchase_act(h, c, u, b, q, pid):
             pflow(c, P['id'], u, P['stage'], a, label + ' — ' + msg + ' (برگه تا تکمیل باز است)', detail)
             return {'ok': True}
     elif a == 'decide':  # ۴.۵: تصمیم پشتیبانی برای هر مغایرت؛ سپس انباردار همان برگه را اصلاح می‌کند
-        dec = {int(x.get('line') or 0): x for x in (b.get('decisions') or [])}
+        # ۴.۶: پشتیبانی برای هر قلم جداگانه تصمیم می‌گیرد؛ هر قلمِ تصمیم‌گرفته همان لحظه برای اصلاح نزد انباردار می‌رود
+        dec = {int(x.get('line') or 0): x for x in (b.get('decisions') or []) if (x.get('dec') or '').strip()}
+        und = undecided_lines(c, P['id'])
+        need(any(l['id'] in dec for l in und), 'برای حداقل یک قلم تصمیم بگیرید', 400)
         done_ = []
-        for l in undecided_lines(c, P['id']):
-            x = dec.get(l['id']) or {}
+        for l in und:
+            if l['id'] not in dec:
+                continue
+            x = dec[l['id']]
             d_, nt = (x.get('dec') or '').strip(), (x.get('note') or '').strip()
             opts = DECISIONS.get(l['recv_status'], {})
             need(d_ in opts, 'برای «%s» (%s) یکی از گزینه‌ها را انتخاب کنید: %s'
@@ -2879,12 +2920,21 @@ def api_purchase_act(h, c, u, b, q, pid):
             c.execute("UPDATE purchase_items SET disc_note='' WHERE id=?", (it['id'],))
             done_.append('%s: %s%s' % (l['title'], DEC_LABEL[d_], (' — ' + nt) if nt else ''))
         refresh_item_totals(c, P['id'])
+        left = undecided_lines(c, P['id'])
+        if left:  # بقیه اقلام هنوز با پشتیبانی است؛ قلم‌های تصمیم‌گرفته را انباردار هم‌زمان اصلاح می‌کند
+            pflow(c, P['id'], u, P['stage'], a, 'تصمیم پشتیبانی برای %s — ارسال به انبار برای اصلاح برگه؛ %s قلم دیگر منتظر تصمیم'
+                  % ('، '.join(x.split(':')[0] for x in done_), fa_num(str(len(left)))), '؛ '.join(done_ + ([note] if note else [])))
+            return {'ok': True}
         notes.append('؛ '.join(done_))
     elif a == 'wh_fix':  # انباردار برگه را طبق تصمیم پشتیبانی اصلاح (تأیید) می‌کند
         fx = unfixed_lines(c, P['id'])
         c.execute('UPDATE purchase_receipt_lines SET fix_by=?, fix_at=? WHERE id IN (%s)' % ','.join('?' * len(fx)),
                   (u['id'], now()) + tuple(l['id'] for l in fx))
         detail = '؛ '.join('%s: %s' % (l['title'], DEC_LABEL[l['sup_dec']]) for l in fx)
+        if P['stage'] == 'disc_review':  # پشتیبانی هنوز درباره اقلام دیگر تصمیم می‌گیرد
+            pflow(c, P['id'], u, P['stage'], a, 'اصلاح برگه اعلام وصول توسط انباردار (اقلام تصمیم‌گرفته)',
+                  '؛ '.join([detail] + ([note] if note else [])))
+            return {'ok': True}
         if sheet_done(c, P):
             nxt = finalize_sheet(c, u, P, notes, by_wh=True)
             notes.insert(0, detail)
@@ -3357,7 +3407,7 @@ def api_admin_doc_delete(h, c, u, b, q, dt, did):
     tbl = {'letter': 'letters', 'purchase': 'purchases', 'request': 'requests'}[dt]
     D = one(c.execute('SELECT * FROM %s WHERE id=?' % tbl, (did,)))
     need(D, 'سند پیدا نشد', 404)
-    need(dt != 'purchase' or not has_closed_receipt(c, did), 'درخواستی که اعلام وصول صادرشده دارد حذف نمی‌شود')
+    # ۴.۶: درخواست دارای اعلام وصول هم با برگه اعلام وصولش حذف می‌شود
     c.execute('DELETE FROM referrals WHERE doc_type=? AND doc_id=?', (dt, did))
     c.execute('DELETE FROM attachments WHERE doc_type=? AND doc_id=?', (dt, did))  # فایل‌ها در پوشه data\files می‌مانند
     if dt == 'purchase':

@@ -125,18 +125,18 @@ class T06to10Receipt(Base):
         self.assertEqual(d['doc']['stage'], 'done')
 
     def test_07a_default_status(self):
-        """۴.۴: بدون انتخاب وضعیت، مقدار کمتر «تأیید» است (بقیه بعداً) و مقدار بیشتر «اضافی» (توضیح لازم دارد)."""
+        """بدون انتخاب وضعیت، مقدار کمتر «تأیید» است (بقیه بعداً) و مقدار بیشتر «اضافی» (۴.۶: توضیح اختیاری)."""
         pid = self.to_delivery()
-        with self.assertRaises(app.ApiError) as e:
-            self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 12, 5))
-        self.assertEqual(e.exception.code, 400); self.assertIn('پیچ', e.exception.msg)
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 12, 5))
+        self.assertEqual(self.receipts(pid)[0]['lines'][0]['wh_status'], 'extra')
+        pid = self.to_delivery()
         self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5))
         self.assertEqual(self.receipts(pid)[0]['lines'][0]['wh_status'], 'ok')
         self.assertEqual(self.get(pid, 'mk-anbar')['items'][0]['remaining_wh'], '2')
 
     def test_07b_status_rules(self):
         pid = self.to_delivery()
-        for st, q, n in (('ok', 12, ''), ('extra', 8, 'x'), ('short', 12, 'x'), ('short', 10, 'x'), ('short', 8, ''),
+        for st, q, n in (('ok', 12, ''), ('extra', 8, 'x'), ('short', 12, 'x'), ('short', 10, 'x'),
                          ('wrong', 8, ''), ('wrong', 0, 'x'), ('returned', 8, 'x'), ('partial', 12, ''), ('partial', 10, '')):
             with self.assertRaises(app.ApiError, msg=st) as e:
                 self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, q, 5, s1=st, n1=n))
@@ -258,6 +258,25 @@ class T06to10Receipt(Base):
         d = self.get(pid)
         self.assertEqual((d['doc']['stage'], d['items'][0]['accepted']), ('done', '10'))
         self.assertTrue(any('امکان مرجوعی نیست' in n for n in d['items'][0]['rcpt_notes']))
+
+    def test_07k_per_item_decisions(self):
+        """۴.۶: پشتیبانی برای هر قلم جداگانه تصمیم می‌گیرد و انباردار هم‌زمان قلم تصمیم‌گرفته را اصلاح می‌کند."""
+        pid = self.disc_to_support('extra', 12, 4, 'short')
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], len(d['disc_lines'])), ('disc_review', 2))
+        self.decide(pid, ('return_extra', ''))  # فقط قلم اول
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], d['doc']['holder_id']), ('disc_review', self.u('mk-poshtibani')['id']))
+        self.assertEqual(self.get(pid, 'mk-poshtibani')['actions'], ['decide'])
+        self.assertEqual(self.get(pid, 'mk-anbar')['actions'], ['wh_fix'])
+        self.assertIn(pid, [x['id'] for x in self.call('GET', '/api/cartable', 'mk-anbar')['pur_held']])
+        self.act('mk-anbar', pid, 'wh_fix')
+        self.assertEqual(self.get(pid, 'mk-anbar')['actions'], [])
+        self.decide(pid, ('accept_short', ''))  # آخرین قلم: بازگشت به اعلام وصول
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], d['doc']['holder_id']), ('delivery', self.u('mk-anbar')['id']))
+        self.act('mk-anbar', pid, 'wh_fix')
+        self.assertEqual(self.get(pid)['doc']['stage'], 'done')
 
     def test_07j_five_cases_one_sheet(self):
         """پنج حالت در یک برگه: درست، اضافی، کسری، بخشی و اشتباه (پنج قلم)."""
@@ -385,10 +404,32 @@ class T06to10Receipt(Base):
                 'items': [{'title': 'دیگر', 'qty': '1', 'unit': 'عدد'}]})
         self.assertEqual([i['id'] for i in self.get(pid)['items']], [i['id'] for i in before])
 
-    def test_10c_delete_locked(self):
+    def test_10c_admin_deletes_with_receipt(self):
+        """۴.۶: مدیر سیستم درخواست دارای اعلام وصول را هم کامل حذف می‌کند."""
         pid = self._done()
-        with self.assertRaises(app.ApiError):
-            self.call('POST', '/api/admin/docs/purchase/%d/delete' % pid, 'admin')
+        with self.assertRaises(app.ApiError):  # فقط مدیر سیستم
+            self.call('POST', '/api/admin/docs/purchase/%d/delete' % pid, 'mk-zali')
+        self.call('POST', '/api/admin/docs/purchase/%d/delete' % pid, 'admin')
+        self.assertIsNone(app.one(self.c.execute('SELECT id FROM purchases WHERE id=?', (pid,))))
+        self.assertIsNone(app.one(self.c.execute('SELECT id FROM purchase_receipts WHERE purchase_id=?', (pid,))))
+
+    def test_10d_notes_optional_and_zero_rows_stay(self):
+        """۴.۶: توضیح کسری و اضافی اختیاری است؛ قلم با مقدار صفر نزد انباردار می‌ماند و به تحویل‌گیرنده نمی‌رود."""
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 0, s1='short'))
+        R = self.receipts(pid)[0]
+        self.assertEqual([l['title'] for l in R['lines']], ['پیچ'])
+        d = self.get(pid, 'mk-anbar')
+        self.assertEqual(([i['remaining_wh'] for i in d['items']], d['actions']), (['2', '5'], ['wh_ok', 'followup']))
+        self.assertEqual(self.get(pid, 'mk-zali')['actions'], ['recv_ok'])
+        self.assertIn(pid, [x['id'] for x in self.call('GET', '/api/cartable', 'mk-zali')['pur_held']])
+        # تحویل‌گیرنده موافق با «اشتباه ارسال شده» انباردار، بدون تکرار توضیح
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5, s1='wrong', n1='سایز اشتباه'))
+        with self.assertRaises(app.ApiError):  # وضعیت دیگر از انباردار نیست؛ توضیح خودش لازم است
+            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 4, 5, s1='wrong', s2='wrong'))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='wrong'))
+        self.assertEqual(self.get(pid)['doc']['stage'], 'disc_review')
 
 
 class THandover(Base):
@@ -579,3 +620,30 @@ class TMigration(Base):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TSiteDone(Base):
+    def test_site_staff_see_done_after_delivery(self):
+        """۴.۶: پس از اعلام وصول خرید دفتر مرکزی، برای کارکنان کارگاه کار تمام است و مراحل مالی دیده نمی‌شود."""
+        r = self.call('POST', '/api/purchases', 'mk-zali', {
+            'project_id': 2, 'unit': 'exec', 'category': 'main', 'warehouse': 'انبار', 'purpose': 'آزمون',
+            'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'}]})
+        pid = r['id']
+        self.act('mk-zali', pid, 'submit'); self.act('mk-sarparast', pid, 'approve')
+        P = self.get(pid)['doc']
+        pm = self.u('kasaeian')['username']
+        self.act(pm, pid, 'direct')
+        sup = app.one(self.c.execute('SELECT u.username FROM purchases p JOIN users u ON u.id=p.holder_id WHERE p.id=?', (pid,)))['username']
+        self.attach(sup, pid, 'فاکتور', 'inv.pdf')
+        its = self.get(pid)['items']
+        self.act(sup, pid, 'purchased', items=[{'id': its[0]['id'], 'qty': '10', 'unit': 'عدد', 'status': 'bought'}])
+        self.act('mk-anbar', pid, 'wh_ok', items=[{'id': its[0]['id'], 'qty': '10'}])
+        self.act('mk-zali', pid, 'recv_ok', items=[{'id': its[0]['id'], 'qty': '10'}])
+        self.assertEqual(self.get(pid)['doc']['stage'], 'finance_settle')
+        d = self.get(pid, 'mk-zali')
+        self.assertEqual((d['doc']['status'], d['doc'].get('site_done')), ('site_done', 1))
+        self.assertFalse(any(f['stage'] in app.POST_DELIVERY for f in d['flow']))
+        self.assertIsNone(d['docs'])
+        lst = {x['id']: x for x in self.call('GET', '/api/purchases', 'mk-sarparast', q={'project_id': '2'})}
+        self.assertEqual(lst[pid]['status'], 'site_done')
+        self.assertEqual(self.get(pid, 'admin')['doc']['status'], 'open')  # برای دفتر مرکزی در جریان است
