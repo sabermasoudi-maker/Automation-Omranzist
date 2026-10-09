@@ -1112,7 +1112,7 @@ const saveSec=()=>run(async()=>{await api('POST','/api/admin/settings',{idle_min
 const delUser=(id,name)=>run(async()=>{if(!await ask('کاربر «'+name+'» حذف می‌شود و از همه سمت‌ها برداشته می‌شود.','بله، حذف شود'))return;const r=await api('POST',`/api/admin/users/${id}/delete`,{});flash(r.kept_history?'حساب بسته و از فهرست‌ها حذف شد؛ نامش در سوابق می‌ماند':'کاربر حذف شد');await reloadMeta();admin()});
 const delProj=(id,name)=>run(async()=>{if(!await ask('پروژه «'+name+'» حذف می‌شود.','بله، حذف شود'))return;const r=await api('POST',`/api/admin/projects/${id}/delete`,{});flash(r.kept_history?'پروژه از فهرست‌ها حذف شد؛ اسنادش در بایگانی می‌ماند':'پروژه حذف شد');await reloadMeta();admin()});
 const ntRevoke=uid=>run(async()=>{if(!await ask(uid?'اعلان همه دستگاه‌های این کاربر لغو می‌شود.':'اعلان همه دستگاه‌های همه کاربران لغو می‌شود.'))return;await api('POST','/api/admin/notify/revoke',{user_id:uid||''});flash('لغو شد');admin()});
-const httpsUp=(w,inp)=>run(async()=>{await upImg('/api/admin/https/'+w,inp);flash('بارگذاری شد؛ برای فعال شدن، 4-restart.bat را اجرا کنید');admin()});
+const httpsUp=(w,inp)=>run(async()=>{try{await upImg('/api/admin/https/'+w,inp)}finally{admin()}flash('بارگذاری شد؛ برای فعال شدن، 4-restart.bat را اجرا کنید')});
 const httpsDel=()=>run(async()=>{if(!await ask('گواهی و کلید HTTPS حذف می‌شود.'))return;await api('POST','/api/admin/https/delete',{});admin()});
 
 // ---------------------------------------------------------------- راهنما

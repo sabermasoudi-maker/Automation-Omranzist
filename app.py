@@ -1774,7 +1774,7 @@ def api_request_pay(h, c, u, b, q, rid):
             amt = int(str(b.get('paid_amount') or R['amount']).replace(',', '').replace('٬', ''))
         except ValueError:
             raise ApiError('مبلغ نامعتبر')
-        need(amt > 0, 'مبلغ پرداخت را وارد کنید', 400)
+        need(amt > 0, 'مبلغ پرداخت باید بیشتر از صفر باشد', 400)
         need(not R['amount'] or amt <= R['amount'], 'مبلغ پرداخت نمی‌تواند بیشتر از مبلغ تأییدشده (%s ریال) باشد'
              % format(R['amount'], ','), 400)
         sep = (b.get('sepidar_no') or '').strip()
@@ -3598,10 +3598,12 @@ def api_admin_https_upload(h, c, u, b, q, which):
     # فایل ناجور هم ذخیره می‌شود تا گواهی و کلید تازه یکی‌یکی بارگذاری شوند؛ HTTPS در حال کار تا جور شدن جفت
     # با گواهی قبلی ادامه می‌دهد (https_reload فقط جفت درست را به کار می‌برد)
     os.replace(tmp, dest)
+    log(c, 'admin', 0, u['id'], 'بارگذاری ' + ('گواهی' if which == 'cert' else 'کلید') + ' HTTPS' + (' (هنوز ناجور)' if bad else ''))
     if bad:
+        c.commit()  # سابقه بارگذاری با خطای زیر برنگردد
         raise ApiError('ذخیره شد، ولی گواهی و کلید هنوز با هم نمی‌خوانند (%s)؛ اگر جفت تازه است، فایل دیگر را هم '
-                       'بارگذاری کنید. تا آن موقع HTTPS با گواهی قبلی کار می‌کند.' % bad)
-    log(c, 'admin', 0, u['id'], 'بارگذاری ' + ('گواهی' if which == 'cert' else 'کلید') + ' HTTPS')
+                       'بارگذاری کنید. تا آن موقع HTTPS با گواهی قبلی کار می‌کند؛ پیش از کامل شدن جفت سرور را '
+                       'دوباره راه‌اندازی نکنید.' % bad)
     https_reload()
     return {'ok': True, 'status': https_status(c)}
 
