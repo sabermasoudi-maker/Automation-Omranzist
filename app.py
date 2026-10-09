@@ -4,7 +4,7 @@
 فقط با پایتون ۳.۹ به بالا اجرا می‌شود و به هیچ کتابخانه بیرونی یا اینترنت نیاز ندارد.
 اجرا:  python app.py      سپس در مرورگر:  http://<IP سرور>:8080
 """
-import os, sys, json, sqlite3, hashlib, secrets, re, shutil, threading, csv, io, time, ssl, zlib, struct
+import os, sys, json, sqlite3, hashlib, secrets, re, shutil, threading, csv, io, time, ssl, base64
 import mimetypes, urllib.parse, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http import cookies
@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '2.5'
+VERSION = '4.6.1'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -56,6 +56,7 @@ UNITS = [('tech', 'فنی'), ('exec', 'اجرایی'), ('support', 'پشتیبا
 TEAM_ROLES = [('exec_eng', 'مهندس اجرایی', 'exec'), ('tech_eng', 'مهندس دفتر فنی', 'tech')]
 ROLE_UNIT = {'pm': 'exec', 'supervisor': 'exec', 'exec': 'exec', 'tech': 'tech', 'support': 'support',
              'warehouse': 'warehouse', 'exec_eng': 'exec', 'tech_eng': 'tech'}
+BASE_TEAM_ROLES = list(TEAM_ROLES)
 # بالادستِ مستقیم هر سمت در کارگاه (تأیید درخواست و مکاتبات به سمت بالا)
 SUPERIOR = {'exec_eng': 'exec', 'tech_eng': 'tech', 'support': 'supervisor', 'warehouse': 'supervisor',
             'exec': 'supervisor', 'tech': 'supervisor', 'supervisor': 'pm'}
@@ -67,10 +68,12 @@ P_STAGES = {'draft': 'پیش‌نویس درخواست‌کننده', 'unit_appr
             'supervisor_review': 'بررسی سرپرست کارگاه',  # فقط برای درخواست‌های نسخه‌های قبل
             'warehouse_check': 'استعلام موجودی از انبار کارگاه',
             'supervisor_approve': 'تأیید سرپرست کارگاه', 'tech_review': 'بررسی معاون فنی',
+            'referred': 'ارجاع سرپرست کارگاه — کنترل یا تکمیل مدارک',
             'site_purchase': 'خرید در کارگاه — پشتیبانی کارگاه', 'pm_approve': 'بررسی مدیر پروژه',
             'hq_quotes': 'استعلام و پیش‌فاکتور — پشتیبانی دفتر مرکزی',
             'price_approve': 'تأیید قیمت و فروشنده — مدیر پروژه / هیات مدیره',
             'hq_purchase': 'خرید — پشتیبانی دفتر مرکزی', 'delivery': 'اعلام وصول — تحویل‌گیرنده و انباردار',
+            'disc_review': 'تصمیم درباره مغایرت وصول — پشتیبانی',
             'finance_settle': 'کنترل مدارک — امور مالی', 'finance_pay': 'پرداخت — مالی دفتر مرکزی',
             'discrepancy': 'تصمیم درباره مغایرت — مدیر پروژه / هیات مدیره',
             'invoice_fix': 'تکمیل مدارک (فاکتور) — پشتیبانی',
@@ -79,22 +82,34 @@ _RET = ('returned', 'برگشت به درخواست‌کننده برای اصل
 # مرحله بعد با None یعنی سرور بر اساس موجودی، کلاس خرید یا وضعیت تحویل و پرداخت تعیینش می‌کند
 P_FLOW = {
     'draft': {'submit': (None, '')},
-    'unit_approval': {'approve': ('warehouse_check', 'تأیید رئیس واحد و ارسال استعلام به انبار کارگاه'), 'return': _RET},
+    # از نسخه ۳.۰ استعلام موجودی انبار حذف شد؛ مرحله بعد را سرور تعیین می‌کند (معاون فنی یا سرپرست کارگاه)
+    # از نسخه ۴.۰ درخواست مستقیم به سرپرست کارگاه می‌رود؛ مراحل رئیس واحد، استعلام انبار و بررسی معاون فنی فقط برای
+    # درخواست‌های قدیمی در جریان نگه داشته شده‌اند (هنگام ارتقا به تأیید سرپرست کارگاه منتقل می‌شوند)
+    'unit_approval': {'approve': (None, 'تأیید رئیس واحد'), 'return': _RET},
     'supervisor_review': {'inquire': ('warehouse_check', 'ارسال استعلام به انبار کارگاه'), 'return': _RET},
     'warehouse_check': {'stock': (None, 'ثبت موجودی انبار')},
-    'supervisor_approve': {'approve': (None, 'تأیید سرپرست کارگاه'), 'return': _RET},
+    'supervisor_approve': {'approve': (None, 'تأیید سرپرست کارگاه'), 'return': _RET,
+                           'refer': (None, 'ارجاع برای کنترل یا تکمیل مدارک')},
+    'referred': {'refer_done': ('supervisor_approve', 'کنترل یا تکمیل انجام شد — بازگشت به سرپرست کارگاه')},
     'tech_review': {'approve': (None, 'تأیید معاون فنی'), 'return': _RET},
     'site_purchase': {'purchased': ('delivery', 'خرید در کارگاه انجام شد — ارسال برای اعلام وصول')},
     'pm_approve': {'approve': ('hq_quotes', 'تأیید مدیر پروژه — ارسال به پشتیبانی برای استعلام قیمت'),
                    # منبع و قیمت معلوم است: بدون استعلام و تأیید قیمت، مستقیم به خرید
-                   'direct': ('hq_purchase', 'دستور خرید مستقیم (منبع و قیمت معلوم) — ارسال به پشتیبانی برای خرید'),
+                   'direct': ('hq_purchase', 'دستور خرید مستقیم — ارسال به پشتیبانی برای خرید'),
                    'return': _RET},
     'hq_quotes': {'quoted': ('price_approve', 'استعلام و پیش‌فاکتورها آماده شد — ارسال برای تأیید قیمت')},
     'price_approve': {'approve': ('hq_purchase', 'تأیید قیمت و فروشنده — ارسال برای خرید'),
                       'requote': ('hq_quotes', 'برگشت برای استعلام مجدد')},
-    'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول')},
-    'delivery': {'recv_ok': (None, 'تأیید تحویل توسط درخواست‌کننده'), 'recv_bad': (None, 'اعلام مغایرت توسط درخواست‌کننده'),
-                 'wh_ok': (None, 'تأیید دریافت توسط انبار'), 'wh_bad': (None, 'اعلام مغایرت توسط انبار')},
+    # خرید دفتر مرکزی: همزمان به انبار (اعلام وصول) و امور مالی (پرداخت) می‌رود
+    'hq_purchase': {'purchased': ('delivery', 'خرید انجام شد — ارسال برای اعلام وصول و پرداخت مالی')},
+    # ۴.۳: انباردار و تحویل‌گیرنده هر کدام برای هر قلم یکی از پنج وضعیت (تأیید، کسری، اضافی، مرجوعی، تحویل بخشی) را اعلام می‌کنند
+    # ۴.۵: یک برگه اعلام وصول برای هر درخواست؛ اقلام دارای مغایرت پس از تأیید تحویل‌گیرنده برای تصمیم به پشتیبانی
+    # می‌روند و پس از تصمیم، انباردار همان برگه را اصلاح (تأیید) می‌کند
+    'delivery': {'wh_fix': (None, 'اصلاح برگه اعلام وصول طبق تصمیم پشتیبانی (انباردار)'),
+                 'wh_ok': (None, 'ثبت انباردار'), 'recv_ok': (None, 'تأیید تحویل‌گیرنده'),
+                 'followup': (None, 'ارجاع به پشتیبانی برای پیگیری تحویل')},
+    'disc_review': {'decide': ('delivery', 'تصمیم پشتیبانی درباره مغایرت — بازگشت به انبار برای اصلاح برگه اعلام وصول'),
+                    'wh_fix': (None, 'اصلاح برگه اعلام وصول طبق تصمیم پشتیبانی (انباردار)')},
     'finance_settle': {'docs_ok': ('done', 'مدارک کامل است (درخواست، اعلام وصول، فاکتور) — پایان و بایگانی خودکار'),
                        'need_docs': ('invoice_fix', 'برگشت به پشتیبانی برای بارگذاری فاکتور'),
                        'to_disc': ('discrepancy', 'مغایرت — ارسال برای تصمیم')},  # to_disc فقط برای درخواست‌های نسخه ۲.۱
@@ -130,12 +145,15 @@ EDIT_STAGES = ('draft', 'unit_approval', 'supervisor_review', 'warehouse_check',
                'pm_approve', 'returned')
 CANCEL_STAGES = EDIT_STAGES
 # دسته کالا تعیین‌کننده مسیر است: عمومی و مصرفی در کارگاه با پشتیبانی کارگاه؛ اصلی با روال کامل دفتر مرکزی
-CATEGORIES = [('main', 'مصالح، تجهیزات و ابزار اصلی'), ('general', 'عمومی و مصرفی')]
+CATEGORIES = [('main', 'خرید از دفتر مرکزی'), ('general', 'خرید در کارگاه')]  # عنوان‌ها از نسخه ۳.۰
 URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
-ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
+# رویدادهای جانبی گردش که درخواست را جابه‌جا نمی‌کنند (پیوست، ویرایش، پرداخت، اصلاح اعلام وصول، فاکتور رسمی)
+SIDE_ACTIONS = ('attach', 'edit', 'delatt', 'pay_done', 'grn_edit', 'official_inv', 'receipt_partial', 'receipt_full')
+INV_KINDS = ('فاکتور', 'پیش‌فاکتور')
+ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'عکس وصول', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
 DEFAULT_CANCEL_REASONS = 'نیاز نیست\nبودجه تأمین نیست\nتکراری است\nزمان‌بندی اجازه نمی‌دهد\nسایر'
 P_STATUS = {'open': 'در جریان', 'returned': 'برگشت برای اصلاح', 'delivered': 'تحویل کامل از موجودی انبار',
-            'closed': 'پایان یافت و بایگانی شد', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
+            'closed': 'پایان یافت و بایگانی شد', 'site_done': 'تحویل شد — پایان کار کارگاه', 'rejected': 'رد شد', 'cancelled': 'لغو شد (بایگانی)'}
 SEED_PROJECTS = ['موادکاران', 'پروژه بدون نام ۱', 'پروژه بدون نام ۲']
 # حساب‌های سمت‌های پروژه موادکاران (موقت؛ مدیر سیستم بعداً نام، شخص یا حساب را عوض می‌کند)
 # چارت سازمانی کارگاه موادکاران (۱۴۰۵/۰۷): (نام کاربری، نام، سمت، کلید سمت)
@@ -205,6 +223,17 @@ CREATE TABLE IF NOT EXISTS purchase_invoice_lines(id INTEGER PRIMARY KEY, invoic
 CREATE INDEX IF NOT EXISTS ix_pur_inv ON purchase_invoices(purchase_id);
 CREATE TABLE IF NOT EXISTS project_team(project_id INTEGER NOT NULL, user_id INTEGER NOT NULL, role_key TEXT NOT NULL,
   PRIMARY KEY(project_id, user_id));
+CREATE TABLE IF NOT EXISTS purchase_receipts(
+  id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, seq INTEGER NOT NULL, code TEXT DEFAULT '',
+  status TEXT DEFAULT 'open',
+  wh_by INTEGER, wh_at TEXT, recv_by INTEGER, recv_at TEXT,
+  delivery_date TEXT DEFAULT '', delivery_ref TEXT DEFAULT '', note TEXT DEFAULT '', closed_at TEXT);
+CREATE INDEX IF NOT EXISTS ix_pur_rcpt ON purchase_receipts(purchase_id);
+CREATE TABLE IF NOT EXISTS purchase_receipt_lines(
+  id INTEGER PRIMARY KEY, receipt_id INTEGER NOT NULL, item_id INTEGER NOT NULL,
+  wh_qty TEXT DEFAULT '', recv_qty TEXT DEFAULT '', disc_note TEXT DEFAULT '', diff_note TEXT DEFAULT '',
+  wh_status TEXT DEFAULT '', wh_note TEXT DEFAULT '', recv_status TEXT DEFAULT '', recv_note TEXT DEFAULT '', exp_qty TEXT DEFAULT '');
+CREATE INDEX IF NOT EXISTS ix_pur_rcpt_ln ON purchase_receipt_lines(receipt_id);
 CREATE TABLE IF NOT EXISTS purchase_versions(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, version INTEGER,
   data TEXT, user_id INTEGER, note TEXT DEFAULT '', at TEXT);
 CREATE INDEX IF NOT EXISTS ix_pur_ver ON purchase_versions(purchase_id);
@@ -221,7 +250,7 @@ CREATE TABLE IF NOT EXISTS notify_devices(token TEXT PRIMARY KEY, user_id INTEGE
   agent TEXT DEFAULT '');
 """
 
-DEFAULT_SETTINGS = {'company': 'شرکت گسترش فناوری عمران زیست', 'ceo_threshold': '1000000000',
+DEFAULT_SETTINGS = {'company': 'عمران زیست', 'ceo_threshold': '1000000000',
                     'ceo_user': '', 'office_approver': '', 'warehouse_user': '', 'default_due_days': '3',
                     'support_manager': '', 'finance_manager': '',
                     'cancel_reasons': DEFAULT_CANCEL_REASONS,
@@ -325,6 +354,26 @@ def hash_pw(pw, salt=None):
     return hashlib.pbkdf2_hmac('sha256', pw.encode('utf-8'), salt.encode(), 120000).hex(), salt
 
 
+def apply_custom_roles(c):
+    """سمت‌هایی که مدیر سیستم تعریف کرده (نسخه ۲.۸): مثل مهندسان، چند نفر در هر سمت، با بالادست و واحد.
+    در settings با کلید custom_roles به‌صورت [[کلید، عنوان، سمتِ بالادست، واحد], ...] نگه داشته می‌شوند."""
+    try:
+        roles = json.loads(settings(c).get('custom_roles') or '[]')
+    except ValueError:
+        roles = []
+    for k, _, _ in TEAM_ROLES[len(BASE_TEAM_ROLES):]:
+        SUPERIOR.pop(k, None); ROLE_UNIT.pop(k, None)
+    TEAM_ROLES[:] = BASE_TEAM_ROLES + [(r[0], r[1], r[2]) for r in roles]
+    for k, _, sup, unit in roles:
+        SUPERIOR[k] = sup; ROLE_UNIT[k] = unit
+
+
+def team_unit_sql():
+    """واحد هر سمت زیرمجموعه (برای اینکه هر کس فقط درخواست‌های واحد خودش را ببیند)."""
+    return 'CASE t.role_key %s ELSE NULL END' % ' '.join("WHEN '%s' THEN '%s'" % (k, ROLE_UNIT.get(k, ''))
+                                                          for k, _, _ in TEAM_ROLES)
+
+
 def init_db():
     os.makedirs(FILES, exist_ok=True)
     os.makedirs(BACK, exist_ok=True)
@@ -344,11 +393,50 @@ def init_db():
         c.execute("UPDATE settings SET value=? WHERE key='warehouse_user'", (str(ids['aliasghari']),))
         c.execute("INSERT INTO projects(name,code,manager_id) VALUES('دفتر مرکزی','HQ',NULL)")
     add_columns(c)
+    # ۴.۶: نام شرکت در همه جا «عمران زیست»
+    c.execute("UPDATE settings SET value='عمران زیست' WHERE key='company' AND value IN "
+              "('شرکت گسترش فناوری عمران زیست','گسترش فناوری عمران زیست','شرکت گسترش فناوري عمران زيست','گسترش فناوري عمران زيست')")
+    apply_custom_roles(c)
+    if not settings(c).get('fix_v32'):  # ۳.۲: رونوشت‌های باز درخواست کالا که به پشتیبانی رفته بود، بسته می‌شوند
+        sup = support_users(c)
+        if sup:
+            c.execute("UPDATE referrals SET status='closed', done_at=?, reply='رونوشت به پشتیبانی لازم نیست (نسخه ۳.۲)' "
+                      "WHERE doc_type='purchase' AND action='جهت اطلاع' AND status IN ('new','seen','doing') AND to_id IN (%s)"
+                      % ','.join('?' * len(sup)), (now(),) + tuple(sup))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('fix_v32','1')")
     migrate(c)
     migrate_v13(c)
     migrate_v15(c)
     migrate_v16(c)
     migrate_v24(c)
+    purge_v35(c)
+    migrate_v33(c)
+    if not settings(c).get('fix_v39'):  # ۳.۹: مدیر سیستم از همه نقش‌ها و ارجاع‌های گردش کار کنار گذاشته می‌شود
+        adm = [r[0] for r in c.execute("SELECT id FROM users WHERE role='admin'")]
+        if adm:
+            qs = ','.join('?' * len(adm))
+            c.execute("UPDATE referrals SET status='closed', done_at=?, reply='مدیر سیستم در گردش کار نقشی ندارد (نسخه ۳.۹)' "
+                      "WHERE to_id IN (%s) AND status IN ('new','seen','doing')" % qs, [now()] + adm)
+            c.execute('DELETE FROM project_members WHERE user_id IN (%s)' % qs, adm)
+            c.execute('DELETE FROM project_team WHERE user_id IN (%s)' % qs, adm)
+            c.execute('UPDATE projects SET manager_id=NULL WHERE manager_id IN (%s)' % qs, adm)
+            for k in HQ_SETTING_USERS:
+                if (settings(c).get(k) or '') in [str(a) for a in adm]:
+                    c.execute("UPDATE settings SET value='' WHERE key=?", (k,))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('fix_v39','1')")
+    if not settings(c).get('mig_v40'):  # ۴.۰: درخواست‌های در جریان در مراحل حذف‌شده به تأیید سرپرست کارگاه می‌روند
+        for P in rows(c.execute("SELECT * FROM purchases WHERE status='open' AND stage IN "
+                                "('unit_approval','supervisor_review','warehouse_check','tech_review')")):
+            sup = pmembers(c, P['project_id']).get('supervisor')
+            if sup:
+                c.execute("UPDATE purchases SET stage='supervisor_approve', holder_id=? WHERE id=?", (sup, P['id']))
+                c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
+                          (P['id'], P['stage'], 'approve', 'انتقال به تأیید سرپرست کارگاه (کوتاه‌شدن مسیر گردش، نسخه ۴.۰)',
+                           None, '', now()))
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v40','1')")
+    if not settings(c).get('mig_v37'):  # ۳.۷: نوبتی که انباردار ثبت کرده، «منتظر تحویل‌گیرنده» است
+        c.execute("UPDATE purchase_receipts SET status='pending' WHERE status='open' AND wh_at IS NOT NULL")
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v37','1')")
     # نام کامل دو مهندس دفتر فنی موادکاران (فقط اگر هنوز نام قبلی ثبت است)
     for un, old, new in (('mk-bajelani', 'خانم مهندس باجلانی', 'دینا باجلانی'),
                          ('mk-hosseini', 'خانم مهندس حسینی', 'سارینا حسینی')):
@@ -372,18 +460,35 @@ def add_columns(c):
                           ('disc_ok_by', 'INTEGER'), ('disc_ok_at', 'TEXT'), ('disc_note', "TEXT DEFAULT ''"),
                           # ۲.۴: پیش‌فاکتور منتخب و کنترل مدارک مالی (فاکتور رسمی، مدارک ارزش افزوده)
                           ('chosen_att', 'INTEGER'), ('official_inv', 'INTEGER'), ('vat_docs', 'INTEGER'),
-                          ('docs_by', 'INTEGER'), ('docs_at', 'TEXT')],
+                          ('docs_by', 'INTEGER'), ('docs_at', 'TEXT'),
+                          # ۲.۶: ارسال همزمان به مالی برای پرداخت پس از خرید
+                          ('pay_req_at', 'TEXT'), ('pay_done_at', 'TEXT'), ('pay_done_by', 'INTEGER'),
+                          ('pay_note', "TEXT DEFAULT ''"),
+                          # ۳.۶: پشتیبانی‌ای که کار به او واگذار شده (کارگاه یا دفتر مرکزی) در مراحل بعدی هم کار را دارد
+                          ('support_by', 'INTEGER'), ('support_side', "TEXT DEFAULT ''")],
             'purchase_payments': [('code', "TEXT DEFAULT ''")],
+            'purchase_receipt_lines': [('wh_status', "TEXT DEFAULT ''"), ('wh_note', "TEXT DEFAULT ''"),
+                                       ('recv_status', "TEXT DEFAULT ''"), ('recv_note', "TEXT DEFAULT ''"),
+                                       ('exp_qty', "TEXT DEFAULT ''"),  # ۴.۳: وضعیت پنج‌گانه هر قلم
+                                       # ۴.۵: مقدار پذیرفته‌شده، تصمیم پشتیبانی درباره مغایرت و اصلاح انباردار
+                                       ('acc_qty', "TEXT DEFAULT ''"), ('need_dec', 'INTEGER DEFAULT 0'),
+                                       ('sup_dec', "TEXT DEFAULT ''"), ('sup_note', "TEXT DEFAULT ''"),
+                                       ('sup_by', 'INTEGER'), ('sup_at', 'TEXT'),
+                                       ('fix_by', 'INTEGER'), ('fix_at', 'TEXT')],
             'purchase_items': [('stock_qty', "TEXT DEFAULT ''"), ('bought_qty', "TEXT DEFAULT ''"),
                                ('bought_unit', "TEXT DEFAULT ''"), ('bought_status', "TEXT DEFAULT ''"),
-                               ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''")],
+                               ('bought_note', "TEXT DEFAULT ''"), ('recv_qty', "TEXT DEFAULT ''"),
+                               ('disc_note', "TEXT DEFAULT ''"),
+                               ('wh_qty', "TEXT DEFAULT ''")],  # ۳.۵: جمع مقدار شمرده‌شده انبار در نوبت‌های بسته  # ۳.۰: مغایرت هر قلم در اعلام وصول
             'attachments': [('kind', "TEXT DEFAULT ''"), ('deleted_at', 'TEXT'), ('deleted_by', 'INTEGER'),
-                            ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0'), ('archived', 'INTEGER DEFAULT 0')],
+                            ('flow_id', 'INTEGER'), ('hq_only', 'INTEGER DEFAULT 0'), ('archived', 'INTEGER DEFAULT 0'),
+                            ('receipt_id', 'INTEGER')],  # ۳.۵: عکس وصول هر نوبت اعلام وصول
             'letters': [('body', "TEXT DEFAULT ''"), ('signer_id', 'INTEGER'), ('signed_at', 'TEXT'),
                         ('sig_name', "TEXT DEFAULT ''"), ('sig_title', "TEXT DEFAULT ''"), ('sig_file', "TEXT DEFAULT ''"),
                         ('registered_at', 'TEXT'), ('main_to_id', 'INTEGER'), ('cc_text', "TEXT DEFAULT ''"),
                         ('cc_ids', "TEXT DEFAULT ''"), ('main_action', "TEXT DEFAULT ''"), ('dispatched', 'INTEGER DEFAULT 1')],
-            'users': [('sig_path', "TEXT DEFAULT ''"), ('deleted', 'INTEGER DEFAULT 0')],
+            'users': [('sig_path', "TEXT DEFAULT ''"), ('deleted', 'INTEGER DEFAULT 0'),
+                      ('failed_logins', 'INTEGER DEFAULT 0'), ('locked_at', 'TEXT')],  # ۳.۴: قفل پس از ۵ ورود ناموفق
             'projects': [('deleted', 'INTEGER DEFAULT 0')],
             'sessions': [('last_seen', 'TEXT')]}
     for t, cols in want.items():
@@ -410,6 +515,88 @@ def migrate(c):
         pid = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (name, '', mid)).lastrowid
         sync_pm(c, pid, mid)
     c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('seed_v12','1')")
+
+
+def migrate_v33(c):
+    """CR-PUR-02: نوبت‌های اعلام وصول برای درخواست‌های موجود (یک بار)."""
+    if settings(c).get('mig_v33'):
+        return
+    for P in rows(c.execute("SELECT * FROM purchases")):
+        if c.execute('SELECT 1 FROM purchase_receipts WHERE purchase_id=?', (P['id'],)).fetchone():
+            continue
+        its = rows(c.execute("SELECT * FROM purchase_items WHERE purchase_id=? AND bought_status IN ('bought','partial')",
+                             (P['id'],)))
+        if P['grn_no'] and P['recv_at'] and P['wh_at']:  # اعلام وصول صادرشده: یک نوبت بسته
+            rid = c.execute("INSERT INTO purchase_receipts(purchase_id,seq,code,status,wh_by,wh_at,recv_by,recv_at,note,closed_at) "
+                            "VALUES(?,1,?,'closed',?,?,?,?,?,?)",
+                            (P['id'], P['grn_no'], P['wh_by'], P['wh_at'], P['recv_by'], P['recv_at'],
+                             'مهاجرت از نسخه ۳.۲؛ مقدار انبار و تحویل‌گیرنده جدا ثبت نشده بود',
+                             max(P['wh_at'], P['recv_at']))).lastrowid
+            for it in its:
+                c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id,wh_qty,recv_qty) VALUES(?,?,?,?)',
+                          (rid, it['id'], it['recv_qty'] or '', it['recv_qty'] or ''))
+                c.execute('UPDATE purchase_items SET wh_qty=recv_qty WHERE id=?', (it['id'],))
+        elif P['stage'] == 'delivery' and P['status'] == 'open' and P['wh_at'] and not P['recv_at']:  # انبار تأیید کرده
+            rid = c.execute("INSERT INTO purchase_receipts(purchase_id,seq,status,wh_by,wh_at) VALUES(?,1,'pending',?,?)",
+                            (P['id'], P['wh_by'], P['wh_at'])).lastrowid
+            for it in its:
+                c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id,wh_qty,recv_qty,disc_note) VALUES(?,?,?,?,?)',
+                          (rid, it['id'], it['recv_qty'] or '', '', it['disc_note'] or ''))
+                c.execute("UPDATE purchase_items SET recv_qty='' WHERE id=?", (it['id'],))
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('mig_v33','1')")
+
+
+PURGE_TABLES = ('purchase_receipt_lines', 'purchase_receipts', 'purchase_invoice_lines', 'purchase_invoices',
+                'purchase_payments', 'purchase_versions', 'purchase_flow', 'purchase_items', 'purchases', 'letters')
+
+
+def workflow_counts(c):
+    return {'letters': c.execute('SELECT COUNT(*) FROM letters').fetchone()[0],
+            'purchases': c.execute('SELECT COUNT(*) FROM purchases').fetchone()[0]}
+
+
+def purge_workflow(c, tag):
+    """پاک کردن همه مکاتبات و درخواست‌های کالا (با گردش، اقلام، نسخه‌ها، پیوست‌ها، ارجاع‌ها و اعلام وصول‌ها).
+    کاربران، پروژه‌ها و ارکان، سمت‌ها، تنظیمات، سربرگ‌ها و کلیشه‌های امضا و درخواست‌های مالی دست نمی‌خورند.
+    پیش از پاک کردن، نسخه کامل پایگاه داده و فایل‌های پیوستِ پاک‌شده در data\\backups\\<tag>-<تاریخ> نگه داشته می‌شوند.
+    خروجی: تعداد پاک‌شده‌ها و محل پشتیبان."""
+    cnt = workflow_counts(c)
+    keep = ''
+    if cnt['letters'] + cnt['purchases']:
+        keep = os.path.join(BACK, '%s-%s' % (tag, datetime.datetime.now().strftime('%Y%m%d-%H%M%S')))
+        os.makedirs(keep, exist_ok=True)
+        c.commit()
+        bk = sqlite3.connect(os.path.join(keep, 'oa.db'))  # پشتیبان کامل پایگاه داده پیش از پاک کردن
+        c.backup(bk); bk.close()
+        for a in rows(c.execute("SELECT path FROM attachments WHERE doc_type IN ('letter','purchase')")):
+            src = os.path.join(FILES, a['path'])
+            if a['path'] and os.path.isfile(src):
+                dst = os.path.join(keep, 'files', a['path'])
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.move(src, dst)
+        for sub in (PUR_DIR, SIG_COPY_DIR):  # پوشه پیوست‌های درخواست کالا و کلیشه‌های امضای نامه‌ها
+            src = os.path.join(FILES, sub)
+            if os.path.isdir(src):
+                os.makedirs(os.path.join(keep, 'files'), exist_ok=True)
+                shutil.move(src, os.path.join(keep, 'files', sub))
+        c.execute("DELETE FROM referrals WHERE doc_type IN ('letter','purchase')")
+        c.execute("DELETE FROM attachments WHERE doc_type IN ('letter','purchase')")
+        c.execute("DELETE FROM log WHERE doc_type IN ('letter','purchase')")
+        for t in PURGE_TABLES:
+            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (t,)).fetchone():
+                c.execute('DELETE FROM %s' % t)
+        c.execute("DELETE FROM doc_serials WHERE dtype IN ('MR','PO','GRN','PAY')")  # شماره‌ها از نو (MR-0001)
+    return cnt, keep
+
+
+def purge_v35(c):
+    """نسخه ۳.۵ (درخواست کاربر): پاک کردن یک‌باره سوابق، هنگام اولین اجرا."""
+    if settings(c).get('purge_v35'):
+        return
+    cnt, keep = purge_workflow(c, 'pre-v35-purge')
+    if keep:
+        log(c, 'admin', 0, None, 'پاک کردن سوابق مکاتبات و درخواست‌های کالا (نسخه ۳.۵)', 'پشتیبان: ' + keep)
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('purge_v35','1')")
 
 
 def migrate_v24(c):
@@ -547,6 +734,20 @@ TOP_ROLES = ('admin', 'manager')  # بالاترین سطح دسترسی: مدی
 
 def is_mgr(u):
     return u['role'] in TOP_ROLES
+
+
+def is_board(u):
+    """هیات مدیره. مدیر سیستم در هیچ گردش کاری نقش ندارد (نسخه ۳.۹) و فقط وظایف ذاتی خودش را دارد:
+    کاربران و رمزها، پروژه‌ها و ارکان، سمت‌ها، تنظیمات، سربرگ و امضا، HTTPS و اعلان‌ها، حذف و اصلاح اسناد."""
+    return u['role'] == 'manager'
+
+
+def is_admin_id(c, uid):
+    return bool(uid) and c.execute("SELECT 1 FROM users WHERE id=? AND role='admin'", (int(uid),)).fetchone() is not None
+
+
+def need_not_admin(c, uid, what):
+    need(not is_admin_id(c, uid), 'مدیر سیستم در گردش کار نقشی ندارد؛ برای «%s» کاربر دیگری انتخاب کنید' % what, 400)
 
 
 def sees_all(u):
@@ -687,6 +888,8 @@ def make_referrals(c, u, dt, did, to_ids, action, instruction, due, parent_id=No
         allowed = set(colleagues_of(c, u['id']))
         need(all(t in allowed for t in to_ids), 'کارکنان کارگاه فقط به همکاران پروژه خود ارجاع می‌دهند', 400)
     need(action in ACTIONS, 'نوع اقدام نامعتبر', 400)
+    for t in to_ids:  # هیچ سند و ارجاعی به مدیر سیستم نمی‌رود
+        need_not_admin(c, t, 'گیرنده ارجاع')
     need(not due or due >= today(), 'مهلت انجام نمی‌تواند قبل از امروز باشد', 400)
     names = []
     for t in to_ids:
@@ -760,13 +963,61 @@ def pw_ok(pw, r):
     return any(hash_pw(t, r['salt'])[0] == r['pw_hash'] for t in tries)
 
 
+# محدودیت ورود ناموفق: حساب پس از ۵ ورود ناموفق پیاپی بسته می‌شود و فقط مدیر سیستم با رمز جدید بازش می‌کند (۳.۴)؛
+# از یک نشانی IP هم ۲۰ ورود ناموفق ورود را ۱۵ دقیقه می‌بندد (حدس نام‌های کاربری مختلف)
+LOGIN_FAILS, LOGIN_LOCK = {}, threading.Lock()
+LOGIN_MAX_USER, LOGIN_MAX_IP, LOGIN_WINDOW = 5, 20, 15 * 60
+LOCKED_MSG = 'حساب شما به دلیل %s ورود ناموفق بسته شده است. برای رمز جدید به مدیر سیستم مراجعه کنید.' % '۵'
+
+
+def login_blocked(keys):
+    """اگر یکی از کلیدها بیش از حد مجاز ناموفق بوده، چند ثانیه تا آزاد شدن مانده است."""
+    t = time.time()
+    with LOGIN_LOCK:
+        wait = 0
+        for k, lim in keys:
+            fl = [x for x in LOGIN_FAILS.get(k, []) if t - x < LOGIN_WINDOW]
+            LOGIN_FAILS[k] = fl
+            if len(fl) >= lim:
+                wait = max(wait, int(LOGIN_WINDOW - (t - fl[0])) + 1)
+        return wait
+
+
+def login_failed(keys):
+    with LOGIN_LOCK:
+        for k, _ in keys:
+            LOGIN_FAILS.setdefault(k, []).append(time.time())
+
+
 @route('POST', '/api/login')
 def api_login(h, c, u, b, q):
     # نام کاربری به حروف کوچک و بزرگ حساس نیست
-    r = one(c.execute('SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1',
-                      ((b.get('username') or '').strip(),)))
+    un = (b.get('username') or '').strip()
+    keys = [('ip:' + h.client_address[0], LOGIN_MAX_IP)]
+    wait = login_blocked(keys)
+    if wait:
+        raise ApiError('به دلیل ورودهای ناموفق پیاپی از این دستگاه، ورود تا %s دقیقه دیگر ممکن نیست'
+                       % fa_num(str((wait + 59) // 60)), 429)
+    r = one(c.execute('SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1', (un,)))
+    if r and r['locked_at']:
+        raise ApiError(LOCKED_MSG, 423)
     if not r or not pw_ok(b.get('password') or '', r):
-        raise ApiError('نام کاربری یا رمز عبور نادرست است', 401)
+        login_failed(keys)
+        log(c, 'user', r['id'] if r else 0, None, 'ورود ناموفق', '%s از %s' % (un[:50], h.client_address[0]))
+        if r:
+            n = (r['failed_logins'] or 0) + 1
+            c.execute('UPDATE users SET failed_logins=?, locked_at=? WHERE id=?',
+                      (n, now() if n >= LOGIN_MAX_USER else None, r['id']))
+            if n >= LOGIN_MAX_USER:  # بسته شد؛ در «در دست اقدام» مدیر سیستم می‌آید
+                c.execute('DELETE FROM sessions WHERE user_id=?', (r['id'],))
+                log(c, 'user', r['id'], None, 'حساب بسته شد', '%d ورود ناموفق — ارجاع به مدیر سیستم' % n)
+        c.commit()  # خطا تراکنش را برمی‌گرداند؛ شمارش و قفل باید بماند
+        if r and n >= LOGIN_MAX_USER:
+            raise ApiError(LOCKED_MSG, 423)
+        left = LOGIN_MAX_USER - n if r else 0
+        raise ApiError('نام کاربری یا رمز عبور نادرست است' + (' (%s بار دیگر تا بسته شدن حساب)' % fa_num(str(left))
+                                                             if r and left <= 2 else ''), 401)
+    c.execute('UPDATE users SET failed_logins=0 WHERE id=?', (r['id'],))
     tok = secrets.token_hex(24)
     c.execute('INSERT INTO sessions(token,user_id,created_at,last_seen) VALUES(?,?,?,?)', (tok, r['id'], now(), now()))
     h.set_cookie = 'sid=%s; Path=/; HttpOnly; SameSite=Lax' % tok  # کوکی جلسه؛ با بستن مرورگر یا بی‌فعالیتی از بین می‌رود
@@ -805,6 +1056,7 @@ def api_meta(h, c, u, b, q):
             'notify_interval': max(15, int(S.get('notify_interval') or 30)), 'is_admin': u['role'] == 'admin',
             'https_port': HTTPS_RUNNING[0],
             'users': rows(c.execute('SELECT id,full_name,title,role FROM users WHERE active=1 ORDER BY id')),
+            'wf_users': rows(c.execute("SELECT id,full_name,title,role FROM users WHERE active=1 AND role!='admin' ORDER BY id")),
             'projects': rows(c.execute('SELECT id,name,code,manager_id FROM projects WHERE active=1 ORDER BY id')),
             'roles': ROLES, 'letter_kinds': LETTER_KINDS, 'actions': ACTIONS, 'sources': SOURCES,
             'request_kinds': REQUEST_KINDS, 'default_due_days': int(S.get('default_due_days') or 3),
@@ -848,13 +1100,13 @@ def api_cartable(h, c, u, b, q):
         "SELECT q.*, p.name project FROM requests q LEFT JOIN projects p ON p.id=q.project_id "
         "WHERE q.requester_id=? AND q.status IN ('pending','returned','approved') ORDER BY q.id DESC", (u['id'],)))
     pay = []
-    if u['role'] == 'finance' or is_mgr(u):
+    if u['role'] == 'finance' or is_board(u):
         pay = rows(c.execute(
             "SELECT q.*, p.name project, ru.full_name requester FROM requests q LEFT JOIN projects p ON p.id=q.project_id "
             "LEFT JOIN users ru ON ru.id=q.requester_id WHERE q.status='approved' OR (q.status='paid' AND q.sepidar_no='') "
             "ORDER BY q.id"))
     desk = []
-    if u['role'] == 'secretariat' or is_mgr(u):
+    if u['role'] == 'secretariat' or is_board(u):
         # اول: صادره‌های امضاشده (یا بی‌امضاکننده) که منتظر ثبت و شماره دبیرخانه‌اند
         desk = rows(c.execute(
             "SELECT l.*, 1 to_register FROM letters l WHERE l.status='draft' AND (l.signer_id IS NULL OR "
@@ -866,7 +1118,9 @@ def api_cartable(h, c, u, b, q):
     pur_pay = rows(c.execute(PUR_SEL + "WHERE " + PUR_PAY_SQL + " ORDER BY x.id")) if is_finance(c, u) else []
     pur_mine = rows(c.execute(PUR_SEL + "WHERE x.requester_id=? AND x.status IN ('open','returned') ORDER BY x.id DESC",
                               (u['id'],)))
-    return {'inbox': inbox, 'sent': sent, 'approvals': approvals, 'mine': mine, 'pay': pay, 'desk': desk,
+    locked = rows(c.execute('SELECT id, username, full_name, locked_at FROM users WHERE locked_at IS NOT NULL AND deleted=0 '
+                            'ORDER BY locked_at')) if u['role'] == 'admin' else []
+    return {'locked': locked, 'inbox': inbox, 'sent': sent, 'approvals': approvals, 'mine': mine, 'pay': pay, 'desk': desk,
             'pur_held': pur_held, 'pur_mine': pur_mine, 'pur_pay': pur_pay, 'today': today()}
 
 
@@ -883,24 +1137,36 @@ def cart_count(c, u):
     if u['role'] in ('finance',):
         n += c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]
     n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_HELD_SQL, held_args(u)).fetchone()[0]
+    if u['role'] == 'admin':  # حساب‌های بسته‌شده پس از ورود ناموفق، منتظر رمز جدید مدیر سیستم
+        n += c.execute('SELECT COUNT(*) FROM users WHERE locked_at IS NOT NULL AND deleted=0').fetchone()[0]
+    if u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager'):
+        n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_PAYWAIT_SQL).fetchone()[0]
     return n
 
 
 # درخواست‌های کالای در کارتابل: دارنده (جز درخواست‌کننده‌ای که تحویل را تأیید کرده) و انباردارِ منتظر تأیید تحویل
 # مرحله‌های مدیر پروژه / هیات مدیره در کارتابل همه اعضای هیات مدیره و مدیر پروژه است (پارامتر چهارم: عضو هیات مدیره هست یا نه)
 PUR_HELD_SQL = ("((x.holder_id=? AND x.status IN ('open','returned') AND NOT (x.stage='delivery' AND x.recv_at IS NOT NULL)) "
-                "OR (x.stage='delivery' AND x.status='open' AND x.wh_at IS NULL AND EXISTS(SELECT 1 FROM project_members m "
-                "WHERE m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?)) "
+                "OR (x.stage='delivery' AND x.status='open' AND x.requester_id=? AND EXISTS(SELECT 1 FROM purchase_receipts r "
+                "WHERE r.purchase_id=x.id AND r.status='pending')) "
+                "OR (x.stage='disc_review' AND x.status='open' AND EXISTS(SELECT 1 FROM project_members m WHERE "
+                "m.project_id=x.project_id AND m.role_key='warehouse' AND m.user_id=?) AND EXISTS(SELECT 1 FROM "
+                "purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id WHERE r.purchase_id=x.id AND "
+                "l.need_dec=1 AND l.sup_dec!='' AND l.fix_at IS NULL)) "
                 "OR (x.status='open' AND x.stage IN ('pm_approve','price_approve','discrepancy') AND x.requester_id!=? AND (?=1 "
                 "OR EXISTS(SELECT 1 FROM project_members m WHERE m.project_id=x.project_id AND m.role_key='pm' AND m.user_id=?))))")
 
 
 def held_args(u):
-    return (u['id'], u['id'], u['id'], 1 if u['role'] == 'manager' else 0, u['id'])
+    return (u['id'], u['id'], u['id'], u['id'], 1 if u['role'] == 'manager' else 0, u['id'])
+# منتظر پرداخت امور مالی: خرید دفتر مرکزی انجام شده و پرداختش ثبت نشده (همزمان با اعلام وصول، نسخه ۲.۶)
+PUR_PAYWAIT_SQL = "(x.pay_req_at IS NOT NULL AND x.pay_done_at IS NULL AND x.status NOT IN ('cancelled','rejected'))"
+# فاکتور رسمی (ارزش افزوده) هنگام کنترل مدارک دریافت نشده
+PUR_NOINV_SQL = "(x.docs_at IS NOT NULL AND COALESCE(x.official_inv,0)=0)"
 # منتظر پرداخت یا تسویه مالی (پس از تأیید قیمت یا خرید کارگاه)
 # خریدهای کارگاه (عمومی و مصرفی) به مالی دفتر مرکزی نمی‌آیند
 # منتظر کنترل مدارک امور مالی (پرداخت و تسویه در سامانه نیست)
-PUR_PAY_SQL = "(x.status='open' AND x.stage='finance_settle')"
+PUR_PAY_SQL = "((x.status='open' AND x.stage='finance_settle') OR " + PUR_PAYWAIT_SQL + ")"
 
 
 # ---------- نامه‌ها
@@ -1011,13 +1277,13 @@ def dispatch_letter(c, u, lid, instruction='', due=''):
 def api_letter_new(h, c, u, b, q):
     f = letter_fields(b)
     if f['kind'] == 'in':
-        need(u['role'] in ('admin', 'secretariat', 'manager'), 'ثبت نامه وارده فقط توسط دبیرخانه انجام می‌شود')
+        need(u['role'] in ('secretariat', 'manager'), 'ثبت نامه وارده فقط توسط دبیرخانه انجام می‌شود')
     if f['signer_id']:
         need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (f['signer_id'],)).fetchone(), 'امضاکننده نامعتبر', 400)
         if is_site_only(c, u):
             need(f['signer_id'] in colleagues_of(c, u['id']) + [u['id']], 'امضاکننده باید از همکاران پروژه باشد', 400)
     # صادره: شماره فقط هنگام ثبت در دبیرخانه؛ مگر دبیرخانه نامه امضاشده کاغذی را مستقیم ثبت کند
-    draft = f['kind'] == 'out' and (f['signer_id'] or u['role'] not in ('admin', 'secretariat'))
+    draft = f['kind'] == 'out' and (f['signer_id'] or u['role'] != 'secretariat')
     y, seq, number = (None, None, None) if draft else next_letter_number(c, f['kind'])
     cur = c.execute('INSERT INTO letters(kind,year,seq,number,subject,counterpart,their_number,their_date,letter_date,'
                     'project_id,priority,confidential,summary,source,created_by,created_at,body,signer_id,status,'
@@ -1074,7 +1340,7 @@ def api_letter_sign(h, c, u, b, q, lid):
 def api_letter_register(h, c, u, b, q, lid):
     """ثبت صادره در دبیرخانه و دریافت شماره."""
     L = get_doc(c, u, 'letter', int(lid))
-    need(u['role'] in ('admin', 'secretariat'), 'ثبت و شماره‌گذاری صادره فقط توسط دبیرخانه انجام می‌شود')
+    need(u['role'] == 'secretariat', 'ثبت و شماره‌گذاری صادره فقط توسط دبیرخانه انجام می‌شود')
     need(L['status'] == 'draft', 'این نامه قبلاً ثبت شده است', 400)
     need(not L['signer_id'] or L['signed_at'], 'نامه هنوز امضا نشده است', 400)
     y, seq, number = next_letter_number(c, L['kind'])
@@ -1167,7 +1433,7 @@ def api_letter_get(h, c, u, b, q, lid):
     return {'doc': L, 'attachments': att, 'referrals': refs, 'log': lg,
             'can_sign': L['signer_id'] == u['id'] and not L['signed_at'],
             'my_stamp': bool(me and me['sig_path']),
-            'can_register': L['status'] == 'draft' and u['role'] in ('admin', 'secretariat')
+            'can_register': L['status'] == 'draft' and u['role'] == 'secretariat'
             and (not L['signer_id'] or bool(L['signed_at']))}
 
 
@@ -1196,11 +1462,11 @@ def api_letter_update(h, c, u, b, q, lid):
 @route('POST', r'/api/letters/(\d+)/archive')
 def api_letter_archive(h, c, u, b, q, lid):
     L = get_doc(c, u, 'letter', int(lid))
-    need(u['role'] in ('admin', 'secretariat', 'manager'), 'بایگانی توسط دبیرخانه یا هیات مدیره انجام می‌شود')
+    need(u['role'] in ('secretariat', 'manager'), 'بایگانی توسط دبیرخانه یا هیات مدیره انجام می‌شود')
     open_n = c.execute("SELECT COUNT(*) FROM referrals WHERE doc_type='letter' AND doc_id=? AND status IN %s" % str(OPEN),
                        (L['id'],)).fetchone()[0]
     if open_n:
-        need(is_mgr(u) and b.get('force'), 'این نامه هنوز %d ارجاع باز دارد؛ ابتدا باید انجام یا بسته شوند' % open_n, 400)
+        need(is_board(u) and b.get('force'), 'این نامه هنوز %d ارجاع باز دارد؛ ابتدا باید انجام یا بسته شوند' % open_n, 400)
         c.execute("UPDATE referrals SET status='closed', done_at=?, reply=reply||' [بسته شد با بایگانی]' "
                   "WHERE doc_type='letter' AND doc_id=? AND status IN %s" % str(OPEN), (now(), L['id']))
     c.execute("UPDATE letters SET status='archived', archive_code=?, closed_at=? WHERE id=?",
@@ -1212,7 +1478,7 @@ def api_letter_archive(h, c, u, b, q, lid):
 @route('POST', r'/api/letters/(\d+)/reopen')
 def api_letter_reopen(h, c, u, b, q, lid):
     L = get_doc(c, u, 'letter', int(lid))
-    need(u['role'] in ('admin', 'secretariat', 'manager'))
+    need(u['role'] in ('secretariat', 'manager'))
     c.execute("UPDATE letters SET status='open', closed_at=NULL WHERE id=?", (L['id'],))
     log(c, 'letter', L['id'], u['id'], 'بازگشایی از بایگانی')
     return {'ok': True}
@@ -1272,15 +1538,21 @@ def pur_folder(P):
 
 def handover_id(c, P):
     """شماره آخرین رویداد گردش که درخواست را به کارتابل دارنده فعلی رساند."""
-    r = c.execute("SELECT MAX(id) FROM purchase_flow WHERE purchase_id=? AND action NOT IN ('attach','edit','delatt')",
-                  (P['id'],)).fetchone()
+    r = c.execute('SELECT MAX(id) FROM purchase_flow WHERE purchase_id=? AND action NOT IN (%s)'
+                  % ','.join('?' * len(SIDE_ACTIONS)), (P['id'],) + SIDE_ACTIONS).fetchone()
     return r[0] or 0
 
 
 def can_del_att(c, u, P, a):
     """پیوست را فقط خودِ بارگذارنده حذف می‌کند، آن هم فقط در همان نوبتی که درخواست در کارتابلش است."""
-    return (a['uploaded_by'] == u['id'] and P['holder_id'] == u['id'] and P['status'] in ('open', 'returned')
-            and (a.get('flow_id') or 0) > handover_id(c, P))
+    if a['uploaded_by'] != u['id'] or (a.get('flow_id') or 0) <= handover_id(c, P):
+        return False
+    if a.get('receipt_id') and c.execute("SELECT 1 FROM purchase_receipts WHERE id=? AND status='closed'",
+                                         (a['receipt_id'],)).fetchone():
+        return False  # عکس وصول نوبت صادرشده قفل است
+    if P['holder_id'] == u['id'] and P['status'] in ('open', 'returned'):
+        return True
+    return a.get('kind') in INV_KINDS and post_purchase_support(c, u, P)  # فاکتوری که پشتیبانی پس از خرید گذاشته
 
 
 @route('POST', r'/api/attachments/(\d+)/delete')
@@ -1301,8 +1573,12 @@ def api_att_delete(h, c, u, b, q, aid):
 def api_attach(h, c, u, b, q):
     dt, did = q.get('doc_type'), int(q.get('doc_id') or 0)
     D = get_doc(c, u, dt, did)
+    kind = urllib.parse.unquote(h.headers.get('X-Kind') or '')
+    kind = kind if kind in ATT_KINDS else ''
     if dt == 'purchase':
         need(can_attach_pur(c, u, D), 'پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد')
+        if not can_attach_turn(c, u, D):  # پشتیبانی پس از خرید: فقط فاکتور یا پیش‌فاکتور
+            need(kind in INV_KINDS, 'پس از خرید، پشتیبانی فقط فاکتور یا پیش‌فاکتور پیوست می‌کند', 400)
     name = urllib.parse.unquote(h.headers.get('X-Filename') or 'file')
     name = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(name))[:150] or 'file'
     raw = h.raw_body
@@ -1312,15 +1588,18 @@ def api_attach(h, c, u, b, q):
     rel = os.path.join(sub, '%s_%s' % (secrets.token_hex(6), name))
     with open(os.path.join(FILES, rel), 'wb') as f:
         f.write(raw)
-    kind = urllib.parse.unquote(h.headers.get('X-Kind') or '')
-    kind = kind if kind in ATT_KINDS else ''
     fid = None
     if dt == 'purchase':
         fid = c.execute('INSERT INTO purchase_flow(purchase_id,stage,action,label,user_id,note,at) VALUES(?,?,?,?,?,?,?)',
                         (did, D['stage'], 'attach', 'پیوست ' + (kind or 'فایل'), u['id'], name, now())).lastrowid
-    hq_only = 1 if dt == 'purchase' and D['stage'] in HQ_ONLY_STAGES else 0  # مدارک قیمت برای کارگاه دیده نمی‌شود
-    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id,hq_only) '
-              'VALUES(?,?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid, hq_only))
+    # مدارک قیمت برای کارگاه دیده نمی‌شود؛ فاکتور خرید دفتر مرکزی هم که پس از خرید پیوست شود
+    hq_only = 1 if dt == 'purchase' and (D['stage'] in HQ_ONLY_STAGES or (
+        kind in INV_KINDS and not site_path(c, D) and is_bought(c, D))) else 0
+    rid = None
+    if dt == 'purchase' and kind == 'عکس وصول' and D['stage'] == 'delivery':  # عکس وصول به نوبت باز تعلق دارد
+        rid, hq_only = open_receipt(c, D)['id'], 0
+    c.execute('INSERT INTO attachments(doc_type,doc_id,name,path,size,uploaded_by,created_at,kind,flow_id,hq_only,receipt_id) '
+              'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid, hq_only, rid))
     log(c, dt, did, u['id'], 'پیوست' + (' — ' + kind if kind else ''), name)
     return {'ok': True}
 
@@ -1446,7 +1725,7 @@ def api_request_resubmit(h, c, u, b, q, rid):
 @route('POST', r'/api/requests/(\d+)/cancel')
 def api_request_cancel(h, c, u, b, q, rid):
     R = get_doc(c, u, 'request', int(rid))
-    need((R['requester_id'] == u['id'] or is_mgr(u)) and R['status'] in ('pending', 'returned'),
+    need((R['requester_id'] == u['id'] or is_board(u)) and R['status'] in ('pending', 'returned'),
          'لغو فقط پیش از تأیید نهایی و توسط درخواست‌کننده ممکن است')
     c.execute("UPDATE requests SET status='cancelled', closed_at=? WHERE id=?", (now(), R['id']))
     c.execute("UPDATE steps SET status='skipped' WHERE request_id=? AND status IN ('waiting','pending')", (R['id'],))
@@ -1457,7 +1736,7 @@ def api_request_cancel(h, c, u, b, q, rid):
 @route('POST', r'/api/requests/(\d+)/pay')
 def api_request_pay(h, c, u, b, q, rid):
     R = get_doc(c, u, 'request', int(rid))
-    need(u['role'] == 'finance' or is_mgr(u), 'ثبت پرداخت فقط توسط مالی یا هیات مدیره')
+    need(u['role'] == 'finance' or is_board(u), 'ثبت پرداخت فقط توسط مالی یا هیات مدیره')
     if R['status'] == 'approved':
         try:
             amt = int(str(b.get('paid_amount') or R['amount']).replace(',', ''))
@@ -1504,6 +1783,7 @@ def api_project_update(h, c, u, b, q, pid):
         v = int(mem.get(key) or 0)
         if v:
             need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (v,)).fetchone(), 'کاربر «%s» نامعتبر است' % label, 400)
+            need_not_admin(c, v, label)
         if key == 'pm':
             sync_pm(c, pr['id'], v)
         elif v:
@@ -1516,6 +1796,7 @@ def api_project_update(h, c, u, b, q, pid):
             for v in (b['team'] or {}).get(key) or []:
                 v = int(v)
                 need(c.execute('SELECT 1 FROM users WHERE id=? AND active=1', (v,)).fetchone(), 'کاربر «%s» نامعتبر است' % label, 400)
+                need_not_admin(c, v, label)
                 c.execute('INSERT OR REPLACE INTO project_team(project_id,user_id,role_key) VALUES(?,?,?)', (pr['id'], v, key))
     log(c, 'project', pr['id'], u['id'], 'ویرایش پروژه و ارکان', name)
     return {'ok': True}
@@ -1535,12 +1816,15 @@ def stage_holder(c, P, stage):
     if stage == 'returned':
         return P['requester_id']
     labels = dict(PROJECT_ROLES)
-    if stage == 'invoice_fix':  # اصلاح با همان پشتیبانی که خرید را انجام داده (کارگاه یا دفتر مرکزی)
+    if stage in ('invoice_fix', 'disc_review'):  # با همان پشتیبانی که خرید را انجام داده (کارگاه یا دفتر مرکزی)
         stage = purchase_stage_of(c, P)
+    sb = P.get('support_by') if hasattr(P, 'get') else None
+    if stage in ('site_purchase', 'hq_quotes', 'hq_purchase') and sb and c.execute(
+            'SELECT 1 FROM users WHERE id=? AND active=1', (sb,)).fetchone():
+        return sb  # کار به این پشتیبانی واگذار شده است (نسخه ۳.۶)
     if stage == 'unit_approval':
         # تأیید بالادست مستقیم درخواست‌کننده (مهندس ← معاونش، پشتیبانی و انبار ← سرپرست کارگاه)؛ وگرنه رئیس واحد
-        own = [k for _, k in user_project_roles(c, P['requester_id'], P['project_id']) if k in SUPERIOR]
-        kind, key = 'member', (SUPERIOR[own[0]] if own else UNIT_HEAD[P['unit']])
+        kind, key = 'member', unit_head_key(c, P)
     else:
         kind, key = STAGE_HOLDER[stage]
     if kind == 'member':
@@ -1572,6 +1856,29 @@ def fmt_num(x):
     return ('%g' % x) if x is not None else ''
 
 
+def round_start(c, P):
+    """شروع نوبت فعلی: آخرین ارسال مجدد یا برگشت؛ تأییدهای پیش از آن دوباره لازم است."""
+    return c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action IN ('resubmit','return')",
+                     (P['id'],)).fetchone()[0]
+
+
+RETURN_STAGES = ('unit_approval', 'supervisor_review', 'warehouse_check', 'tech_review', 'supervisor_approve')
+
+
+def return_targets(c, u, P):
+    """کسانی که درخواست را می‌توان به آن‌ها برگرداند (نسخه ۲.۸): درخواست‌کننده و هر کسی که پیش‌تر در مراحل
+    کارگاه روی آن اقدام کرده؛ درخواست به همان مرحله و کارتابل او برمی‌گردد."""
+    out = {P['requester_id']: 'returned'}
+    for f in c.execute("SELECT user_id, stage FROM purchase_flow WHERE purchase_id=? AND action IN "
+                       "('approve','stock','inquire') ORDER BY id", (P['id'],)):
+        if f[1] in RETURN_STAGES and f[1] != P['stage'] and f[0] != P['requester_id']:
+            out[f[0]] = f[1]
+    out.pop(u['id'], None)
+    names = {r[0]: r[1] for r in c.execute('SELECT id, full_name FROM users WHERE active=1')}
+    return [{'id': k, 'name': names[k], 'stage': v, 'label': 'درخواست‌کننده' if v == 'returned' else P_STAGES[v]}
+            for k, v in out.items() if k in names]
+
+
 def tech_already(c, P):
     """معاون فنی قبلاً در همین نوبت درخواست را ثبت یا تأیید کرده است (دوباره لازم نیست)."""
     t = pmembers(c, P['project_id']).get('tech')
@@ -1579,8 +1886,7 @@ def tech_already(c, P):
         return False
     if t == P['requester_id']:
         return True
-    last_ret = c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action='resubmit'",
-                         (P['id'],)).fetchone()[0]
+    last_ret = round_start(c, P)
     return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND id>? AND "
                      "action IN ('approve','submit') AND stage IN ('draft','unit_approval')",
                      (P['id'], t, last_ret)).fetchone() is not None
@@ -1588,33 +1894,25 @@ def tech_already(c, P):
 
 def done_this_round(c, P, stage):
     """این مرحله در نوبت فعلی (پس از آخرین ارسال مجدد) تأیید شده است."""
-    last_ret = c.execute("SELECT COALESCE(MAX(id),0) FROM purchase_flow WHERE purchase_id=? AND action='resubmit'",
-                         (P['id'],)).fetchone()[0]
+    last_ret = round_start(c, P)
     return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND stage=? AND action='approve' AND id>?",
                      (P['id'], stage, last_ret)).fetchone() is not None
 
 
 def is_general(P):
-    """کالای عمومی و مصرفی: در کارگاه و با پشتیبانی کارگاه تأمین می‌شود (بدون دفتر مرکزی)."""
+    """کالای عمومی و مصرفی: در کارگاه و با پشتیبانی کارگاه تأمین می‌شود و به پشتیبانی دفتر مرکزی نمی‌رود
+    (مگر خود پشتیبانی کارگاه آن را واگذار کند)."""
     return (P['category'] or 'general') != 'main'
 
 
 def after_stock(c, P, notes):
-    """پس از استعلام انبار: عمومی و مصرفی ← سرپرست کارگاه؛ اصلی ← معاون فنی، سپس سرپرست کارگاه."""
-    if is_general(P):
-        return 'supervisor_approve'
-    if tech_already(c, P):
-        notes.append('بررسی معاون فنی لازم نبود؛ معاون فنی قبلاً درخواست را ثبت یا تأیید کرده است')
-        return 'supervisor_approve'
-    return 'tech_review'
+    """(برای درخواست‌های قدیمی) پس از استعلام انبار یا تأیید رئیس واحد: مستقیم به سرپرست کارگاه؛ بدون معاون فنی (۴.۰)."""
+    return 'supervisor_approve'
 
 
 def after_supervisor(c, P, notes):
-    """پس از تأیید سرپرست کارگاه: عمومی و مصرفی ← خرید در کارگاه؛ اصلی ← مدیر پروژه و دفتر مرکزی.
-    درخواست اصلی‌ای که پیش از نسخه ۲.۲ به سرپرست رسیده و معاون فنی هنوز بررسی‌اش نکرده، اول به معاون فنی می‌رود."""
-    if not is_general(P) and not done_this_round(c, P, 'tech_review') and not tech_already(c, P) and not c.execute(
-            "SELECT 1 FROM purchase_flow WHERE purchase_id=? AND stage='tech_review'", (P['id'],)).fetchone():
-        return 'tech_review'
+    """پس از تأیید سرپرست کارگاه: خرید در کارگاه ← خرید پشتیبانی کارگاه؛ خرید از دفتر مرکزی ← مدیر پروژه.
+    از نسخه ۴.۰ کنترل معاون فنی هم برای خرید از دفتر مرکزی لازم نیست."""
     return after_tech(P)
 
 
@@ -1676,11 +1974,11 @@ def pur_fields(c, u, b, pid_fixed=None, req_date=None):
     pr = one(c.execute("SELECT * FROM projects WHERE id=? AND active=1 AND code!='HQ'", (pid,)))
     need(pr, 'پروژه را انتخاب کنید', 400)
     if not pid_fixed:
-        need(is_mgr(u) or is_member(c, u, pid), 'فقط ارکان پروژه «%s» می‌توانند برای آن درخواست کالا ثبت کنند' % pr['name'])
+        need(is_board(u) or is_member(c, u, pid), 'فقط ارکان پروژه «%s» می‌توانند برای آن درخواست کالا ثبت کنند' % pr['name'])
     unit = b.get('unit')
     need(unit in dict(UNITS), 'واحد درخواست‌کننده را انتخاب کنید', 400)
-    cat = b.get('category') or 'general'
-    need(cat in dict(CATEGORIES), 'دسته کالا نامعتبر', 400)
+    cat = b.get('category') or ''
+    need(cat in dict(CATEGORIES), 'دسته کالا (دسته خرید) را انتخاب کنید', 400)
     urg = b.get('urgency') or 'normal'
     need(urg in dict(URGENCIES), 'فوریت نامعتبر', 400)
     rd = jnorm(req_date) or jtoday()
@@ -1738,17 +2036,54 @@ def write_fields(c, pid, f, items):
     save_items(c, pid, items)
 
 
+def unit_head_key(c, P):
+    """سمتِ تأییدکننده واحد: بالادست مستقیم درخواست‌کننده، وگرنه رئیس واحد."""
+    own = [k for _, k in user_project_roles(c, P['requester_id'], P['project_id']) if k in SUPERIOR]
+    return SUPERIOR[own[0]] if own else UNIT_HEAD[P['unit']]
+
+
+def is_direct_orderer(c, u, f):
+    """مدیر پروژه یا عضو هیات مدیره: درخواست کالای او دستور خرید است و از زیردستش (سرپرست کارگاه) تأیید نمی‌گیرد."""
+    return u['role'] == 'manager' or u['id'] == pmembers(c, f['project_id']).get('pm')
+
+
+def after_direct_order(c, u, P, stage):
+    """پس از ثبت دستور خرید مستقیم: سفارش خرید برای خرید دفتر مرکزی، و فقط یک رونوشت جهت اطلاع به سرپرست کارگاه."""
+    if stage == 'hq_purchase' and not P['po_no']:
+        c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
+    sup = pmembers(c, P['project_id']).get('supervisor')
+    if sup and sup != u['id'] and not c.execute(
+            "SELECT 1 FROM referrals WHERE doc_type='purchase' AND doc_id=? AND to_id=? AND status IN ('new','seen')",
+            (P['id'], sup)).fetchone():
+        c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
+                  ('purchase', P['id'], u['id'], sup, 'جهت اطلاع', 'رونوشت دستور خرید %s' % u['full_name'], now()))
+
+
 def start_stage(c, u, f):
-    """مرحله اول: اگر درخواست‌کننده معاون فنی، معاون اجرایی یا سرپرست کارگاه باشد، ثبتش همان تأیید رئیس واحد است."""
+    """نسخه ۴.۰: هر درخواست کالا مستقیم به سرپرست کارگاه می‌رود (بدون تأیید معاون یا رئیس واحد).
+    اگر خود سرپرست کارگاه درخواست‌دهنده باشد، ثبت او همان تأیید است."""
     mem = pmembers(c, f['project_id'])
-    if u['id'] in {mem.get(k) for k in HEAD_ROLES}:
-        return 'warehouse_check', 'ثبت و تأیید رئیس واحد و ارسال استعلام به انبار کارگاه'
-    return 'unit_approval', 'ثبت و ارسال برای تأیید رئیس واحد'
+    if is_direct_orderer(c, u, f):  # نسخه ۴.۳: مدیر پروژه یا هیات مدیره مستقیم به پشتیبانی دستور می‌دهند
+        nxt = 'site_purchase' if is_general(f) else 'hq_purchase'
+        return nxt, 'دستور خرید مستقیم — ارسال به ' + P_STAGES[nxt]
+    if u['id'] == mem.get('supervisor'):
+        nxt = after_supervisor(c, f, [])
+        return nxt, 'ثبت و تأیید سرپرست کارگاه — ارسال به ' + P_STAGES[nxt]
+    return 'supervisor_approve', 'ثبت و ارسال برای تأیید سرپرست کارگاه'
+
+
+def support_users(c):
+    """پشتیبانی دفتر مرکزی و پشتیبانی همه کارگاه‌ها."""
+    ids = {r[0] for r in c.execute("SELECT user_id FROM project_members WHERE role_key='support'")}
+    sm = int(settings(c).get('support_manager') or 0)
+    return ids | ({sm} if sm else set())
 
 
 def cc_exec(c, u, pid, f):
     """درخواستی که معاون فنی صادر یا تأیید می‌کند (از جمله درخواست مهندسان دفتر فنی)، رونوشت به معاون اجرایی می‌رود."""
     mem = pmembers(c, f['project_id'])
+    if mem.get('exec') in support_users(c):  # رونوشت به پشتیبانی نمی‌رود (نسخه ۳.۲)
+        return
     if mem.get('tech') == u['id'] and mem.get('exec') and mem.get('exec') != u['id'] and not c.execute(
             "SELECT 1 FROM referrals WHERE doc_type='purchase' AND doc_id=? AND to_id=?", (pid, mem['exec'])).fetchone():
         c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
@@ -1761,13 +2096,20 @@ def pur_filter(c, u, q):
         w.append('(x.requester_id=? OR x.holder_id=? OR x.project_id IN (SELECT project_id FROM project_members '
                  'WHERE user_id=?) OR EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id AND f.user_id=?) '
                  "OR EXISTS(SELECT 1 FROM project_team t WHERE t.project_id=x.project_id AND t.user_id=? AND "
-                 "x.unit=CASE t.role_key WHEN 'exec_eng' THEN 'exec' ELSE 'tech' END))")
+                 "x.unit=" + team_unit_sql() + "))")
         p += [u['id']] * 5
     for k in ('project_id', 'holder_id'):
         if q.get(k):
             w.append('x.%s=?' % k); p.append(int(q[k]))
     if q.get('unsettled'):
         w.append(PUR_PAY_SQL)
+    if q.get('support') == 'hq':  # کارهای پشتیبانی دفتر مرکزی، با در نظر گرفتن واگذاری (نسخه ۳.۶)
+        w.append("((x.stage IN ('hq_quotes','hq_purchase') AND COALESCE(x.support_side,'')!='site') OR "
+                 "(x.stage IN ('site_purchase','invoice_fix') AND x.support_side='hq'))")
+    if q.get('pay_wait'):
+        w.append(PUR_PAYWAIT_SQL)
+    if q.get('no_official'):
+        w.append(PUR_NOINV_SQL)
     for k in ('unit', 'stage', 'status', 'category', 'urgency'):
         if q.get(k):
             vals = q[k].split(',')
@@ -1787,6 +2129,19 @@ def pur_filter(c, u, q):
     return ' AND '.join(w), p
 
 
+# ۴.۶: مراحل پس از اعلام وصول (کنترل مدارک مالی و تکمیل فاکتور) کار دفتر مرکزی است؛ برای کارکنان کارگاه کار تمام شده است
+POST_DELIVERY = ('finance_settle', 'finance_pay', 'invoice_fix', 'discrepancy', 'archive')
+
+
+def site_mask(P, uid):
+    """نمایش درخواست برای کارمند کارگاه: پس از اعلام وصول «تحویل شد — پایان کار کارگاه» و بدون مراحل مالی."""
+    if P['status'] == 'open' and P['stage'] in POST_DELIVERY and P.get('holder_id') != uid:
+        P['status'], P['site_done'] = 'site_done', 1
+    for k in ('pay_req_at', 'pay_done_at', 'docs_at'):
+        P[k] = None
+    return P
+
+
 @route('GET', '/api/purchases')
 def api_purchases(h, c, u, b, q):
     w, p = pur_filter(c, u, q)
@@ -1795,6 +2150,7 @@ def api_purchases(h, c, u, b, q):
         for P in res:
             for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no'):
                 P[k] = None
+            site_mask(P, u['id'])
     return res
 
 
@@ -1802,9 +2158,16 @@ PUR_CSV_HEAD = ['شماره', 'تاریخ', 'پروژه', 'واحد درخواس
                 'تاریخ نیاز', 'جهت استفاده', 'درخواست‌کننده', 'نسخه',
                 'سفارش خرید', 'اعلام وصول', 'ردیف',
                 'شرح کالا', 'مقدار', 'واحد', 'مشخصات فنی', 'توضیحات', 'تحویل از انبار', 'مانده برای خرید',
-                'مقدار خریداری‌شده', 'واحد خرید', 'وضعیت خرید', 'توضیح خرید', 'مقدار تحویل‌گرفته',
+                'مقدار خریداری‌شده', 'واحد خرید', 'وضعیت خرید', 'توضیح خرید', 'مقدار تحویل‌گرفته', 'مقدار انبار',
                 'وضعیت', 'مرحله', 'در دست', 'جمع پرداخت (ریال)',
                 'کد بایگانی', 'علت لغو']
+
+
+def grn_codes(c, P):
+    """همه کدهای اعلام وصول درخواست (هر نوبت یک کد)."""
+    cs = [r[0] for r in c.execute("SELECT code FROM purchase_receipts WHERE purchase_id=? AND status='closed' ORDER BY seq",
+                                  (P['id'],))]
+    return '، '.join(cs) or (P['grn_no'] or '')
 
 
 def pur_csv(c, lst, fname):
@@ -1817,11 +2180,11 @@ def pur_csv(c, lst, fname):
             wr.writerow([P['number'], P['req_date'], P['project'] or '', units.get(P['unit'], ''),
                          P['warehouse'], cats.get(P['category'], ''), urgs.get(P['urgency'], ''), P['need_date'],
                          P['purpose'], P['requester'] or '', P['version'],
-                         P['po_no'] or '', P['grn_no'] or '', it.get('row_no', ''), it.get('title', ''),
+                         P['po_no'] or '', grn_codes(c, P), it.get('row_no', ''), it.get('title', ''),
                          it.get('qty', ''), it.get('unit', ''), it.get('spec', ''), it.get('note', ''),
                          it.get('stock_qty', ''), fmt_num(remaining(it)) if it else '', it.get('bought_qty', ''),
                          it.get('bought_unit', ''), BUY_STATUS.get(it.get('bought_status') or '', ''), it.get('bought_note', ''),
-                         it.get('recv_qty', ''),
+                         it.get('recv_qty', ''), it.get('wh_qty', ''),
                          P_STATUS.get(P['status'], P['status']), P_STAGES.get(P['stage'], P['stage']), P['holder'] or '',
                          P['paid_amount'] or '',
                          P['archive_code'], (P['cancel_reason'] or '') + (' — ' + P['cancel_note'] if P['cancel_note'] else '')])
@@ -1880,11 +2243,18 @@ def can_edit(u, P):
     return P['holder_id'] == u['id']  # فقط کسی که درخواست اکنون در کارتابل اوست
 
 
-def can_cancel(u, P):
-    if P['status'] not in ('open', 'returned') or P['stage'] not in CANCEL_STAGES:
+def can_cancel(c, u, P):
+    if P['status'] not in ('open', 'returned'):
         return False
-    return (P['holder_id'] == u['id'] or is_mgr(u)
-            or (P['requester_id'] == u['id'] and P['stage'] in ('unit_approval', 'returned')))
+    if P['stage'] in ('site_purchase', 'hq_purchase') and not is_bought(c, P) and (
+            is_board(u) or (P['requester_id'] == u['id'] and is_direct_orderer(c, u, P))):
+        return True  # دستور خرید مستقیم را صادرکننده تا پیش از خرید لغو می‌کند
+    if P['stage'] not in CANCEL_STAGES:
+        return False
+    if is_warehouse(c, u, P) and P['requester_id'] != u['id'] and not is_board(u):  # انباردار درخواست را لغو نمی‌کند
+        return False
+    return (P['holder_id'] == u['id'] or is_board(u)
+            or (P['requester_id'] == u['id'] and P['stage'] in ('supervisor_approve', 'unit_approval', 'returned')))
 
 
 @route('GET', r'/api/purchases/(\d+)')
@@ -1907,15 +2277,22 @@ def api_purchase_get(h, c, u, b, q, pid):
             c.execute('UPDATE referrals SET status=?, seen_at=?, done_at=? WHERE id=?',
                       (ns, now(), now() if ns == 'done' else None, r['id']))
             r['status'] = ns
-    site = is_site_only(c, u)
+    site = site_view(c, u, P)
     if site:  # قیمت‌ها و مدارک پس از مدیر پروژه برای کارکنان کارگاه نمایش داده نمی‌شود
+        hid = {a['flow_id'] for a in att if a.get('hq_only') and a.get('flow_id')}
+        hq_inv = not site_path(c, P)  # فاکتور خرید دفتر مرکزی که پس از خرید پیوست یا حذف شده
         att = [a for a in att if not a.get('hq_only')]
-        flow = [f for f in flow if not (f['stage'] in HQ_ONLY_STAGES and f['action'] in ('attach', 'delatt'))]
+        flow = [f for f in flow if not (f['stage'] in HQ_ONLY_STAGES and f['action'] in ('attach', 'delatt'))
+                and f['id'] not in hid and f['action'] not in ('pay_done', 'official_inv')
+                and not (hq_inv and f['action'] == 'delatt' and f['label'].endswith(INV_KINDS))]
         for f in flow:
             if f['stage'] in HQ_ONLY_STAGES:
                 f['note'] = ''
-        for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no'):
+        for k in ('supplier', 'amount', 'proposed_supplier', 'proposed_amount', 'paid_amount', 'sepidar_no', 'pay_note'):
             P[k] = None
+        site_mask(P, u['id'])
+        if P.get('site_done'):  # ادامه مراحل (مالی) برای کارکنان کارگاه نمایش داده نمی‌شود
+            flow = [f for f in flow if f['stage'] not in POST_DELIVERY]
     # نظر مدیر پروژه و هیات مدیره هنگام تأیید یا برگشت (برای پشتیبانی به رنگ قرمز)
     mgmt = []
     for f in ([] if site else flow):  # فقط متن خودِ تأییدکننده (نه یادداشت خودکار سامانه)
@@ -1925,16 +2302,79 @@ def api_purchase_get(h, c, u, b, q, pid):
                 mgmt.append(dict(f, note=txt))
     for it in items:
         it['remaining'] = fmt_num(remaining(it))
-    bought = c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased'", (P['id'],)).fetchone()
+        it['remaining_receive'] = fmt_num(remaining_receive(c, it))
+        it['remaining_wh'] = fmt_num(wh_remaining(c, it))
+    receipts = rows(c.execute('SELECT r.*, w.full_name wh_name, v.full_name recv_name FROM purchase_receipts r '
+                              'LEFT JOIN users w ON w.id=r.wh_by LEFT JOIN users v ON v.id=r.recv_by '
+                              'WHERE r.purchase_id=? ORDER BY r.seq', (P['id'],)))
+    for R in receipts:
+        R['lines'] = rows(c.execute('SELECT l.*, i.title, i.unit, i.spec, i.bought_qty, i.bought_unit FROM purchase_receipt_lines l '
+                                    'JOIN purchase_items i ON i.id=l.item_id WHERE l.receipt_id=? ORDER BY i.row_no', (R['id'],)))
+    # ۴.۵: برگه واحد اعلام وصول — جمع هر قلم و سابقه مغایرت‌ها
+    for it in items:
+        cl = [l for R in receipts if R['status'] == 'closed' for l in R['lines'] if l['item_id'] == it['id']]
+        it['arrived'] = fmt_num(sum(to_num(l['recv_qty']) or 0 for l in cl)) if cl else ''
+        it['accepted'] = fmt_num(sum(line_acc(l) for l in cl)) if cl else ''
+        it['pending_qty'] = fmt_num(sum(to_num(l['wh_qty']) or 0 for R in receipts if R['status'] == 'pending'
+                                        for l in R['lines'] if l['item_id'] == it['id']))
+        it['rcpt_notes'] = []
+        for R in receipts:
+            for l in R['lines']:
+                if l['item_id'] != it['id'] or R['status'] != 'closed' or l['recv_status'] in ('', 'ok'):
+                    continue
+                t = 'نوبت %s: %s %s%s' % (fa_num(str(R['seq'])), LINE_STATUS.get(l['recv_status'], ''), fa_num(l['recv_qty']),
+                                          (' — ' + l['recv_note']) if l['recv_note'] else '')
+                if l['need_dec']:
+                    t += ' ← ' + ('پشتیبانی: ' + DEC_LABEL[l['sup_dec']] + ((' (' + l['sup_note'] + ')') if l['sup_note'] else '')
+                                  + ('؛ برگه اصلاح شد' if l['fix_at'] else '؛ منتظر اصلاح انباردار')
+                                  if l['sup_dec'] else 'منتظر تصمیم پشتیبانی')
+                it['rcpt_notes'].append(t)
+    dlines = disc_lines(c, P['id'])
+    for l in dlines:
+        l['options'] = DECISIONS.get(l['recv_status'], {})
+    bought = is_bought(c, P)
+    fin = is_finance(c, u) and not site
     mem = pmembers(c, P['project_id'])
     wh = one(c.execute('SELECT full_name FROM users WHERE id=?', (P['wh_by'] or mem.get('warehouse') or 0,))) or {}
-    return {'docs': docs_check(c, P) if bought else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
+    return {'docs': docs_check(c, P) if bought and not site else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
             'site_path': site_path(c, P), 'is_admin': u['role'] == 'admin',
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
-            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(u, P),
+            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in allowed_actions(c, u, P) else [],
             'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
-            'buy_status': BUY_STATUS, 'site_view': site,
+            'buy_status': BUY_STATUS, 'site_view': site, 'receipts': receipts, 'disc_lines': dlines, 'dec_label': DEC_LABEL,
+            'sheet_final': bool(P['grn_no'] and P['recv_at'] and P['wh_at']), 'jtoday': jtoday(), 'can_edit_grn': can_edit_grn(c, u, P),
+            'support_attach': not can_attach_turn(c, u, P) and post_purchase_support(c, u, P),
+            'can_pay': fin and bool(P['pay_req_at']) and not P['pay_done_at'] and P['status'] not in ('cancelled', 'rejected'),
+            'can_official': fin and bool(P['docs_at']) and not P['official_inv'],
             'hq_only_stages': HQ_ONLY_STAGES}
+
+
+def site_view(c, u, P):
+    """کارمند کارگاه مدارک و قیمت‌های دفتر مرکزی را نمی‌بیند، مگر کار دفتر مرکزی به او واگذار شده باشد."""
+    return is_site_only(c, u) and not ((P['holder_id'] == u['id'] and P['stage'] in HQ_ONLY_STAGES) or c.execute(
+        'SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND stage IN (%s) AND action NOT IN (%s)' % (
+            ','.join('?' * len(HQ_ONLY_STAGES)), ','.join('?' * len(SIDE_ACTIONS))),
+        (P['id'], u['id']) + HQ_ONLY_STAGES + SIDE_ACTIONS).fetchone())
+
+
+purchase_site_view = site_view  # نام سند CR-PUR-02
+
+
+def file_payload(c, u, aid, q):
+    """فایل پیوست با بررسی دسترسی: دیدن سند، پیوست حذف‌شده و مدارک قیمت دفتر مرکزی (CHG-00)."""
+    need(u, 'ابتدا وارد شوید', 401)
+    a = one(c.execute('SELECT * FROM attachments WHERE id=?', (aid,)))
+    need(a, 'فایل پیدا نشد', 404)
+    D = get_doc(c, u, a['doc_type'], a['doc_id'])
+    if a['deleted_at'] and u['role'] != 'admin':
+        raise ApiError('فایل پیدا نشد', 404)
+    if a['doc_type'] == 'purchase' and a['hq_only']:
+        need(not purchase_site_view(c, u, D), 'این پیوست فقط برای دفتر مرکزی است')
+    with open(os.path.join(FILES, a['path']), 'rb') as f:
+        data = f.read()
+    ct = mimetypes.guess_type(a['name'])[0] or 'application/octet-stream'
+    disp = 'inline' if ('dl' not in q) else 'attachment'
+    return data, ct, {'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(a['name']))}
 
 
 def is_warehouse(c, u, P):
@@ -1948,10 +2388,22 @@ def allowed_actions(c, u, P):
     acts = list(P_FLOW.get(P['stage'], {}))
     if P['stage'] == 'delivery':  # تحویل دوطرفه: درخواست‌کننده و انبار، هر کدام جدا
         out = []
-        if P['holder_id'] == u['id'] and not P['recv_at']:
-            out += ['recv_ok', 'recv_bad']
-        if is_warehouse(c, u, P) and not P['wh_at']:
-            out += ['wh_ok', 'wh_bad']
+        wh = pmembers(c, P['project_id']).get('warehouse')
+        its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))
+        # ۳.۷: انباردار تا وقتی باقی‌مانده دارد ثبت می‌کند (حتی اگر نوبت قبلی هنوز منتظر تحویل‌گیرنده است)
+        whu = is_warehouse(c, u, P) or (not wh and u['id'] == P['requester_id'])
+        if whu and unfixed_lines(c, P['id']):  # ۴.۵: اصلاح برگه طبق تصمیم پشتیبانی
+            out += ['wh_fix']
+        if whu and any(wh_remaining(c, it) > 0 for it in its):
+            out += ['wh_ok', 'followup']
+        if u['id'] == P['requester_id'] and pending_receipts(c, P['id']):  # تأیید نهایی هر نوبت ثبت‌شده انبار
+            out += ['recv_ok']
+        return out
+    if P['stage'] == 'disc_review':  # ۴.۶: پشتیبانی تصمیم می‌گیرد و انباردار هم‌زمان اقلام تصمیم‌گرفته را اصلاح می‌کند
+        wh = pmembers(c, P['project_id']).get('warehouse')
+        out = ['decide'] if P['holder_id'] == u['id'] and undecided_lines(c, P['id']) else []
+        if (is_warehouse(c, u, P) or (not wh and u['id'] == P['requester_id'])) and unfixed_lines(c, P['id']):
+            out.append('wh_fix')
         return out
     if P['stage'] in GROUP_STAGES:  # مدیر پروژه یا هر عضو هیات مدیره؛ تأیید یک نفر کافی است
         return acts if in_group(c, u, P) else []
@@ -1971,7 +2423,8 @@ def in_group(c, u, P):
             or pmembers(c, P['project_id']).get('pm') == u['id'])
 
 
-def can_attach_pur(c, u, P):
+def can_attach_turn(c, u, P):
+    """پیوست در نوبت خودِ کاربر: درخواست در کارتابل اوست."""
     if P['status'] not in ('open', 'returned'):
         return False
     if P['holder_id'] == u['id'] or (P['stage'] == 'delivery' and is_warehouse(c, u, P)):
@@ -1979,18 +2432,261 @@ def can_attach_pur(c, u, P):
     return P['stage'] in GROUP_STAGES and in_group(c, u, P)
 
 
+def can_attach_pur(c, u, P):
+    return can_attach_turn(c, u, P) or post_purchase_support(c, u, P)
+
+
+def is_bought(c, P):
+    return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased'", (P['id'],)).fetchone() is not None
+
+
+def post_purchase_support(c, u, P):
+    """پشتیبانی‌ای که خرید را انجام داده (کارگاه یا دفتر مرکزی)، در همه مراحل پس از خرید، حتی پس از بایگانی،
+    فاکتور یا پیش‌فاکتور پیوست می‌کند."""
+    if P['status'] not in ('open', 'returned', 'closed') or P['stage'] in ('site_purchase', 'hq_purchase') \
+            or not is_bought(c, P):
+        return False
+    if P.get('support_by') == u['id'] or c.execute(
+            "SELECT 1 FROM purchase_flow WHERE purchase_id=? AND action='purchased' AND user_id=?",
+            (P['id'], u['id'])).fetchone():  # کسی که خرید را انجام داده یا کار به او واگذار شده
+        return True
+    if site_path(c, P):
+        return pmembers(c, P['project_id']).get('support') == u['id']
+    return str(u['id']) == settings(c).get('support_manager')
+
+
+# مراحل پشتیبانی که پشتیبانی دفتر مرکزی و کارگاه می‌توانند به یکدیگر واگذار کنند (نسخه ۲.۹)
+SUPPORT_STAGES = ('site_purchase', 'hq_quotes', 'hq_purchase', 'invoice_fix', 'disc_review')
+
+
+def handover_target(c, u, P):
+    """همکارِ پشتیبانی که کار را می‌توان به او واگذار کرد: پشتیبانی کارگاه ↔ پشتیبانی دفتر مرکزی."""
+    if P['status'] != 'open' or P['stage'] not in SUPPORT_STAGES or P['holder_id'] != u['id']:
+        return None
+    site_sup = pmembers(c, P['project_id']).get('support')
+    hq_sup = int(settings(c).get('support_manager') or 0)
+    tid, lbl = (site_sup, 'پشتیبانی کارگاه') if u['id'] != site_sup else (hq_sup, 'پشتیبانی دفتر مرکزی')
+    if not tid or tid == u['id']:
+        return None
+    r = c.execute('SELECT full_name FROM users WHERE id=? AND active=1', (tid,)).fetchone()
+    return {'id': tid, 'name': r[0], 'label': lbl} if r else None
+
+
+@route('POST', r'/api/purchases/(\d+)/handover')
+def api_purchase_handover(h, c, u, b, q, pid):
+    """واگذاری کارِ پشتیبانی (استعلام، خرید، تکمیل فاکتور) به پشتیبانی دیگر؛ مرحله همان می‌ماند."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    t = handover_target(c, u, P)
+    need(t, 'واگذاری فقط در مراحل پشتیبانی و توسط کسی که کار در کارتابل اوست ممکن است')
+    # کار به‌طور کامل به گیرنده منتقل می‌شود: مراحل بعدی پشتیبانی هم با اوست
+    c.execute('UPDATE purchases SET holder_id=?, support_by=?, support_side=? WHERE id=?',
+              (t['id'], t['id'], 'site' if t['label'] == 'پشتیبانی کارگاه' else 'hq', P['id']))
+    pflow(c, P['id'], u, P['stage'], 'handover', 'واگذاری به %s (%s)' % (t['name'], t['label']), (b.get('note') or '').strip())
+    return {'ok': True}
+
+
+def can_edit_grn(c, u, P):
+    """نسخه ۳.۵: اعلام وصول پس از صدور برای هیچ‌کس قابل تغییر نیست (برای سازگاری نگه داشته شده است)."""
+    return False
+
+
 def is_finance(c, u):
-    return u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager') or u['role'] == 'admin'
+    return u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager')
 
 
 def move(c, u, P, stage, label, note='', status='open'):
     """انتقال درخواست به مرحله بعد و ثبت در گردش."""
-    holder = None if stage == 'done' else (P['requester_id'] if stage in ('returned', 'delivery') else stage_holder(c, P, stage))
+    holder = None if stage == 'done' else (P['requester_id'] if stage == 'returned' else
+                                           delivery_holder(c, P) if stage == 'delivery' else stage_holder(c, P, stage))
     if stage == 'returned':
         status = 'returned'
     c.execute('UPDATE purchases SET status=?, stage=?, holder_id=?, closed_at=? WHERE id=?',
               (status, stage, holder, now() if stage == 'done' else None, P['id']))
     pflow(c, P['id'], u, P['stage'], label[0], label[1], note)
+
+
+# ---------- نوبت‌های اعلام وصول (نسخه ۳.۵): مقدار جدای انباردار و تحویل‌گیرنده، تحویل بخشی، قفل پس از صدور
+def received_sum(c, item_id):
+    """جمع مقدار تحویل‌گرفته یک قلم در نوبت‌های بسته‌شده."""
+    return sum(line_acc(l) for l in rows(c.execute(
+        "SELECT l.* FROM purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id "
+        "WHERE l.item_id=? AND r.status='closed'", (item_id,))))
+
+
+def line_acc(l):
+    """مقدار پذیرفته‌شده یک ردیف بسته (۴.۵)؛ ردیف‌های نسخه‌های قبل: عدد تحویل‌گیرنده (مرجوعی صفر)."""
+    if l.get('acc_qty') not in (None, ''):
+        return to_num(l['acc_qty']) or 0
+    return 0.0 if l.get('recv_status') == 'returned' else (to_num(l.get('recv_qty')) or 0)
+
+
+def remaining_receive(c, it):
+    """باقی‌مانده برای وصول = خریداری‌شده − تحویل‌شده؛ قلمی که «پذیرش با توضیح» خورده کامل است."""
+    if (it.get('bought_status') or '') not in ('bought', 'partial'):
+        return 0.0
+    if c.execute("SELECT 1 FROM purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id "
+                 "WHERE l.item_id=? AND r.status='closed' AND l.diff_note!=''", (it['id'],)).fetchone():
+        return 0.0
+    return max(0.0, (to_num(it.get('bought_qty')) or 0) - received_sum(c, it['id']))
+
+
+# وضعیت هر قلم در اعلام وصول (انباردار و تحویل‌گیرنده، هر دو) — نسخه ۴.۵:
+# تأیید (کالا درست است؛ کمتر یعنی بقیه بعداً)، اضافی، کسری، تحویل بخشی (بقیه بعداً می‌رسد)، اشتباه ارسال شده
+LINE_STATUS = {'ok': 'تأیید', 'extra': 'اضافی', 'short': 'کسری', 'partial': 'تحویل بخشی', 'wrong': 'اشتباه ارسال شده',
+               'returned': 'مرجوعی'}  # «مرجوعی» فقط برای نمایش ردیف‌های نسخه ۴.۴
+IN_STATUS = ('ok', 'extra', 'short', 'partial', 'wrong')
+DISC_STATUS = ('extra', 'short', 'wrong')  # پس از تأیید تحویل‌گیرنده برای تصمیم به پشتیبانی می‌رود
+# تصمیم پشتیبانی برای هر مغایرت؛ پس از تصمیم، انباردار همان برگه را اصلاح (تأیید) می‌کند
+DECISIONS = {'extra': {'accept_extra': 'پذیرش اضافه', 'return_extra': 'مرجوع کردن اضافه'},
+             'short': {'accept_short': 'تأیید مقدار (کسری پذیرفته شد)', 'send_short': 'ارسال کسری توسط فروشنده'},
+             'wrong': {'return_wrong': 'مرجوع شود (جایگزین ارسال می‌شود)', 'keep_wrong': 'امکان مرجوعی نیست (پذیرفته شد)'}}
+DEC_LABEL = {k: v for d in DECISIONS.values() for k, v in d.items()}
+
+
+def accepted_qty(stt, qv, exp=None):
+    """مقدار پذیرفته‌شده یک ردیف پیش از تصمیم پشتیبانی: اشتباه صفر، اضافی تا سقف مورد انتظار."""
+    if stt in ('wrong', 'returned'):
+        return 0.0
+    if stt == 'extra' and exp is not None:
+        return min(qv, exp)
+    return qv
+
+
+def check_line(it, exp, qv, stt, note):
+    """بررسی وضعیت یک قلم نسبت به مقدار مورد انتظار؛ در صورت خطا ApiError."""
+    t = it['title']
+    need(stt in IN_STATUS, 'وضعیت «%s» را انتخاب کنید (تأیید، اضافی، کسری، تحویل بخشی یا اشتباه ارسال شده)' % t, 400)
+    u_ = it['bought_unit'] or it['unit'] or ''
+    if stt == 'ok':
+        need(qv <= exp + 1e-9, 'مقدار «%s» از مورد انتظار (%s %s) بیشتر است؛ «اضافی» را انتخاب کنید' % (t, fmt_num(exp), u_), 400)
+    elif stt == 'extra':
+        need(qv > exp + 1e-9, 'برای «اضافی» مقدار «%s» باید از مورد انتظار (%s) بیشتر باشد' % (t, fmt_num(exp)), 400)
+    elif stt == 'wrong':
+        need(qv > 1e-9, 'مقدار کالای اشتباه «%s» را بنویسید' % t, 400)
+    else:  # کسری، تحویل بخشی
+        need(qv < exp - 1e-9, 'برای «%s» مقدار «%s» باید از مورد انتظار (%s) کمتر باشد' % (LINE_STATUS[stt], t, fmt_num(exp)), 400)
+    if stt == 'wrong':  # ۴.۶: برای کسری و اضافی توضیح اختیاری است
+        need(note, 'توضیح «%s» برای «%s» را بنویسید' % (LINE_STATUS[stt], t), 400)
+
+
+def disc_lines(c, pid, where=''):
+    """ردیف‌های بسته‌ای که مغایرت دارند (برای تصمیم پشتیبانی و اصلاح انباردار)."""
+    return rows(c.execute("SELECT l.*, r.seq, i.title, i.unit, i.bought_unit FROM purchase_receipt_lines l "
+                          "JOIN purchase_receipts r ON r.id=l.receipt_id JOIN purchase_items i ON i.id=l.item_id "
+                          "WHERE r.purchase_id=? AND r.status='closed' AND l.need_dec=1 " + where +
+                          " ORDER BY r.seq, i.row_no", (pid,)))
+
+
+def undecided_lines(c, pid):
+    return disc_lines(c, pid, "AND l.sup_dec=''")
+
+
+def unfixed_lines(c, pid):
+    return disc_lines(c, pid, "AND l.sup_dec!='' AND l.fix_at IS NULL")
+
+
+def sheet_done(c, P):
+    """برگه اعلام وصول قطعی می‌شود: همه اقلام رسیده، نوبتی منتظر تحویل‌گیرنده نیست، همه مغایرت‌ها تصمیم و اصلاح شده‌اند."""
+    return bool(closed_receipts(c, P['id'])) and not pending_receipts(c, P['id']) and not undecided_lines(c, P['id']) \
+        and not unfixed_lines(c, P['id']) and all(
+            remaining_receive(c, it) <= 0 for it in rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],))))
+
+
+def finalize_sheet(c, u, P, notes, by_wh=False):
+    """برگه اعلام وصول قطعی شد؛ مرحله بعد (پایان برای خرید کارگاه، کنترل مدارک مالی برای دفتر مرکزی)."""
+    c.execute("DELETE FROM purchase_receipt_lines WHERE receipt_id IN (SELECT id FROM purchase_receipts "
+              "WHERE purchase_id=? AND status='open')", (P['id'],))
+    c.execute("DELETE FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],))
+    L = closed_receipts(c, P['id'])[-1]
+    wh_by, wh_at = (u['id'], now()) if by_wh else (L['wh_by'], L['wh_at'])
+    c.execute('UPDATE purchases SET recv_by=?, recv_at=?, wh_by=?, wh_at=? WHERE id=?',
+              (L['recv_by'], L['recv_at'], wh_by, wh_at, P['id']))
+    P = dict(P, recv_at=L['recv_at'], wh_at=wh_at)
+    notes.append('برگه اعلام وصول %s قطعی شد' % (P['grn_no'] or ''))
+    nxt = after_delivery(c, P)
+    if nxt == 'done':
+        notes.append('پایان و بایگانی خودکار')
+    return nxt
+
+
+def pending_receipts(c, pid):
+    """نوبت‌هایی که انباردار ثبت کرده و منتظر تأیید تحویل‌گیرنده‌اند (نسخه ۳.۷)."""
+    return rows(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='pending' ORDER BY seq", (pid,)))
+
+
+def wh_remaining(c, it):
+    """باقی‌مانده‌ای که انباردار هنوز باید ثبت کند = باقی‌مانده وصول − آنچه در نوبت‌های منتظر تحویل‌گیرنده ثبت شده."""
+    left = remaining_receive(c, it)
+    if left <= 0:
+        return 0.0
+    for l in c.execute("SELECT l.wh_qty, l.diff_note, l.wh_status FROM purchase_receipt_lines l JOIN purchase_receipts r "
+                       "ON r.id=l.receipt_id WHERE l.item_id=? AND r.status='pending'", (it['id'],)):
+        if l[1]:
+            return 0.0  # پذیرش با توضیح: قلم برای انبار کامل است
+        if l[2] not in ('returned', 'wrong'):  # کالای اشتباه یا مرجوعی دوباره باید برسد
+            left -= to_num(l[0]) or 0
+    return max(0.0, left)
+
+
+def closed_receipts(c, pid):
+    return rows(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='closed' ORDER BY seq", (pid,)))
+
+
+def open_receipt(c, P, create=True):
+    """نوبت باز اعلام وصول؛ خطوطش با اقلامی که باقی‌مانده دارند هماهنگ می‌شود."""
+    R = one(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],)))
+    if not R:
+        if not create:
+            return None
+        seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchase_receipts WHERE purchase_id=?', (P['id'],)).fetchone()[0]
+        c.execute('INSERT INTO purchase_receipts(purchase_id,seq) VALUES(?,?)', (P['id'], seq))
+        R = one(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],)))
+    have = {r[0] for r in c.execute('SELECT item_id FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],))}
+    for it in rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],))):
+        left = wh_remaining(c, it)
+        if left > 0 and it['id'] not in have:
+            c.execute('INSERT INTO purchase_receipt_lines(receipt_id,item_id) VALUES(?,?)', (R['id'], it['id']))
+        elif left <= 0 and it['id'] in have:
+            c.execute('DELETE FROM purchase_receipt_lines WHERE receipt_id=? AND item_id=?', (R['id'], it['id']))
+    return R
+
+
+def refresh_item_totals(c, pid):
+    """جمع تجمعی مقدار انبار و تحویل‌گیرنده در اقلام (برای فرم چاپی و CSV)."""
+    for it in rows(c.execute('SELECT id FROM purchase_items WHERE purchase_id=?', (pid,))):
+        ls = rows(c.execute("SELECT l.* FROM purchase_receipt_lines l "
+                            "JOIN purchase_receipts r ON r.id=l.receipt_id WHERE l.item_id=? AND r.status='closed'", (it['id'],)))
+        # تحویل‌گیرنده = پذیرفته‌شده؛ انبار = رسیده به شمارش انباردار
+        c.execute('UPDATE purchase_items SET recv_qty=?, wh_qty=? WHERE id=?',
+                  (fmt_num(sum(line_acc(x) for x in ls)) if ls else '',
+                   fmt_num(sum(to_num(x['wh_qty']) or 0 for x in ls)) if ls else '', it['id']))
+
+
+def close_receipt(c, u, P, R):
+    """۴.۵: تأیید تحویل‌گیرنده نوبت را در برگه اعلام وصول درخواست ثبت می‌کند. هر درخواست یک برگه و یک شماره دارد
+    (شماره با اولین تأیید داده می‌شود)؛ برگه پس از تکمیل و اصلاح مغایرت‌ها قطعی می‌شود."""
+    grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
+    c.execute('UPDATE purchases SET grn_no=? WHERE id=?', (grn, P['id']))
+    c.execute("UPDATE purchase_receipts SET status='closed', closed_at=?, code=?, recv_by=?, recv_at=? WHERE id=?",
+              (now(), grn, u['id'], now(), R['id']))
+    refresh_item_totals(c, P['id'])
+    return grn
+
+
+def has_closed_receipt(c, pid):
+    return c.execute("SELECT 1 FROM purchase_receipts WHERE purchase_id=? AND status='closed'", (pid,)).fetchone() is not None
+
+
+def delivery_holder(c, P):
+    """اعلام وصول: انباردار تا وقتی باقی‌مانده‌ای برای ثبت دارد؛ وگرنه تحویل‌گیرنده برای تأیید نوبت‌های منتظر (۳.۷).
+    نوبت‌ها موازی‌اند: انباردار لازم نیست منتظر تأیید تحویل‌گیرنده بماند."""
+    wh = pmembers(c, P['project_id']).get('warehouse')
+    its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=?', (P['id'],)))
+    if wh and (unfixed_lines(c, P['id']) or any(wh_remaining(c, it) > 0 for it in its)):
+        return wh
+    if pending_receipts(c, P['id']):
+        return P['requester_id']
+    return wh or P['requester_id']
 
 
 def after_delivery(c, P):
@@ -2006,10 +2702,9 @@ def api_purchase_act(h, c, u, b, q, pid):
     nxt, label = P_FLOW[P['stage']][a]
     note = (b.get('note') or '').strip()
     notes = []
-    if a in ('return', 'requote', 'recv_bad', 'wh_bad', 'accept', 'fix'):
+    if a in ('return', 'requote', 'accept', 'fix', 'followup', 'refer'):
         need(note, 'علت را بنویسید', 400)
-    if a == 'direct':
-        need(note, 'برای دستور خرید مستقیم، منبع خرید و قیمت را در توضیح بنویسید', 400)
+    if a == 'direct':  # توضیح (منبع و قیمت) اختیاری است (نسخه ۲.۶)
         if not P['po_no']:  # صدور سفارش خرید
             c.execute('UPDATE purchases SET po_no=? WHERE id=?', (next_code(c, P['project_id'], 'PO'), P['id']))
     if a == 'approve' and P['stage'] == 'price_approve':  # انتخاب یک پیش‌فاکتور؛ بقیه بایگانی می‌شوند
@@ -2031,8 +2726,27 @@ def api_purchase_act(h, c, u, b, q, pid):
     its = rows(c.execute('SELECT * FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (P['id'],)))
     posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
 
+    if a == 'refer':  # سرپرست کارگاه: ارجاع به هر کس برای کنترل یا تکمیل مدارک؛ کار به کارتابل او می‌رود
+        to = int(b.get('refer_to') or 0)
+        need(to, 'شخصی را که کار به او ارجاع می‌شود انتخاب کنید', 400)
+        need(to != u['id'], 'ارجاع به خودتان معنا ندارد', 400)
+        tu = one(c.execute('SELECT id, full_name FROM users WHERE id=? AND active=1', (to,)))
+        need(tu, 'کاربر انتخاب‌شده نامعتبر است', 400)
+        need_not_admin(c, to, 'ارجاع')
+        c.execute("UPDATE purchases SET status='open', stage='referred', holder_id=? WHERE id=?", (to, P['id']))
+        pflow(c, P['id'], u, P['stage'], 'refer', 'ارجاع به %s برای کنترل یا تکمیل مدارک' % tu['full_name'], note)
+        return {'ok': True}
+    rt = int(b.get('return_to') or 0)
+    if a == 'return' and rt and rt != P['requester_id']:  # برگشت به یکی از اقدام‌کنندگان قبلی، نه درخواست‌کننده
+        tg = next((t for t in return_targets(c, u, P) if t['id'] == rt), None)
+        need(tg, 'درخواست را فقط به درخواست‌کننده یا کسانی که پیش‌تر روی آن اقدام کرده‌اند می‌توان برگرداند', 400)
+        c.execute("UPDATE purchases SET status='open', stage=?, holder_id=? WHERE id=?", (tg['stage'], rt, P['id']))
+        pflow(c, P['id'], u, P['stage'], 'return', 'برگشت به %s (%s)' % (tg['name'], tg['label']), note)
+        return {'ok': True}
     if a == 'submit':
         nxt, label = start_stage(c, u, P)
+        if is_direct_orderer(c, u, P):
+            after_direct_order(c, u, P, nxt)
     elif a == 'stock':  # انبار موجودی هر قلم را ثبت می‌کند؛ مانده برای خرید می‌رود
         full = part = 0
         for it in its:
@@ -2048,6 +2762,8 @@ def api_purchase_act(h, c, u, b, q, pid):
         if left <= 0:
             move(c, u, P, 'done', ('stock', label + ' — همه اقلام از انبار تحویل شد'), note, 'delivered')
             return {'ok': True}
+        nxt = after_stock(c, P, notes)
+    elif a == 'approve' and P['stage'] == 'unit_approval':  # پس از رئیس واحد: معاون فنی (اصلی) یا سرپرست کارگاه
         nxt = after_stock(c, P, notes)
     elif a == 'approve' and P['stage'] == 'supervisor_approve':
         nxt = after_supervisor(c, P, notes)
@@ -2068,55 +2784,179 @@ def api_purchase_act(h, c, u, b, q, pid):
             if stt != 'none':
                 need(bq and bq > 0, 'مقدار خریداری‌شده «%s» را وارد کنید' % it['title'], 400)
             need(stt == 'bought' or (x.get('note') or '').strip(), 'برای «%s» علت خرید ناقص یا نشدن را بنویسید' % it['title'], 400)
+            rs = received_sum(c, it['id']) + sum(to_num(r[0]) or 0 for r in c.execute(  # بسته + منتظر تحویل‌گیرنده (بدون مرجوعی)
+                "SELECT l.wh_qty FROM purchase_receipt_lines l JOIN purchase_receipts r ON r.id=l.receipt_id "
+                "WHERE l.item_id=? AND r.status='pending' AND l.wh_status NOT IN ('returned','wrong')", (it['id'],)))
+            need(((bq or 0) if stt != 'none' else 0) >= rs - 1e-9,
+                 'مقدار خریداری‌شده «%s» از مقدار تحویل‌شده (%s) کمتر است' % (it['title'], fmt_num(rs)), 400)
             c.execute('UPDATE purchase_items SET bought_qty=?, bought_unit=?, bought_status=?, bought_note=? WHERE id=?',
                       (fmt_num(bq) if stt != 'none' else '0', (x.get('unit') or it['unit'] or '').strip(), stt,
                        (x.get('note') or '').strip(), it['id']))
         if P['stage'] == 'site_purchase':
             need(invoice_doc(c, P), 'فاکتور (یا پیش‌فاکتور) خرید را پیوست کنید', 400)
+        elif not P['pay_req_at']:  # خرید دفتر مرکزی: همزمان با اعلام وصول، به امور مالی برای پرداخت
+            c.execute('UPDATE purchases SET pay_req_at=? WHERE id=?', (now(), P['id']))
+            notes.append('همزمان برای پرداخت به امور مالی ارسال شد')
         c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
-    elif a in ('recv_ok', 'wh_ok', 'recv_bad', 'wh_bad'):
-        if a == 'recv_ok':
-            for it in its:
-                x = posted.get(it['id'])
-                if x is not None:
-                    c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(to_num(x.get('qty'))), it['id']))
-            c.execute('UPDATE purchases SET recv_by=?, recv_at=? WHERE id=?', (u['id'], now(), P['id']))
-            P = dict(P, recv_at=now())
-        elif a == 'wh_ok':
-            c.execute('UPDATE purchases SET wh_by=?, wh_at=? WHERE id=?', (u['id'], now(), P['id']))
-            P = dict(P, wh_at=now())
-        if a.endswith('_bad'):  # مغایرت: برمی‌گردد به خرید برای اصلاح
-            c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
-            nxt = purchase_stage_of(c, P)
-        elif P['recv_at'] and P['wh_at']:  # رسید تحویل کالا صادر می‌شود
-            nxt = after_delivery(c, P)
-            grn = P['grn_no'] or next_code(c, P['project_id'], 'GRN')
-            c.execute('UPDATE purchases SET grn_no=? WHERE id=?', (grn, P['id']))
-            notes.append('اعلام وصول کامل شد (تحویل‌گیرنده و انباردار) — %s' % grn)
-            if nxt == 'done':
-                notes.append('پایان و بایگانی خودکار')
+        c.execute("UPDATE purchase_items SET disc_note='' WHERE purchase_id=?", (P['id'],))  # مغایرت رفع شد
+        c.execute("UPDATE purchase_receipt_lines SET disc_note='' WHERE receipt_id IN "
+                  "(SELECT id FROM purchase_receipts WHERE purchase_id=? AND status='open')", (P['id'],))
+        if sheet_done(c, P):  # کسری با کاهش مقدار خریداری‌شده بسته شد: همه اقلام پیش‌تر تحویل شده‌اند
+            nxt = finalize_sheet(c, u, P, notes)
+    elif a == 'followup':  # انبار: باقی‌مانده نرسیده و پیگیری لازم است ← پشتیبانی خریدار؛ نوبت باز می‌ماند
+        c.execute('UPDATE purchases SET recv_by=NULL, recv_at=NULL, wh_by=NULL, wh_at=NULL WHERE id=?', (P['id'],))
+        nxt = purchase_stage_of(c, P)
+        left = [it['title'] + ' ' + fmt_num(wh_remaining(c, it)) for it in its if wh_remaining(c, it) > 0]
+        if left:
+            notes.append('باقی‌مانده: ' + '، '.join(left))
+    elif a in ('wh_ok', 'recv_ok'):
+        # نسخه ۴.۵: هر درخواست یک برگه اعلام وصول دارد. انباردار هر بار که کالا رسید، برای هر قلم مقدار رسیده و یکی از
+        # پنج وضعیت (تأیید، اضافی، کسری، تحویل بخشی، اشتباه ارسال شده) را ثبت می‌کند؛ تحویل‌گیرنده همان ستون را می‌بیند،
+        # در صورت لزوم تغییر می‌دهد و تأیید می‌کند. اقلام اضافی، کسری و اشتباه پس از تأیید او برای تصمیم به پشتیبانی
+        # می‌روند و پس از تصمیم، انباردار همان برگه را اصلاح می‌کند. نوبت‌ها موازی‌اند.
+        wh_act = a == 'wh_ok'
+        pre = 'wh' if wh_act else 'recv'
+        who = 'انباردار' if wh_act else 'تحویل‌گیرنده'
+        if wh_act:
+            R = open_receipt(c, P)
         else:
-            pflow(c, P['id'], u, P['stage'], a, label, note)
+            pend = pending_receipts(c, P['id'])
+            need(pend, 'نوبتی منتظر تأیید شما نیست', 400)
+            R = pend[0]
+        itm = {it['id']: it for it in its}
+        lines = rows(c.execute('SELECT * FROM purchase_receipt_lines WHERE receipt_id=?', (R['id'],)))
+        need(lines, 'قلمی برای اعلام وصول باقی نمانده است', 400)
+        disc, part = [], []
+        arrived = 0.0
+        for ln in lines:
+            it, x = itm[ln['item_id']], posted.get(ln['item_id']) or {}
+            whq = to_num(ln['wh_qty']) if ln['wh_qty'] != '' else None
+            exp = wh_remaining(c, it) if wh_act else (to_num(ln['exp_qty']) if ln['exp_qty'] != '' else remaining_receive(c, it))
+            qv = to_num(x.get('qty')) if x.get('qty') not in (None, '') else (exp if wh_act or whq is None else whq)
+            need(qv is not None and qv >= 0, 'مقدار «%s» باید عدد باشد' % it['title'], 400)
+            stt = (x.get('status') or '').strip() or (ln['wh_status'] if not wh_act and ln['wh_status'] in IN_STATUS else
+                                                      ('ok' if qv <= exp + 1e-9 else 'extra'))
+            nt = (x.get('note') or '').strip()
+            # ۴.۶: تحویل‌گیرنده‌ای که با وضعیت انباردار موافق است، لازم نیست توضیح او را دوباره بنویسد
+            check_line(it, exp, qv, stt, nt or (ln['wh_note'] if not wh_act and stt == ln['wh_status'] else ''))
+            txt = '%s: %s%s' % (who, LINE_STATUS[stt], (' — ' + nt) if nt else '')
+            upd = {pre + '_qty': fmt_num(qv), pre + '_status': stt, pre + '_note': nt,
+                   'disc_note': txt if stt in DISC_STATUS else ''}
+            if wh_act:
+                upd['exp_qty'] = fmt_num(exp)
+            else:
+                upd.update(acc_qty=fmt_num(accepted_qty(stt, qv, exp)), need_dec=1 if stt in DISC_STATUS else 0,
+                           sup_dec='', sup_note='', sup_by=None, sup_at=None, fix_by=None, fix_at=None)
+            c.execute('UPDATE purchase_receipt_lines SET %s WHERE id=?' % ', '.join('%s=?' % k for k in upd),
+                      tuple(upd.values()) + (ln['id'],))
+            c.execute('UPDATE purchase_items SET disc_note=? WHERE id=?', (upd['disc_note'], it['id']))
+            if wh_act and qv <= 1e-9 and stt != 'extra':  # ۴.۶: قلمی که در این نوبت نرسیده نزد انباردار می‌ماند
+                c.execute('DELETE FROM purchase_receipt_lines WHERE id=?', (ln['id'],))
+                c.execute("UPDATE purchase_items SET disc_note='' WHERE id=?", (it['id'],))
+                continue
+            arrived += qv
+            u_ = it['bought_unit'] or it['unit'] or ''
+            if stt in DISC_STATUS:
+                disc.append('%s (%s %s %s%s)' % (it['title'], LINE_STATUS[stt], fmt_num(qv), u_, (' — ' + nt) if nt else ''))
+            elif qv < exp - 1e-9:
+                part.append('%s: %s از %s' % (it['title'], fmt_num(qv), fmt_num(exp)))
+        detail = '؛ '.join((['مغایرت: ' + '؛ '.join(disc)] if disc else []) +
+                          (['تحویل بخشی: ' + '، '.join(part)] if part else []) + ([note] if note else []))
+        if wh_act:  # نوبت ثبت شد و منتظر تأیید تحویل‌گیرنده است
+            need(arrived > 1e-9, 'مقدار رسیده هیچ قلمی را ننوشته‌اید', 400)
+            dd = need_jdate(b.get('delivery_date'), 'تاریخ تحویل', required=False, max_=jtoday(),
+                            max_msg='تاریخ تحویل نمی‌تواند بعد از امروز باشد')
+            ref = (b.get('delivery_ref') or '').strip()
+            need(len(ref) <= 60, 'شماره حواله یا بارنامه حداکثر ۶۰ نویسه است', 400)
+            c.execute("UPDATE purchase_receipts SET status='pending', wh_by=?, wh_at=?, delivery_date=?, delivery_ref=?, note=? "
+                      "WHERE id=?", (u['id'], now(), dd, ref, 'مغایرت' if disc else ('تحویل بخشی' if part else ''), R['id']))
+            hold = delivery_holder(c, P)
+            c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (hold, P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — نوبت %s برای تأیید تحویل‌گیرنده' % fa_num(str(R['seq']))
+                  + ('؛ باقی‌مانده نزد انباردار' if hold != P['requester_id'] else ''), detail)
+            return {'ok': True}
+        grn = close_receipt(c, u, P, R)
+        P = dict(P, grn_no=grn)
+        msg = 'نوبت %s در برگه اعلام وصول %s ثبت شد' % (fa_num(str(R['seq'])), grn)
+        if disc:  # اضافی، کسری یا اشتباه: برای تصمیم به پشتیبانی خریدار
+            nxt = 'disc_review'
+            label = 'تأیید تحویل‌گیرنده — %s؛ مغایرت برای تصمیم به پشتیبانی' % msg
+            notes.append('مغایرت: ' + '؛ '.join(disc))
+        elif sheet_done(c, P):
+            nxt = finalize_sheet(c, u, P, notes)
+            label = 'تأیید تحویل‌گیرنده — ' + msg
+        else:  # تحویل بخشی: برگه تا تکمیل باز می‌ماند؛ باقی‌مانده نزد انباردار
+            c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (delivery_holder(c, P), P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — ' + msg + ' (برگه تا تکمیل باز است)', detail)
+            return {'ok': True}
+    elif a == 'decide':  # ۴.۵: تصمیم پشتیبانی برای هر مغایرت؛ سپس انباردار همان برگه را اصلاح می‌کند
+        # ۴.۶: پشتیبانی برای هر قلم جداگانه تصمیم می‌گیرد؛ هر قلمِ تصمیم‌گرفته همان لحظه برای اصلاح نزد انباردار می‌رود
+        dec = {int(x.get('line') or 0): x for x in (b.get('decisions') or []) if (x.get('dec') or '').strip()}
+        und = undecided_lines(c, P['id'])
+        need(any(l['id'] in dec for l in und), 'برای حداقل یک قلم تصمیم بگیرید', 400)
+        done_ = []
+        for l in und:
+            if l['id'] not in dec:
+                continue
+            x = dec[l['id']]
+            d_, nt = (x.get('dec') or '').strip(), (x.get('note') or '').strip()
+            opts = DECISIONS.get(l['recv_status'], {})
+            need(d_ in opts, 'برای «%s» (%s) یکی از گزینه‌ها را انتخاب کنید: %s'
+                 % (l['title'], LINE_STATUS.get(l['recv_status'], ''), '، '.join(opts.values())), 400)
+            need(d_ != 'keep_wrong' or nt, 'برای «%s» علت عدم امکان مرجوعی را بنویسید' % l['title'], 400)
+            q, e = to_num(l['recv_qty']) or 0, to_num(l['exp_qty']) or 0
+            it = one(c.execute('SELECT * FROM purchase_items WHERE id=?', (l['item_id'],)))
+            bq = to_num(it['bought_qty']) or 0
+            acc = {'accept_extra': q, 'return_extra': min(q, e), 'accept_short': q, 'send_short': q,
+                   'return_wrong': 0.0, 'keep_wrong': min(q, e)}[d_]
+            if d_ == 'accept_extra':  # مقدار خرید با اضافه پذیرفته‌شده اصلاح می‌شود
+                bq += max(0.0, q - e)
+            elif d_ == 'accept_short':  # مقدار خرید به مقدار رسیده کاهش می‌یابد
+                bq = max(0.0, bq - max(0.0, e - q))
+            if bq != (to_num(it['bought_qty']) or 0):
+                c.execute('UPDATE purchase_items SET bought_qty=? WHERE id=?', (fmt_num(bq), it['id']))
+            c.execute('UPDATE purchase_receipt_lines SET sup_dec=?, sup_note=?, sup_by=?, sup_at=?, acc_qty=? WHERE id=?',
+                      (d_, nt, u['id'], now(), fmt_num(acc), l['id']))
+            c.execute("UPDATE purchase_items SET disc_note='' WHERE id=?", (it['id'],))
+            done_.append('%s: %s%s' % (l['title'], DEC_LABEL[d_], (' — ' + nt) if nt else ''))
+        refresh_item_totals(c, P['id'])
+        left = undecided_lines(c, P['id'])
+        if left:  # بقیه اقلام هنوز با پشتیبانی است؛ قلم‌های تصمیم‌گرفته را انباردار هم‌زمان اصلاح می‌کند
+            pflow(c, P['id'], u, P['stage'], a, 'تصمیم پشتیبانی برای %s — ارسال به انبار برای اصلاح برگه؛ %s قلم دیگر منتظر تصمیم'
+                  % ('، '.join(x.split(':')[0] for x in done_), fa_num(str(len(left)))), '؛ '.join(done_ + ([note] if note else [])))
+            return {'ok': True}
+        notes.append('؛ '.join(done_))
+    elif a == 'wh_fix':  # انباردار برگه را طبق تصمیم پشتیبانی اصلاح (تأیید) می‌کند
+        fx = unfixed_lines(c, P['id'])
+        c.execute('UPDATE purchase_receipt_lines SET fix_by=?, fix_at=? WHERE id IN (%s)' % ','.join('?' * len(fx)),
+                  (u['id'], now()) + tuple(l['id'] for l in fx))
+        detail = '؛ '.join('%s: %s' % (l['title'], DEC_LABEL[l['sup_dec']]) for l in fx)
+        if P['stage'] == 'disc_review':  # پشتیبانی هنوز درباره اقلام دیگر تصمیم می‌گیرد
+            pflow(c, P['id'], u, P['stage'], a, 'اصلاح برگه اعلام وصول توسط انباردار (اقلام تصمیم‌گرفته)',
+                  '؛ '.join([detail] + ([note] if note else [])))
+            return {'ok': True}
+        if sheet_done(c, P):
+            nxt = finalize_sheet(c, u, P, notes, by_wh=True)
+            notes.insert(0, detail)
+        else:
+            c.execute('UPDATE purchases SET holder_id=? WHERE id=?', (delivery_holder(c, P), P['id']))
+            pflow(c, P['id'], u, P['stage'], a, label + ' — برگه %s تا تکمیل باز است' % (P['grn_no'] or ''),
+                  '؛ '.join([detail] + ([note] if note else [])))
             return {'ok': True}
     elif a == 'docs_ok':  # امور مالی: کنترل مدارک؛ پرداخت و تسویه در سامانه نیست
-        oi, vd = str(b.get('official_inv', '')), str(b.get('vat_docs', ''))
-        need(oi in ('0', '1') and vd in ('0', '1'), 'مشخص کنید فاکتور رسمی و مدارک ارزش افزوده دریافت شده‌اند یا نه', 400)
+        # فاکتور رسمی و مدارک ارزش افزوده یک مدرک‌اند (نسخه ۲.۶)
+        oi = str(b.get('official_inv', ''))
+        need(oi in ('0', '1'), 'مشخص کنید فاکتور رسمی (ارزش افزوده) دریافت شده یا نه', 400)
         c.execute('UPDATE purchases SET official_inv=?, vat_docs=?, docs_by=?, docs_at=? WHERE id=?',
-                  (int(oi), int(vd), u['id'], now(), P['id']))
-        notes.append('فاکتور رسمی: %s — مدارک ارزش افزوده: %s — بایگانی خودکار' % ('دریافت شد' if oi == '1' else 'دریافت نشد',
-                                                                          'دریافت شد' if vd == '1' else 'دریافت نشد'))
+                  (int(oi), int(oi), u['id'], now(), P['id']))
+        notes.append('فاکتور رسمی و ارزش افزوده: %s — بایگانی خودکار' % ('دریافت شد' if oi == '1' else
+                                                                       'دریافت نشد (در فهرست فاکتورهای رسمی دریافت‌نشده)'))
 
     label = label + (' — ارسال به ' + P_STAGES[nxt] if a in ('stock', 'approve') and nxt not in ('done', 'returned') else '')
     move(c, u, P, nxt, (a, label), '؛ '.join([note] + notes if note else notes),
          'closed' if nxt == 'done' else 'open')
-    if (P['stage'] == 'unit_approval' and a == 'approve') or a == 'submit':
-        cc_exec(c, u, P['id'], P)
-    if note and P['stage'] in GROUP_STAGES and nxt in ('hq_quotes', 'hq_purchase'):
-        # نظر مدیر پروژه یا هیات مدیره به مدیر پشتیبانی گوشزد می‌شود
-        sm = int(settings(c).get('support_manager') or 0)
-        if sm and sm != u['id']:
-            c.execute('INSERT INTO referrals(doc_type,doc_id,from_id,to_id,action,instruction,created_at) VALUES(?,?,?,?,?,?,?)',
-                      ('purchase', P['id'], u['id'], sm, 'جهت اطلاع', 'نظر %s: %s' % (u['full_name'], note), now()))
+    # نسخه ۳.۲: هیچ رونوشتی از درخواست کالا به پشتیبانی (دفتر مرکزی یا کارگاه) نمی‌رود؛ نظر مدیر پروژه / هیات مدیره
+    # در کارت اقدام پشتیبانی به رنگ قرمز دیده می‌شود
     return {'ok': True}
 
 
@@ -2124,6 +2964,8 @@ def api_purchase_act(h, c, u, b, q, pid):
 def api_purchase_edit(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
     need(can_edit(u, P), 'ویرایش فقط وقتی ممکن است که درخواست در کارتابل شما باشد، و فقط تا مرحله مدیر پروژه')
+    # ویرایش اقلام را حذف و دوباره درج می‌کند و مقدارهای وصول را از بین می‌برد؛ حتی برای مدیر سیستم بسته است
+    need(not has_closed_receipt(c, P['id']), 'درخواستی که اعلام وصول دارد قابل ویرایش نیست')
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'], req_date=P['req_date'])
     write_fields(c, P['id'], f, items)
     note = (b.get('note') or '').strip()
@@ -2142,8 +2984,10 @@ def api_purchase_resubmit(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
     need(P['requester_id'] == u['id'] and P['status'] == 'returned', 'فقط درخواست‌کننده، پس از برگشت درخواست')
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'], req_date=P['req_date'])
-    stage, label = start_stage(c, u, f)
-    holder = stage_holder(c, dict(f, project_id=P['project_id']), stage)
+    stage, label = start_stage(c, u, dict(P, **f))
+    holder = stage_holder(c, dict(P, **f), stage)
+    if is_direct_orderer(c, u, P):
+        after_direct_order(c, u, P, stage)
     write_fields(c, P['id'], f, items)
     c.execute("UPDATE purchases SET version=version+1, stage=?, status='open', holder_id=? WHERE id=?",
               (stage, holder, P['id']))
@@ -2156,7 +3000,7 @@ def api_purchase_resubmit(h, c, u, b, q, pid):
 @route('POST', r'/api/purchases/(\d+)/cancel')
 def api_purchase_cancel(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
-    need(can_cancel(u, P), 'لغو فقط تا پیش از تأیید مدیر پروژه و توسط کسی که درخواست در کارتابل اوست ممکن است')
+    need(can_cancel(c, u, P), 'لغو فقط تا پیش از تأیید مدیر پروژه و توسط کسی که درخواست در کارتابل اوست ممکن است')
     reason = (b.get('reason') or '').strip()
     need(reason in cancel_reasons(c), 'علت لغو را انتخاب کنید', 400)
     note = (b.get('note') or '').strip()
@@ -2164,6 +3008,56 @@ def api_purchase_cancel(h, c, u, b, q, pid):
     c.execute("UPDATE purchases SET status='cancelled', stage='done', holder_id=NULL, closed_at=?, cancel_reason=?, "
               'cancel_note=? WHERE id=?', (now(), reason, note, P['id']))
     pflow(c, P['id'], u, P['stage'], 'cancel', 'لغو و بایگانی — ' + reason, note)
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/receipt')
+def api_purchase_receipt(h, c, u, b, q, pid):
+    """ویرایش اعلام وصول: از نسخه ۳.۵ بسته است (اعلام وصول پس از صدور قابل تغییر نیست)."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    raise ApiError('اعلام وصول پس از صدور قابل تغییر نیست', 403)
+    posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
+    ch = []
+    for it in rows(c.execute("SELECT * FROM purchase_items WHERE purchase_id=? AND bought_status IN ('bought','partial') "
+                             'ORDER BY row_no', (P['id'],))):
+        x = posted.get(it['id'])
+        if x is None:
+            continue
+        v = to_num(x.get('qty'))
+        need(v is not None and v >= 0, 'مقدار تحویل‌گرفته «%s» باید عدد باشد' % it['title'], 400)
+        if fmt_num(v) != (it['recv_qty'] or ''):
+            c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(v), it['id']))
+            ch.append('%s: %s ← %s' % (it['title'], it['recv_qty'] or '—', fmt_num(v)))
+    note = (b.get('note') or '').strip()
+    need(ch or note, 'تغییری ثبت نشد', 400)
+    who = 'انباردار' if is_warehouse(c, u, P) and u['id'] != P['requester_id'] else \
+        ('تحویل‌گیرنده' if u['id'] == P['requester_id'] else 'مدیر سیستم')
+    pflow(c, P['id'], u, P['stage'], 'grn_edit', 'ویرایش اعلام وصول (%s)' % who, fa_num('؛ '.join(ch + ([note] if note else []))))
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/paid')
+def api_purchase_paid(h, c, u, b, q, pid):
+    """امور مالی پرداخت خریدی را که پشتیبانی دفتر مرکزی انجام داده ثبت می‌کند (همزمان با اعلام وصول)."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(is_finance(c, u), 'فقط امور مالی')
+    need(P['pay_req_at'] and not P['pay_done_at'] and P['status'] not in ('cancelled', 'rejected'),
+         'این خرید منتظر پرداخت نیست')
+    note = (b.get('note') or '').strip()
+    c.execute('UPDATE purchases SET pay_done_at=?, pay_done_by=?, pay_note=? WHERE id=?', (now(), u['id'], note, P['id']))
+    pflow(c, P['id'], u, P['stage'], 'pay_done', 'پرداخت انجام شد — امور مالی', note)
+    return {'ok': True}
+
+
+@route('POST', r'/api/purchases/(\d+)/official_inv')
+def api_purchase_official(h, c, u, b, q, pid):
+    """فاکتور رسمی (ارزش افزوده) که هنگام کنترل مدارک دریافت نشده بود، بعداً رسید."""
+    P = get_doc(c, u, 'purchase', int(pid))
+    need(is_finance(c, u), 'فقط امور مالی')
+    need(P['docs_at'] and not P['official_inv'], 'این خرید در فهرست فاکتورهای رسمی دریافت‌نشده نیست')
+    c.execute('UPDATE purchases SET official_inv=1, vat_docs=1 WHERE id=?', (P['id'],))
+    pflow(c, P['id'], u, P['stage'], 'official_inv', 'فاکتور رسمی و ارزش افزوده دریافت شد — امور مالی',
+          (b.get('note') or '').strip())
     return {'ok': True}
 
 
@@ -2197,7 +3091,8 @@ def api_reports(h, c, u, b, q):
     no_sep = c.execute("SELECT COUNT(*) FROM requests WHERE status='paid' AND sepidar_no=''").fetchone()[0]
     # مدت ماندن درخواست کالا در هر مرحله (از ورود تا اقدام)
     dur, prev = {}, {}
-    for f in c.execute("SELECT purchase_id, stage, at FROM purchase_flow WHERE action!='attach' ORDER BY purchase_id, id"):
+    for f in c.execute("SELECT purchase_id, stage, at FROM purchase_flow WHERE action NOT IN (%s) ORDER BY purchase_id, id"
+                       % ','.join("'%s'" % a for a in SIDE_ACTIONS)):
         pv = prev.get(f['purchase_id'])
         if pv and f['stage'] in P_STAGES:
             h_ = (datetime.datetime.fromisoformat(f['at']) - datetime.datetime.fromisoformat(pv)).total_seconds() / 3600
@@ -2310,12 +3205,14 @@ def api_admin_sig_view(h, c, u, b, q, uid):
 def api_admin(h, c, u, b, q):
     need(is_mgr(u))
     devs = {r[0]: r[1] for r in c.execute('SELECT user_id, COUNT(*) FROM notify_devices GROUP BY user_id')}
-    users = rows(c.execute('SELECT id,username,full_name,title,role,active,must_change FROM users WHERE deleted=0 ORDER BY id'))
+    users = rows(c.execute('SELECT id,username,full_name,title,role,active,must_change,locked_at,failed_logins FROM users '
+                           'WHERE deleted=0 ORDER BY id'))
     for x in users:
         x['devices'] = devs.get(x['id'], 0)
     return {'users': users, 'projects': rows(c.execute('SELECT * FROM projects WHERE deleted=0 ORDER BY id')),
-            'settings': settings(c), 'backups': sorted(os.listdir(BACK))[-10:], 'https': https_status(c),
-            'is_admin': u['role'] == 'admin'}
+            'settings': settings(c), 'custom_roles': [list(r) + [ROLE_UNIT.get(r[0])] for r in TEAM_ROLES[len(BASE_TEAM_ROLES):]],
+            'backups': sorted(os.listdir(BACK))[-10:], 'https': https_status(c),
+            'is_admin': u['role'] == 'admin', 'workflow_counts': workflow_counts(c)}
 
 
 @route('POST', '/api/admin/user')
@@ -2339,11 +3236,28 @@ def api_admin_user(h, c, u, b, q):
     return {'ok': True}
 
 
+@route('POST', '/api/admin/setpw')
+def api_admin_setpw(h, c, u, b, q):
+    """مدیر سیستم برای کاربر (از جمله حساب بسته‌شده) رمز جدید می‌گذارد و حساب را باز می‌کند؛ کاربر در اولین ورود عوضش می‌کند."""
+    need_admin(u)
+    t = one(c.execute('SELECT id, full_name FROM users WHERE id=? AND deleted=0', (int(b.get('id') or 0),)))
+    need(t, 'کاربر پیدا نشد', 404)
+    pw = b.get('password') or ''
+    need(len(pw) >= 6, 'رمز جدید حداقل ۶ کاراکتر است', 400)
+    hh, s = hash_pw(pw)
+    c.execute('UPDATE users SET pw_hash=?, salt=?, must_change=1, failed_logins=0, locked_at=NULL WHERE id=?', (hh, s, t['id']))
+    c.execute('DELETE FROM sessions WHERE user_id=?', (t['id'],))
+    log(c, 'user', t['id'], u['id'], 'رمز جدید و بازکردن حساب توسط مدیر سیستم', t['full_name'])
+    return {'ok': True}
+
+
 @route('POST', '/api/admin/reset')
 def api_admin_reset(h, c, u, b, q):
     need(is_mgr(u))
     hh, s = hash_pw('1234')
     c.execute('UPDATE users SET pw_hash=?, salt=?, must_change=1 WHERE id=?', (hh, s, int(b['id'])))
+    if u['role'] == 'admin':  # باز کردن حساب بسته‌شده فقط با مدیر سیستم
+        c.execute('UPDATE users SET failed_logins=0, locked_at=NULL WHERE id=?', (int(b['id']),))
     c.execute('DELETE FROM sessions WHERE user_id=?', (int(b['id']),))
     c.execute('DELETE FROM notify_devices WHERE user_id=?', (int(b['id']),))
     return {'ok': True}
@@ -2354,6 +3268,7 @@ def api_admin_project(h, c, u, b, q):
     need(is_mgr(u))
     need((b.get('name') or '').strip(), 'نام پروژه الزامی است', 400)
     mid = int(b['manager_id']) if b.get('manager_id') else None
+    need_not_admin(c, mid, 'مدیر پروژه')
     if b.get('id'):
         c.execute('UPDATE projects SET name=?,manager_id=?,active=? WHERE id=?',
                   (b['name'].strip(), mid, 1 if b.get('active', True) else 0, int(b['id'])))
@@ -2364,6 +3279,50 @@ def api_admin_project(h, c, u, b, q):
     return {'ok': True}
 
 
+@route('POST', '/api/admin/purge_workflow')
+def api_admin_purge_workflow(h, c, u, b, q):
+    """پاک کردن همه مکاتبات و درخواست‌های کالا (نسخه ۴.۲). فقط مدیر سیستم، با رمز خودش و نوشتن «حذف»؛ پیش از آن
+    پشتیبان کامل گرفته می‌شود. کاربران و بقیه بخش‌ها دست نمی‌خورند."""
+    need_admin(u)
+    need((b.get('confirm') or '').strip() == 'حذف', 'برای تأیید، کلمه «حذف» را بنویسید', 400)
+    r = one(c.execute('SELECT * FROM users WHERE id=?', (u['id'],)))
+    need(pw_ok(b.get('password') or '', r), 'رمز عبور شما نادرست است', 400)
+    cnt, keep = purge_workflow(c, 'purge')
+    log(c, 'admin', 0, u['id'], 'پاک کردن سوابق مکاتبات و درخواست‌های کالا',
+        '%d نامه، %d درخواست کالا — پشتیبان: %s' % (cnt['letters'], cnt['purchases'], keep or '-'))
+    return {'ok': True, 'letters': cnt['letters'], 'purchases': cnt['purchases'], 'backup': keep}
+
+
+@route('POST', '/api/admin/roles')
+def api_admin_roles(h, c, u, b, q):
+    """تعریف، ویرایش و حذف سمت‌های کارگاه (ارکان زیرمجموعه) توسط مدیر سیستم و هیات مدیره."""
+    need(is_mgr(u), 'تعریف سمت فقط توسط مدیر سیستم و هیات مدیره')
+    roles = json.loads(settings(c).get('custom_roles') or '[]')
+    if b.get('delete'):
+        k = b['delete']
+        need(any(r[0] == k for r in roles), 'سمت پیدا نشد', 404)
+        need(not c.execute('SELECT 1 FROM project_team WHERE role_key=?', (k,)).fetchone(),
+             'این سمت در پروژه‌ها نفر دارد؛ اول نفرات را در صفحه پروژه از این سمت بردارید', 400)
+        roles = [r for r in roles if r[0] != k]
+    else:
+        title = (b.get('title') or '').strip()
+        need(title, 'عنوان سمت را بنویسید', 400)
+        need(b.get('superior') in dict(PROJECT_ROLES), 'بالادست سمت را انتخاب کنید', 400)
+        need(b.get('unit') in dict(UNITS), 'واحد سمت را انتخاب کنید', 400)
+        names = {t for k, t, _ in TEAM_ROLES if k != b.get('key')} | {t for _, t in PROJECT_ROLES}
+        need(title not in names, 'سمتی با این عنوان وجود دارد', 400)
+        if b.get('key'):
+            need(any(r[0] == b['key'] for r in roles), 'سمت پیدا نشد', 404)
+            roles = [[r[0], title, b['superior'], b['unit']] if r[0] == b['key'] else r for r in roles]
+        else:
+            n = max([int(r[0][1:]) for r in roles if r[0][1:].isdigit()] or [0]) + 1
+            roles.append(['c%d' % n, title, b['superior'], b['unit']])
+    c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('custom_roles',?)", (json.dumps(roles, ensure_ascii=False),))
+    apply_custom_roles(c)
+    log(c, 'admin', 0, u['id'], 'تعریف سمت‌های کارگاه', json.dumps(roles, ensure_ascii=False))
+    return {'ok': True, 'roles': roles}
+
+
 @route('POST', '/api/admin/settings')
 def api_admin_settings(h, c, u, b, q):
     need(is_mgr(u))
@@ -2371,6 +3330,9 @@ def api_admin_settings(h, c, u, b, q):
         if k in b:
             need(str(b[k]).isdigit(), 'عدد نامعتبر در تنظیمات', 400)
             need(k != 'notify_interval' or int(b[k]) >= 15, 'فاصله بررسی اعلان حداقل ۱۵ ثانیه است', 400)
+    for k in HQ_SETTING_USERS:
+        if b.get(k):
+            need_not_admin(c, b[k], HQ_ROLES.get(k) or 'سمت گردش کار')
     for k in DEFAULT_SETTINGS:
         if k in b:
             c.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', (k, str(b[k]).replace(',', '')
@@ -2445,11 +3407,14 @@ def api_admin_doc_delete(h, c, u, b, q, dt, did):
     tbl = {'letter': 'letters', 'purchase': 'purchases', 'request': 'requests'}[dt]
     D = one(c.execute('SELECT * FROM %s WHERE id=?' % tbl, (did,)))
     need(D, 'سند پیدا نشد', 404)
+    # ۴.۶: درخواست دارای اعلام وصول هم با برگه اعلام وصولش حذف می‌شود
     c.execute('DELETE FROM referrals WHERE doc_type=? AND doc_id=?', (dt, did))
     c.execute('DELETE FROM attachments WHERE doc_type=? AND doc_id=?', (dt, did))  # فایل‌ها در پوشه data\files می‌مانند
     if dt == 'purchase':
         for t in ('purchase_items', 'purchase_flow', 'purchase_versions', 'purchase_payments'):
             c.execute('DELETE FROM %s WHERE purchase_id=?' % t, (did,))
+        c.execute('DELETE FROM purchase_receipt_lines WHERE receipt_id IN (SELECT id FROM purchase_receipts WHERE purchase_id=?)', (did,))
+        c.execute('DELETE FROM purchase_receipts WHERE purchase_id=?', (did,))
         c.execute('DELETE FROM purchase_invoice_lines WHERE invoice_id IN (SELECT id FROM purchase_invoices WHERE purchase_id=?)', (did,))
         c.execute('DELETE FROM purchase_invoices WHERE purchase_id=?', (did,))
     if dt == 'request':
@@ -2594,30 +3559,442 @@ def api_admin_https_delete(h, c, u, b, q):
     return {'ok': True}
 
 
-def png_icon(size=192):
-    """آیکن ساده برنامه (مربع آبی با قاب روشن) برای نصب روی صفحه اصلی گوشی."""
-    bg, fg = (0x17, 0x34, 0x4d), (0xcf, 0xe3, 0xf3)
-    m = size // 6
-    raw = b''
-    for y in range(size):
-        row = bytearray(b'\x00')
-        for x in range(size):
-            edge = m <= x < size - m and m <= y < size - m and not (m + 8 <= x < size - m - 8 and m + 8 <= y < size - m - 8)
-            row += bytes(fg if edge else bg)
-        raw += bytes(row)
-    chunk = lambda t, d: struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
-    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', size, size, 8, 2, 0, 0, 0)) +
-            chunk(b'IDAT', zlib.compress(raw, 9)) + chunk(b'IEND', b''))
-
-
-ICON = png_icon()
+# آیکن برنامه (آرم C&E) برای صفحه اصلی گوشی، اعلان‌ها و زبانه مرورگر؛ داخل برنامه است و فایل جدا لازم ندارد
+ICON = base64.b64decode("""
+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""")
+FAVICON = base64.b64decode("""
+iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAIq0lEQVR42pVW+49V1RVea7/OOffcOy+YBzPcO0PmRXgMYEQpIqahVmwVtdZJAU
+nUNLWpvzRN23+gSX8waWuaJk2jCT+YiA8gZaRGrKkaiigiKjidl3QYZobnzJ25j3PPPfucvVd/uLxqbBp2TnZ2Tvb+1tqP71sfvrF/P9xmM8b8
+3znIGEcAsuJ20a21mUyGMQZANajrg+uNABGjKCrHiELcRgBETJKko7396tWrhcVFxtmNEAh4HRwQII7j7p6evtl39fx5cVu5Syk552+8sd+SlV
+JeAyWySVwbIjKhVFAO7tq85dfNw9Hs2+IbMyUiIrLWEhFjDBFrfRzHALTj4Yc+OXmyWCpxzqwlKaVbvxQAETHWUVSaR0DFeWKZFnXia9DWWq21
+EMJ1XUcpzoXWUaR1FEUAIISYmb2QzeV83z9w8CD3vDCsrF7Z/+NVUXV+mgFi68o/fZz57NMTjmTCVAFuuWRE1Fq7rpvLZqWUxWJxcWFBa60cZ0
+lTk+d5xVJpbm7OWjs9O5vxfaUUWUsAgjN/4jDOnCEAv61nfe8vTo9+NbCyxw7PI5M3A0Rad2aznut+9vnno2NjCwsLUbVqiaSUjuO0NDevX7++
+v6+vWg3zC4sIwBgjaxHAEhmZTpx6xli1beOagXW/W93XduqP1bnzTDniRu6rVq6cmZl5+fDhcrlsrHWUymQyAFCNorBSmZ6enpw8l8tllVLfvf
+/+SGsCqH2Ccy6sU807q7590Hlw329+/+yjWzsufVFFxglE7c2u7O8fGRkZGhryfV8qtXHdQE9PL2MsjuMoiqbOT42NjinHuXzlSrFYXLNmTWdn
+p7UWEThji6XyyIofxqmtcSb70dGPQAczC5pl2rA4D0IKrXVHe/vlS5eG3nyzvr5Bx/qxRx/N5rKzsxeKpZLv+719vd/atOnEiROH33rLUcp13X
+x+obu7GwiIyFHq7L8nnz93ARk3yawDxnE9BgZsUuOFkFLW1dXt378/7ftBUN68eXMulzszPMwZa2lubqivf/+9989NTSGAkrL2cMMwVFISEAIA
+ojVGR2VARGvQcwnAWHuD3qK1pWV0dDSfz9fV1Ukpe3t7p6ampBANDQ3pdPrFl14KgoAxFieJ67qu4zDEahQaYxCxRtrl7e0b+9qMDiui/uNTw0
+EYxjoGyQARAFgqlRobG5NSaq0bGxtd19FxDADNS5ceeeedShh6nrd27drBJ55oXro0rFYZ5yYx1loEQMQ4TtqXte6Q7z1y8YXdzV/2rd0wVyj7
+TS02KhsdAjJWrVbn83khhDEmlUoZY40xUspioXDp0iXPdeMk2bRpU9OSJTt37upob68EATLGhSAiAELEJE6SxcVSGIef/vXx5flf/eyZ7zdNs/
+TS+hV3YhywQqGgo4gxRgTi2jJARLpFgoaHh1OeN3lu8pEdO9Jpf2V/H2OMgACQABABkZCxxNiGY7/dduaXDVh8e/nPDzY8hX0PiJrs1ESRiKSU
+iKxSqfR0dy/v6BgfH0953tGjR5csWZLL5a7MzT333HNa68XFRSVVkiRAlimXN7Wk5yZYfTulW/PNdx642PWPd/aquiVrHxwQ6XRaKVWNIs5YUK
+kIIbSOuru7S6XifD4vpSQiP50+NDS0a+ePGhsaRsfG+/v6gqAcac05l1Kcn545uvwh6rs35JnpxWT42NTc7LsZ3/Mb6htYiCdOnDh0aGhmZtpx
+nCRJBgcHW1paL1+6+NrrrxMR45yIlFLW2EhHu3ft6uvtff+DDz48fhyvq78xRhtCJsjEYGNHCiHEXLGy+/GHHyu+zPfs2cMZjk9MeJ4XBEFjY+
+Oytra/vPiilNLzvGeefroSBNPnz7ueB0QTExNj4+OnTp0yxhBRrV5ZAuASEJELlK5lkjn+d7Zt+4E8rkeO4P4DBzpzub1790ZRhIhcCMZYrGOt
+o61bt/b397ue9+bQ0LmpKdd1jTE1BgwMrC0VS5OTk4Zo/ZpVW3oawlKBCBhCOpNpa/TbZo5UR45YlRFa6yAItm/f/sor++rr64wxSZIIzgEgm8
+1Wq1Ui2vPkk3944YUoihjngvNyudzY2NS+bNn42BgJZ3WuaePsn03+KhcKgIgo1tUgjpmbQbJ8565di4VCZ2dnY2PDmS+/dJTinNeEvhqGqVTq
+woULx44fL5VKiAhEBCClPHv27MzMjBA8Ab5tfVfL1JEgtrG1OrGxJcskkw6QBQBBRErJia++WrVqVSaTOXz4bzrSSkkhxMTExMjIKABRrR4iOo
+6jq1XXdZWUiTGJ1u2d/T1mMirlRboZbAwE11ScajwBAQBEIKUcn5jIZrM/ffYn+159Lb+QV1Iqx3FcRMS6TKa5ubmrq6urq/Ofxz48/cUXUikG
+QESuZKopq/z6oDwPQjEukXEgAoSa0+CDg4PXZE+Iubl5LsS6dQOfnjzJOUdEawmI7tl8z/YHH/BTKSGFkvJfIyNCCETkQs5fufh5IdW5ZXCZGz
+mOi3Fo4ggZv1mJb3V2jLEwDLs6O+fn5/e9+qrv+4JzY4zWses6mUw60nGxUPQ8N6qGOk4815GOWwnKKt143+aNKck3NIYdJ5+PdYiM1Y7o5g5q
+DkdKOb+QX9G1oqenZ3RktFIJhJSOUkQUVMIkjgGhFESdfavv3Xrv9OWFhfyc6ziQRGNj40c/+oRn79jUtFi9fBaVV9vAfwW4cVaXr1xpbW29++
+67kiQpFArVKDJJAohSqbbWZd+7766nuhc25A/decdGbOoqBaExVim5dmDD7tXKP/0yUiJszElzivEbzW/NBvi+39LcYmySn88HQeC6bmtrq+el
++OXT4eQncWI8LyV7toSpjqBcBGQNmTSN/10X51A61wT0a3fwtRg13koplVK1n0litI4MCub4AEjWkA4EXtMMrTVJH4UAummH/6c3rZlGzjkRRV
+FERIgIAFJKSQRx6do8yQCwlq9SCiiCuHorzn8AzvyO2ZjvDn4AAAAASUVORK5CYII=""")
 OLD_PAGE = """<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>به‌روزرسانی ناقص</title></head><body style="font-family:Tahoma,sans-serif;background:#f4f5f7;padding:20px;line-height:2.2">
 <div style="max-width:640px;margin:8vh auto;background:#fff;border:2px solid #b42318;border-radius:10px;padding:18px 22px">
 <h2 style="color:#b42318;margin-top:0">فایل index.html با برنامه سرور هم‌نسخه نیست</h2>
-برنامه سرور (app.py) نسخه %s است، ولی فایل صفحه (index.html) کنار آن از نسخه دیگری است.<br>
-۱. فایل <b>index.html</b> نسخه %s را از فایل ZIP در همان پوشه‌ای که app.py هست کپی و جایگزین کنید.<br>
-۲. این صفحه را با <b>Ctrl+F5</b> دوباره باز کنید (نیازی به راه‌اندازی مجدد سرور نیست).</div></body></html>"""
+برنامه‌ای که الان روی سرور <b>در حال اجراست</b> نسخه <b dir="ltr">%(srv)s</b> است، ولی فایل صفحه (index.html) نسخه <b dir="ltr">%(page)s</b> است.<br>
+%(steps)s</div></body></html>"""
+OLD_STEPS_PAGE_NEWER = """<b>راه‌حل:</b> فایل <b>app.py</b> نسخه %(page)s را هم کنار index.html (در همان پوشه) بگذارید و جایگزین کنید، سپس روی کامپیوتر سرور فایل <b>4-restart.bat</b> را با «Run as administrator» اجرا کنید (یا کامپیوتر سرور را یک بار ری‌استارت کنید). <b>تا سرور دوباره راه‌اندازی نشود، همین پیام می‌ماند</b>، حتی اگر app.py جدید را جایگزین کرده باشید.<br>
+بعد از راه‌اندازی، این صفحه را با <b>Ctrl+F5</b> دوباره باز کنید."""
+OLD_STEPS_PAGE_OLDER = """<b>راه‌حل:</b> فایل <b>index.html</b> نسخه %(srv)s را در همان پوشه‌ای که app.py هست جایگزین کنید و این صفحه را با <b>Ctrl+F5</b> دوباره باز کنید (نیازی به راه‌اندازی مجدد سرور نیست)."""
+
+
+def version_page(page_bytes):
+    """صفحه راهنمای ناهم‌نسخه‌بودن app.py (در حال اجرا) و index.html؛ جهت ناهم‌خوانی تشخیص داده می‌شود."""
+    m = re.search(rb"PAGE_VERSION='([^']*)'", page_bytes)
+    pv = m.group(1).decode() if m else '؟'
+    key = lambda v: tuple(int(x) if x.isdigit() else 0 for x in v.split('.'))
+    newer = m is not None and key(pv) > key(VERSION)
+    d = {'srv': VERSION, 'page': pv}
+    d['steps'] = (OLD_STEPS_PAGE_NEWER if newer or not m else OLD_STEPS_PAGE_OLDER) % d
+    return (OLD_PAGE % d)
 SW_JS = """// سرویس‌ورکر اتوماسیون عمران زیست: نمایش اعلان و باز کردن کارتابل با لمس اعلان
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
@@ -2693,7 +4070,7 @@ class H(BaseHTTPRequestHandler):
             with open(os.path.join(BASE, 'index.html'), 'rb') as f:
                 page = f.read()
             if ("PAGE_VERSION='%s'" % VERSION).encode() not in page:  # index.html با app.py هم‌نسخه نیست
-                return self.send(200, OLD_PAGE % (VERSION, VERSION), 'text/html; charset=utf-8')
+                return self.send(200, version_page(page).encode('utf-8'), 'text/html; charset=utf-8')
             return self.send(200, page, 'text/html; charset=utf-8')
         if method == 'GET' and path == '/logo.png':  # آرم شرکت (اختیاری): فایل logo.png کنار app.py
             lp = os.path.join(BASE, 'logo.png')
@@ -2704,11 +4081,9 @@ class H(BaseHTTPRequestHandler):
         if method == 'GET' and path == '/sw.js':  # سرویس‌ورکر اعلان‌ها (باید از ریشه سایت بیاید)
             return self.send(200, SW_JS, 'text/javascript; charset=utf-8', {'Service-Worker-Allowed': '/'})
         if method == 'GET' and path == '/icon.png':
-            lp = os.path.join(BASE, 'logo.png')
-            if os.path.exists(lp):
-                with open(lp, 'rb') as f:
-                    return self.send(200, f.read(), 'image/png')
             return self.send(200, ICON, 'image/png')
+        if method == 'GET' and path in ('/favicon.png', '/favicon.ico'):
+            return self.send(200, FAVICON, 'image/png')
         if method == 'GET' and path == '/manifest.json':  # نصب روی صفحه اصلی گوشی
             return self.send(200, json.dumps({'name': 'اتوماسیون عمران زیست', 'short_name': 'اتوماسیون', 'start_url': '/#/cartable',
                                               'display': 'standalone', 'dir': 'rtl', 'lang': 'fa', 'background_color': '#f4f5f7',
@@ -2722,16 +4097,8 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps(notify_count(c, self.headers.get('X-Notify-Token') or q.get('t'), u)))
             m = re.match(r'^/files/(\d+)$', path)
             if m and method == 'GET':
-                need(u, 'ابتدا وارد شوید', 401)
-                a = one(c.execute('SELECT * FROM attachments WHERE id=?', (int(m.group(1)),)))
-                need(a, 'فایل پیدا نشد', 404)
-                get_doc(c, u, a['doc_type'], a['doc_id'])
-                with open(os.path.join(FILES, a['path']), 'rb') as f:
-                    data = f.read()
-                ct = mimetypes.guess_type(a['name'])[0] or 'application/octet-stream'
-                disp = 'inline' if ('dl' not in q) else 'attachment'
-                return self.send(200, data, ct, {'Content-Disposition': "%s; filename*=UTF-8''%s" %
-                                                 (disp, urllib.parse.quote(a['name']))})
+                data, ct, hdr = file_payload(c, u, int(m.group(1)), q)
+                return self.send(200, data, ct, hdr)
             n = int(self.headers.get('Content-Length') or 0)
             need(n <= MAX_UPLOAD, 'حجم فایل بیش از حد مجاز است', 413)
             raw = self.rfile.read(n) if n else b''
@@ -2787,7 +4154,8 @@ def main():
     init_db()
     if '--reset-admin' in sys.argv:
         c = db(); hh, ss = hash_pw('1234')
-        c.execute("UPDATE users SET pw_hash=?, salt=?, must_change=1, active=1 WHERE username='admin'", (hh, ss))
+        c.execute("UPDATE users SET pw_hash=?, salt=?, must_change=1, active=1, failed_logins=0, locked_at=NULL "
+                  "WHERE username='admin'", (hh, ss))
         c.commit(); c.close(); print('رمز admin به 1234 برگشت.'); return
     other = running_version(PORT)
     if other:
@@ -2815,6 +4183,32 @@ def main():
     srv.serve_forever()
 
 
+class HTTPSServer(ThreadingHTTPServer):
+    """سرور HTTPS که دست‌دهی امنیتی (TLS) هر اتصال را در رشته جداگانه همان اتصال و با مهلت زمانی انجام می‌دهد.
+    پیش از نسخه ۴.۶.۱ دست‌دهی در رشته اصلی سرور انجام می‌شد؛ یک اتصالِ نیمه‌کاره (مثلاً گوشی‌ای که وسط اتصال
+    شبکه‌اش قطع شده، یا ربات اسکن پورت از اینترنت) کل HTTPS را تا راه‌اندازی مجدد قفل می‌کرد، در حالی که پورت HTTP کار می‌کرد."""
+    HANDSHAKE_TIMEOUT = 20  # ثانیه
+
+    def __init__(self, addr, handler, ctx):
+        super().__init__(addr, handler)
+        self.ctx = ctx
+
+    def finish_request(self, request, client_address):
+        request.settimeout(self.HANDSHAKE_TIMEOUT)
+        try:
+            conn = self.ctx.wrap_socket(request, server_side=True)
+        except (OSError, ssl.SSLError):  # دست‌دهی ناقص، کند یا نامعتبر: فقط همین اتصال بسته می‌شود
+            return
+        try:
+            conn.settimeout(120)  # اتصالی که دو دقیقه بی‌حرکت بماند بسته می‌شود
+            self.RequestHandlerClass(conn, client_address, self)
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+
 def start_https():
     """اگر مدیر سیستم گواهی HTTPS بارگذاری کرده باشد، سامانه روی پورت HTTPS هم اجرا می‌شود (برای اعلان روی گوشی)."""
     cert, key = https_files()
@@ -2824,8 +4218,7 @@ def start_https():
     try:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(cert, key)
-        srv = ThreadingHTTPServer(('0.0.0.0', port), H)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        srv = HTTPSServer(('0.0.0.0', port), H, ctx)
     except (OSError, ssl.SSLError) as e:
         print('HTTPS راه‌اندازی نشد (%s)' % e)
         return
