@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.6.1'
+VERSION = '4.6.2'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -122,7 +122,6 @@ P_FLOW = {
 HQ_ONLY_STAGES = ('hq_quotes', 'price_approve', 'hq_purchase', 'finance_settle', 'finance_pay', 'archive',
                   'discrepancy', 'invoice_fix')
 # کدگذاری اسناد: {نوع سند}-{سریال ۴ رقمی}، مثل MR-0012 (بدون کد پروژه؛ سریال سراسری برای هر نوع سند)
-DOC_TYPES = {'MR': 'درخواست کالا', 'PO': 'سفارش خرید', 'GRN': 'اعلام وصول کالا', 'PAY': 'پرداخت'}
 BUY_STATUS = {'bought': 'خریداری شد', 'partial': 'بخشی خریداری شد', 'none': 'خریداری نشد'}
 LH_DIR, SIG_DIR, SIG_COPY_DIR = 'سربرگ', 'کلیشه امضا', os.path.join('کلیشه امضا', 'نامه‌ها')
 # جای شماره، تاریخ، پیوست، نام پروژه و متن روی سربرگ (میلی‌متر از لبه‌های A4)؛ برای هر سربرگ قابل تنظیم است
@@ -138,7 +137,6 @@ STAGE_HOLDER = {'supervisor_review': ('member', 'supervisor'), 'warehouse_check'
                 'discrepancy': ('member', 'pm'),
                 }
 UNIT_HEAD = {'tech': 'tech', 'exec': 'exec', 'support': 'supervisor', 'warehouse': 'supervisor'}  # رئیس هر واحد
-HEAD_ROLES = ('tech', 'exec', 'supervisor')  # درخواست این افراد، خودش تأیید رئیس واحد است
 # تا پیش از رسیدن به مدیر پروژه ویرایش و لغو ممکن است؛ مدیر پروژه فقط لغو (ابطال) می‌کند
 # هر کس فقط تا وقتی درخواست در کارتابل خودش است ویرایش می‌کند؛ تا مدیر پروژه (خودش هم)
 EDIT_STAGES = ('draft', 'unit_approval', 'supervisor_review', 'warehouse_check', 'tech_review', 'supervisor_approve',
@@ -298,7 +296,15 @@ def now():
     return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
-J_YEARS = (1405, 1410)  # سال‌های مجاز در تقویم شمسی سامانه
+_JY = g2j(*datetime.date.today().timetuple()[:3])[0]
+J_YEARS = (_JY - 1, _JY + 5)  # سال‌های مجاز در تقویم شمسی سامانه (نسبت به سال جاری؛ سال قبل برای اسناد معوق)
+
+
+def j_leap(y):
+    """سال شمسی کبیسه است اگر از اول فروردین آن تا اول فروردین سال بعد ۳۶۶ روز باشد."""
+    def nowruz(jy):
+        return next(datetime.date(jy + 621, 3, d) for d in (19, 20, 21, 22) if g2j(jy + 621, 3, d) == (jy, 1, 1))
+    return (nowruz(y + 1) - nowruz(y)).days == 366
 
 
 def jnorm(s):
@@ -308,6 +314,8 @@ def jnorm(s):
         return ''
     y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
     if not (1 <= mo <= 12 and 1 <= d <= (31 if mo <= 6 else 30)):
+        return ''
+    if mo == 12 and d == 30 and 1300 <= y <= 1500 and not j_leap(y):  # ۳۰ اسفند فقط در سال کبیسه
         return ''
     return '%04d/%02d/%02d' % (y, mo, d)
 
@@ -347,6 +355,12 @@ def db():
     c.row_factory = sqlite3.Row
     c.execute('PRAGMA foreign_keys=ON')
     return c
+
+
+def lock_write(c):
+    """پیش از گرفتن شماره بعدی (MAX+1) قفل نوشتن گرفته می‌شود تا دو ثبت هم‌زمان شماره تکراری نگیرند."""
+    if not c.in_transaction:
+        c.execute('BEGIN IMMEDIATE')
 
 
 def hash_pw(pw, salt=None):
@@ -916,6 +930,8 @@ def build_steps(c, R, uid):
     ceo = int(S.get('ceo_user') or 0)
     if ceo and int(R['amount'] or 0) >= int(S.get('ceo_threshold') or 0):
         chain.append((ceo, 'تأیید مدیرعامل'))
+    # خودتأییدی ممنوع (مثل درخواست کالا): مرحله‌ای که تأییدکننده‌اش خودِ درخواست‌کننده است به مدیرعامل می‌رود
+    chain = [(ceo, l + ' (به‌جای درخواست‌کننده)') if a == uid and ceo and ceo != uid else (a, l) for a, l in chain]
     seen, final = set(), []
     for a, l in chain:
         if a not in seen:
@@ -999,8 +1015,16 @@ def api_login(h, c, u, b, q):
         raise ApiError('به دلیل ورودهای ناموفق پیاپی از این دستگاه، ورود تا %s دقیقه دیگر ممکن نیست'
                        % fa_num(str((wait + 59) // 60)), 429)
     r = one(c.execute('SELECT * FROM users WHERE username=? COLLATE NOCASE AND active=1', (un,)))
+    if r and r['locked_at'] and r['role'] == 'admin' and (
+            datetime.datetime.now() - datetime.datetime.fromisoformat(r['locked_at'][:19])).total_seconds() > LOGIN_WINDOW:
+        r['locked_at'] = None  # حساب مدیر سیستم کسی را ندارد که بازش کند؛ قفلش پس از ۱۵ دقیقه خودکار باز می‌شود
+        c.execute('UPDATE users SET failed_logins=0, locked_at=NULL WHERE id=?', (r['id'],))
+        c.commit()
     if r and r['locked_at']:
-        raise ApiError(LOCKED_MSG, 423)
+        if pw_ok(b.get('password') or '', r):  # پیام «بسته شده» فقط با رمز درست (وجود حساب با رمز غلط لو نمی‌رود)
+            raise ApiError(LOCKED_MSG, 423)
+        login_failed(keys)
+        raise ApiError('نام کاربری یا رمز عبور نادرست است', 401)
     if not r or not pw_ok(b.get('password') or '', r):
         login_failed(keys)
         log(c, 'user', r['id'] if r else 0, None, 'ورود ناموفق', '%s از %s' % (un[:50], h.client_address[0]))
@@ -1020,7 +1044,8 @@ def api_login(h, c, u, b, q):
     c.execute('UPDATE users SET failed_logins=0 WHERE id=?', (r['id'],))
     tok = secrets.token_hex(24)
     c.execute('INSERT INTO sessions(token,user_id,created_at,last_seen) VALUES(?,?,?,?)', (tok, r['id'], now(), now()))
-    h.set_cookie = 'sid=%s; Path=/; HttpOnly; SameSite=Lax' % tok  # کوکی جلسه؛ با بستن مرورگر یا بی‌فعالیتی از بین می‌رود
+    h.set_cookie = 'sid=%s; Path=/; HttpOnly; SameSite=Lax%s' % (
+        tok, '; Secure' if isinstance(getattr(h, 'server', None), HTTPSServer) else '')  # کوکی جلسه؛ با بستن مرورگر یا بی‌فعالیتی از بین می‌رود
     return {'ok': True}
 
 
@@ -1114,6 +1139,10 @@ def api_cartable(h, c, u, b, q):
         desk += rows(c.execute(
             "SELECT l.* FROM letters l WHERE l.status='open' AND NOT EXISTS (SELECT 1 FROM referrals r WHERE "
             "r.doc_type='letter' AND r.doc_id=l.id AND r.status IN %s) ORDER BY l.id DESC LIMIT 200" % str(OPEN)))
+        for L in desk:  # نامه محرمانه‌ای که اجازه دیدنش نیست: فقط شماره و موضوع برای ثبت، بدون متن و خلاصه
+            if L['confidential'] and not can_view_letter(c, u, L):
+                for k in ('body', 'summary', 'source'):
+                    L.pop(k, None)
     pur_held = rows(c.execute(PUR_SEL + "WHERE " + PUR_HELD_SQL + " ORDER BY x.id", held_args(u)))
     pur_pay = rows(c.execute(PUR_SEL + "WHERE " + PUR_PAY_SQL + " ORDER BY x.id")) if is_finance(c, u) else []
     pur_mine = rows(c.execute(PUR_SEL + "WHERE x.requester_id=? AND x.status IN ('open','returned') ORDER BY x.id DESC",
@@ -1250,6 +1279,7 @@ def letter_fields(b):
 
 def next_letter_number(c, kind):
     y = jyear()
+    lock_write(c)
     seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM letters WHERE year=? AND kind=?', (y, kind)).fetchone()[0]
     return y, seq, '%s %d/%04d' % (LETTER_PREFIX[kind], y, seq)
 
@@ -1657,6 +1687,7 @@ def api_request_new(h, c, u, b, q):
     no_site(c, u)
     f = req_fields(b)
     y = jyear()
+    lock_write(c)
     seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM requests WHERE year=?', (y,)).fetchone()[0]
     number = 'م %d/%04d' % (y, seq)
     cur = c.execute('INSERT INTO requests(year,seq,number,kind,project_id,requester_id,title,amount,payee,description,'
@@ -1739,9 +1770,11 @@ def api_request_pay(h, c, u, b, q, rid):
     need(u['role'] == 'finance' or is_board(u), 'ثبت پرداخت فقط توسط مالی یا هیات مدیره')
     if R['status'] == 'approved':
         try:
-            amt = int(str(b.get('paid_amount') or R['amount']).replace(',', ''))
+            amt = int(str(b.get('paid_amount') or R['amount']).replace(',', '').replace('٬', ''))
         except ValueError:
             raise ApiError('مبلغ نامعتبر')
+        need(amt > 0 and (not R['amount'] or amt <= R['amount']), 'مبلغ پرداخت باید بیشتر از صفر و حداکثر برابر مبلغ تأییدشده (%s ریال) باشد'
+             % format(R['amount'], ','), 400)
         sep = (b.get('sepidar_no') or '').strip()
         pd = need_jdate(b.get('paid_at') or jtoday(), 'تاریخ پرداخت', max_=jtoday(),
                         max_msg='تاریخ پرداخت نمی‌تواند بعد از امروز باشد')
@@ -1762,6 +1795,7 @@ def api_request_pay(h, c, u, b, q, rid):
 def api_project_get(h, c, u, b, q, pid):
     pr = one(c.execute('SELECT * FROM projects WHERE id=?', (int(pid),)))
     need(pr, 'پروژه پیدا نشد', 404)
+    need(is_mgr(u) or is_broad(c, u) or is_member(c, u, pr['id']), 'شما عضو ارکان این پروژه نیستید')
     mem = rows(c.execute('SELECT m.role_key, m.user_id, us.full_name FROM project_members m LEFT JOIN users us '
                          'ON us.id=m.user_id WHERE m.project_id=?', (pr['id'],)))
     team = rows(c.execute('SELECT t.role_key, t.user_id, us.full_name FROM project_team t LEFT JOIN users us '
@@ -1877,19 +1911,6 @@ def return_targets(c, u, P):
     names = {r[0]: r[1] for r in c.execute('SELECT id, full_name FROM users WHERE active=1')}
     return [{'id': k, 'name': names[k], 'stage': v, 'label': 'درخواست‌کننده' if v == 'returned' else P_STAGES[v]}
             for k, v in out.items() if k in names]
-
-
-def tech_already(c, P):
-    """معاون فنی قبلاً در همین نوبت درخواست را ثبت یا تأیید کرده است (دوباره لازم نیست)."""
-    t = pmembers(c, P['project_id']).get('tech')
-    if not t:
-        return False
-    if t == P['requester_id']:
-        return True
-    last_ret = round_start(c, P)
-    return c.execute("SELECT 1 FROM purchase_flow WHERE purchase_id=? AND user_id=? AND id>? AND "
-                     "action IN ('approve','submit') AND stage IN ('draft','unit_approval')",
-                     (P['id'], t, last_ret)).fetchone() is not None
 
 
 def done_this_round(c, P, stage):
@@ -2222,6 +2243,7 @@ def api_purchase_csv(h, c, u, b, q, pid):
 def api_purchase_new(h, c, u, b, q):
     f, items = pur_fields(c, u, b)
     y = jyear()
+    lock_write(c)
     seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchases WHERE year=?', (y,)).fetchone()[0]
     number = next_code(c, f['project_id'], 'MR')  # مثل MR-0001 (درخواست‌های قبلی شماره قدیمی خود را نگه می‌دارند)
     cur = c.execute('INSERT INTO purchases(year,seq,number,project_id,unit,warehouse,category,urgency,need_date,purpose,'
@@ -2336,13 +2358,14 @@ def api_purchase_get(h, c, u, b, q, pid):
     fin = is_finance(c, u) and not site
     mem = pmembers(c, P['project_id'])
     wh = one(c.execute('SELECT full_name FROM users WHERE id=?', (P['wh_by'] or mem.get('warehouse') or 0,))) or {}
+    acts = allowed_actions(c, u, P)
     return {'docs': docs_check(c, P) if bought and not site else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
             'site_path': site_path(c, P), 'is_admin': u['role'] == 'admin',
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
-            'actions': allowed_actions(c, u, P), 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in allowed_actions(c, u, P) else [],
+            'actions': acts, 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in acts else [],
             'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
             'buy_status': BUY_STATUS, 'site_view': site, 'receipts': receipts, 'disc_lines': dlines, 'dec_label': DEC_LABEL,
-            'sheet_final': bool(P['grn_no'] and P['recv_at'] and P['wh_at']), 'jtoday': jtoday(), 'can_edit_grn': can_edit_grn(c, u, P),
+            'sheet_final': bool(P['grn_no'] and P['recv_at'] and P['wh_at']), 'jtoday': jtoday(),
             'support_attach': not can_attach_turn(c, u, P) and post_purchase_support(c, u, P),
             'can_pay': fin and bool(P['pay_req_at']) and not P['pay_done_at'] and P['status'] not in ('cancelled', 'rejected'),
             'can_official': fin and bool(P['docs_at']) and not P['official_inv'],
@@ -2360,6 +2383,9 @@ def site_view(c, u, P):
 purchase_site_view = site_view  # نام سند CR-PUR-02
 
 
+INLINE_TYPES = ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp', 'application/pdf')
+
+
 def file_payload(c, u, aid, q):
     """فایل پیوست با بررسی دسترسی: دیدن سند، پیوست حذف‌شده و مدارک قیمت دفتر مرکزی (CHG-00)."""
     need(u, 'ابتدا وارد شوید', 401)
@@ -2373,8 +2399,11 @@ def file_payload(c, u, aid, q):
     with open(os.path.join(FILES, a['path']), 'rb') as f:
         data = f.read()
     ct = mimetypes.guess_type(a['name'])[0] or 'application/octet-stream'
-    disp = 'inline' if ('dl' not in q) else 'attachment'
-    return data, ct, {'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(a['name']))}
+    safe = ct in INLINE_TYPES  # فقط تصویر و PDF در مرورگر باز می‌شود؛ بقیه (HTML، SVG و…) فقط دانلود (جلوگیری از XSS)
+    disp = 'inline' if ('dl' not in q and safe) else 'attachment'
+    return data, (ct if safe else 'application/octet-stream'), {
+        'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(a['name'])),
+        'X-Content-Type-Options': 'nosniff'}
 
 
 def is_warehouse(c, u, P):
@@ -2483,11 +2512,6 @@ def api_purchase_handover(h, c, u, b, q, pid):
               (t['id'], t['id'], 'site' if t['label'] == 'پشتیبانی کارگاه' else 'hq', P['id']))
     pflow(c, P['id'], u, P['stage'], 'handover', 'واگذاری به %s (%s)' % (t['name'], t['label']), (b.get('note') or '').strip())
     return {'ok': True}
-
-
-def can_edit_grn(c, u, P):
-    """نسخه ۳.۵: اعلام وصول پس از صدور برای هیچ‌کس قابل تغییر نیست (برای سازگاری نگه داشته شده است)."""
-    return False
 
 
 def is_finance(c, u):
@@ -2638,6 +2662,7 @@ def open_receipt(c, P, create=True):
     if not R:
         if not create:
             return None
+        lock_write(c)
         seq = c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchase_receipts WHERE purchase_id=?', (P['id'],)).fetchone()[0]
         c.execute('INSERT INTO purchase_receipts(purchase_id,seq) VALUES(?,?)', (P['id'], seq))
         R = one(c.execute("SELECT * FROM purchase_receipts WHERE purchase_id=? AND status='open'", (P['id'],)))
@@ -2832,6 +2857,8 @@ def api_purchase_act(h, c, u, b, q, pid):
             it, x = itm[ln['item_id']], posted.get(ln['item_id']) or {}
             whq = to_num(ln['wh_qty']) if ln['wh_qty'] != '' else None
             exp = wh_remaining(c, it) if wh_act else (to_num(ln['exp_qty']) if ln['exp_qty'] != '' else remaining_receive(c, it))
+            if not wh_act:  # مورد انتظار از باقی‌مانده واقعی بیشتر نشود (نوبت‌های موازی یا کالای اشتباهِ دوباره ارسال‌شده)
+                exp = min(exp, remaining_receive(c, it))
             qv = to_num(x.get('qty')) if x.get('qty') not in (None, '') else (exp if wh_act or whq is None else whq)
             need(qv is not None and qv >= 0, 'مقدار «%s» باید عدد باشد' % it['title'], 400)
             stt = (x.get('status') or '').strip() or (ln['wh_status'] if not wh_act and ln['wh_status'] in IN_STATUS else
@@ -2842,9 +2869,8 @@ def api_purchase_act(h, c, u, b, q, pid):
             txt = '%s: %s%s' % (who, LINE_STATUS[stt], (' — ' + nt) if nt else '')
             upd = {pre + '_qty': fmt_num(qv), pre + '_status': stt, pre + '_note': nt,
                    'disc_note': txt if stt in DISC_STATUS else ''}
-            if wh_act:
-                upd['exp_qty'] = fmt_num(exp)
-            else:
+            upd['exp_qty'] = fmt_num(exp)
+            if not wh_act:
                 upd.update(acc_qty=fmt_num(accepted_qty(stt, qv, exp)), need_dec=1 if stt in DISC_STATUS else 0,
                            sup_dec='', sup_note='', sup_by=None, sup_at=None, fix_by=None, fix_at=None)
             c.execute('UPDATE purchase_receipt_lines SET %s WHERE id=?' % ', '.join('%s=?' % k for k in upd),
@@ -2915,6 +2941,8 @@ def api_purchase_act(h, c, u, b, q, pid):
                 bq = max(0.0, bq - max(0.0, e - q))
             if bq != (to_num(it['bought_qty']) or 0):
                 c.execute('UPDATE purchase_items SET bought_qty=? WHERE id=?', (fmt_num(bq), it['id']))
+            # جمع پذیرفته‌شده هر قلم از مقدار خرید بیشتر نشود (نوبت‌های دیگری که پیش‌تر بسته شده‌اند)
+            acc = min(acc, max(0.0, bq - (received_sum(c, it['id']) - line_acc(l))))
             c.execute('UPDATE purchase_receipt_lines SET sup_dec=?, sup_note=?, sup_by=?, sup_at=?, acc_qty=? WHERE id=?',
                       (d_, nt, u['id'], now(), fmt_num(acc), l['id']))
             c.execute("UPDATE purchase_items SET disc_note='' WHERE id=?", (it['id'],))
@@ -2965,7 +2993,9 @@ def api_purchase_edit(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
     need(can_edit(u, P), 'ویرایش فقط وقتی ممکن است که درخواست در کارتابل شما باشد، و فقط تا مرحله مدیر پروژه')
     # ویرایش اقلام را حذف و دوباره درج می‌کند و مقدارهای وصول را از بین می‌برد؛ حتی برای مدیر سیستم بسته است
-    need(not has_closed_receipt(c, P['id']), 'درخواستی که اعلام وصول دارد قابل ویرایش نیست')
+    need(not has_closed_receipt(c, P['id']) and not pending_receipts(c, P['id']) and not c.execute(
+        "SELECT 1 FROM purchase_items WHERE purchase_id=? AND COALESCE(bought_status,'')!=''", (P['id'],)).fetchone(),
+         'درخواستی که خرید یا اعلام وصول دارد قابل ویرایش نیست')
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'], req_date=P['req_date'])
     write_fields(c, P['id'], f, items)
     note = (b.get('note') or '').strip()
@@ -3014,26 +3044,8 @@ def api_purchase_cancel(h, c, u, b, q, pid):
 @route('POST', r'/api/purchases/(\d+)/receipt')
 def api_purchase_receipt(h, c, u, b, q, pid):
     """ویرایش اعلام وصول: از نسخه ۳.۵ بسته است (اعلام وصول پس از صدور قابل تغییر نیست)."""
-    P = get_doc(c, u, 'purchase', int(pid))
+    get_doc(c, u, 'purchase', int(pid))
     raise ApiError('اعلام وصول پس از صدور قابل تغییر نیست', 403)
-    posted = {int(x.get('id') or 0): x for x in (b.get('items') or [])}
-    ch = []
-    for it in rows(c.execute("SELECT * FROM purchase_items WHERE purchase_id=? AND bought_status IN ('bought','partial') "
-                             'ORDER BY row_no', (P['id'],))):
-        x = posted.get(it['id'])
-        if x is None:
-            continue
-        v = to_num(x.get('qty'))
-        need(v is not None and v >= 0, 'مقدار تحویل‌گرفته «%s» باید عدد باشد' % it['title'], 400)
-        if fmt_num(v) != (it['recv_qty'] or ''):
-            c.execute('UPDATE purchase_items SET recv_qty=? WHERE id=?', (fmt_num(v), it['id']))
-            ch.append('%s: %s ← %s' % (it['title'], it['recv_qty'] or '—', fmt_num(v)))
-    note = (b.get('note') or '').strip()
-    need(ch or note, 'تغییری ثبت نشد', 400)
-    who = 'انباردار' if is_warehouse(c, u, P) and u['id'] != P['requester_id'] else \
-        ('تحویل‌گیرنده' if u['id'] == P['requester_id'] else 'مدیر سیستم')
-    pflow(c, P['id'], u, P['stage'], 'grn_edit', 'ویرایش اعلام وصول (%s)' % who, fa_num('؛ '.join(ch + ([note] if note else []))))
-    return {'ok': True}
 
 
 @route('POST', r'/api/purchases/(\d+)/paid')
@@ -3112,6 +3124,8 @@ def api_project_new(h, c, u, b, q):
     name = (b.get('name') or '').strip(); need(name, 'نام پروژه الزامی است', 400)
     need(not c.execute('SELECT 1 FROM projects WHERE name=? AND active=1', (name,)).fetchone(), 'این پروژه قبلاً تعریف شده', 400)
     mid = int(b['manager_id']) if b.get('manager_id') else None
+    if mid:
+        need_not_admin(c, mid, 'مدیر پروژه')
     cur = c.execute('INSERT INTO projects(name,code,manager_id) VALUES(?,?,?)', (name, (b.get('code') or '').strip(), mid))
     sync_pm(c, cur.lastrowid, mid)
     log(c, 'project', cur.lastrowid, u['id'], 'تعریف پروژه', name)
@@ -3220,12 +3234,19 @@ def api_admin_user(h, c, u, b, q):
     need(is_mgr(u))
     need(b.get('role') in ROLES and (b.get('full_name') or '').strip() and (b.get('username') or '').strip(),
          'نام، نام کاربری و نقش الزامی است', 400)
+    if u['role'] != 'admin':  # دادن یا گرفتن نقش مدیر سیستم و ویرایش حساب او فقط با خود مدیر سیستم
+        old_role = c.execute('SELECT role FROM users WHERE id=?', (int(b.get('id') or 0),)).fetchone()
+        need(b['role'] != 'admin' and not (old_role and old_role[0] == 'admin'), 'فقط مدیر سیستم می‌تواند حساب مدیر سیستم را تعریف یا ویرایش کند')
     need(not c.execute('SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND id!=?',
                        (b['username'].strip(), int(b.get('id') or 0))).fetchone(), 'این نام کاربری تکراری است', 400)
     if b.get('id'):
         c.execute('UPDATE users SET username=?,full_name=?,title=?,role=?,active=? WHERE id=?',
                   (b['username'].strip(), b['full_name'].strip(), b.get('title') or '', b['role'],
                    1 if b.get('active', True) else 0, int(b['id'])))
+        if b['role'] == 'admin':  # مدیر سیستم در گردش کار نقشی ندارد (۳.۹): از ارکان پروژه‌ها کنار گذاشته می‌شود
+            c.execute('DELETE FROM project_members WHERE user_id=?', (int(b['id']),))
+            c.execute('DELETE FROM project_team WHERE user_id=?', (int(b['id']),))
+            c.execute('UPDATE projects SET manager_id=NULL WHERE manager_id=?', (int(b['id']),))
     else:
         hh, s = hash_pw('1234')
         try:
@@ -3254,6 +3275,9 @@ def api_admin_setpw(h, c, u, b, q):
 @route('POST', '/api/admin/reset')
 def api_admin_reset(h, c, u, b, q):
     need(is_mgr(u))
+    if u['role'] != 'admin':  # رمز مدیر سیستم را فقط خودش (با --reset-admin) برمی‌گرداند
+        t = c.execute('SELECT role FROM users WHERE id=?', (int(b['id']),)).fetchone()
+        need(not (t and t[0] == 'admin'), 'فقط مدیر سیستم می‌تواند رمز مدیر سیستم را بازنشانی کند')
     hh, s = hash_pw('1234')
     c.execute('UPDATE users SET pw_hash=?, salt=?, must_change=1 WHERE id=?', (hh, s, int(b['id'])))
     if u['role'] == 'admin':  # باز کردن حساب بسته‌شده فقط با مدیر سیستم
@@ -3330,13 +3354,17 @@ def api_admin_settings(h, c, u, b, q):
         if k in b:
             need(str(b[k]).isdigit(), 'عدد نامعتبر در تنظیمات', 400)
             need(k != 'notify_interval' or int(b[k]) >= 15, 'فاصله بررسی اعلان حداقل ۱۵ ثانیه است', 400)
+    if 'ceo_threshold' in b:  # مبلغ با ارقام فارسی یا جداکننده هم پذیرفته و به عدد ساده تبدیل می‌شود
+        b['ceo_threshold'] = re.sub(r'[,٬\s]', '', str(b['ceo_threshold'])).translate(FA2EN)
+        need(b['ceo_threshold'].isdigit(), 'سقف تأیید مدیرعامل باید عدد باشد', 400)
     for k in HQ_SETTING_USERS:
         if b.get(k):
+            need(str(b[k]).isdigit() and c.execute('SELECT 1 FROM users WHERE id=? AND deleted=0', (int(b[k]),)).fetchone(),
+                 'کاربر انتخاب‌شده برای «%s» نامعتبر است' % (HQ_ROLES.get(k) or k), 400)
             need_not_admin(c, b[k], HQ_ROLES.get(k) or 'سمت گردش کار')
     for k in DEFAULT_SETTINGS:
         if k in b:
-            c.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', (k, str(b[k]).replace(',', '')
-                      if k == 'ceo_threshold' else str(b[k])))
+            c.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', (k, str(b[k])))
     return {'ok': True}
 
 
@@ -3489,7 +3517,8 @@ def https_files():
         return cert, key
     newest = lambda fs: max(fs, key=os.path.getmtime) if fs else None
     le_cert = newest([os.path.join(HTTPS_DIR, n) for n in names if n.endswith('-chain.pem') and not n.endswith('-chain-only.pem')])
-    le_key = newest([os.path.join(HTTPS_DIR, n) for n in names if n.endswith('-key.pem')])
+    le_key = le_cert and le_cert[:-len('-chain.pem')] + '-key.pem'  # کلید همان دامنه (با چند دامنه، گواهی و کلید ناجور نشوند)
+    le_key = le_key if le_key and os.path.exists(le_key) else None
     if le_cert and le_key and (not os.path.exists(cert) or os.path.getmtime(le_cert) >= os.path.getmtime(cert)):
         return le_cert, le_key
     return cert, key
@@ -3511,19 +3540,23 @@ def https_status(c):
 
 
 HTTPS_RUNNING = [0]  # پورت HTTPS در حال اجرا (۰ = خاموش)
-HTTPS_CTX = [None, 0]  # [زمینه SSL در حال اجرا، زمان آخرین بارگذاری گواهی]
+HTTPS_CTX = [None, 0]  # [سرور HTTPS در حال اجرا، زمان آخرین بارگذاری گواهی]
 
 
 def https_reload():
     """گواهی تمدیدشده بدون راه‌اندازی مجدد سرور به کار می‌رود (اتصال‌های جدید با گواهی جدید)."""
-    ctx = HTTPS_CTX[0]
-    if not ctx:
+    srv = HTTPS_CTX[0]
+    if not srv:
         return
     cert, key = https_files()
     try:
         mt = max(os.path.getmtime(cert), os.path.getmtime(key))
         if mt > HTTPS_CTX[1]:
+            # زمینه جدید جدا ساخته می‌شود و فقط اگر گواهی و کلید درست بودند جایگزین می‌شود؛
+            # بارگذاری ناموفق (مثلاً وسط تمدید win-acme) HTTPS در حال کار را از کار نمی‌اندازد و ۱۰ دقیقه بعد دوباره امتحان می‌شود
+            ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ctx.load_cert_chain(cert, key)
+            srv.ctx = ctx
             HTTPS_CTX[1] = mt
             print('گواهی HTTPS دوباره بارگذاری شد')
     except (OSError, ssl.SSLError) as e:
@@ -3537,14 +3570,20 @@ def api_admin_https_upload(h, c, u, b, q, which):
     raw = h.raw_body
     need(raw and b'-----BEGIN' in raw, 'فایل باید PEM باشد (با «-----BEGIN» شروع شود)', 400)
     os.makedirs(HTTPS_DIR, exist_ok=True)
-    cert, key = https_files()
-    with open(cert if which == 'cert' else key, 'wb') as f:
+    # همیشه در cert.pem و key.pem (فایل‌های win-acme بازنویسی نمی‌شوند)؛ اول در فایل موقت و پس از بررسی جایگزین
+    cert, key = os.path.join(HTTPS_DIR, 'cert.pem'), os.path.join(HTTPS_DIR, 'key.pem')
+    dest = cert if which == 'cert' else key
+    tmp = dest + '.tmp'
+    with open(tmp, 'wb') as f:
         f.write(raw)
-    if os.path.exists(cert) and os.path.exists(key):
+    pair = (tmp, key) if which == 'cert' else (cert, tmp)
+    if os.path.exists(pair[0]) and os.path.exists(pair[1]):
         try:
-            ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(cert, key)
+            ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(*pair)
         except (ssl.SSLError, OSError) as e:
+            os.remove(tmp)
             raise ApiError('گواهی و کلید با هم نمی‌خوانند یا نامعتبرند: %s' % e)
+    os.replace(tmp, dest)
     log(c, 'admin', 0, u['id'], 'بارگذاری ' + ('گواهی' if which == 'cert' else 'کلید') + ' HTTPS')
     https_reload()
     return {'ok': True, 'status': https_status(c)}
@@ -4051,7 +4090,8 @@ class H(BaseHTTPRequestHandler):
             c.execute('DELETE FROM sessions WHERE token=?', (self.token,)); c.commit()
             self.expired = True
             return None
-        if path not in ('/api/counts', '/api/notify'):  # بررسی خودکار نشان و اعلان، جلسه را تمدید نمی‌کند
+        # بررسی خودکار نشان و اعلان، جلسه را تمدید نمی‌کند؛ تمدید حداکثر هر ۲۰ ثانیه یک بار نوشته می‌شود (نه در هر درخواست)
+        if path not in ('/api/counts', '/api/notify') and gone >= 20:
             c.execute('UPDATE sessions SET last_seen=? WHERE token=?', (now(), self.token)); c.commit()
         return r
 
@@ -4097,6 +4137,7 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, json.dumps(notify_count(c, self.headers.get('X-Notify-Token') or q.get('t'), u)))
             m = re.match(r'^/files/(\d+)$', path)
             if m and method == 'GET':
+                need(not (u and u['must_change']), 'ابتدا رمز عبور پیش‌فرض را تغییر دهید')
                 data, ct, hdr = file_payload(c, u, int(m.group(1)), q)
                 return self.send(200, data, ct, hdr)
             n = int(self.headers.get('Content-Length') or 0)
@@ -4112,6 +4153,8 @@ class H(BaseHTTPRequestHandler):
                     if path != '/api/login':
                         need(u, 'به دلیل %s دقیقه بی‌فعالیتی از سامانه خارج شدید؛ دوباره وارد شوید' % fa_num(
                             settings(c).get('idle_minutes')) if self.expired else 'ابتدا وارد شوید', 401)
+                        # تا رمز پیش‌فرض عوض نشده، فقط تغییر رمز، خروج و اطلاعات پایه مجاز است (نه فقط در رابط کاربری)
+                        need(not u['must_change'] or path in MUST_CHANGE_OK, 'ابتدا رمز عبور پیش‌فرض را تغییر دهید')
                     res = fn(self, c, u, body, q, *mm.groups())
                     c.commit()
                     if isinstance(res, tuple) and res[0] == 'file':  # تصویر سربرگ یا امضا
@@ -4127,9 +4170,12 @@ class H(BaseHTTPRequestHandler):
         except Exception as e:
             c.rollback()
             import traceback; traceback.print_exc()
-            self.send(500, json.dumps({'error': 'خطای داخلی: %s' % e}, ensure_ascii=False))
+            self.send(500, json.dumps({'error': 'خطای داخلی سامانه؛ جزئیات در پنجره سرور ثبت شد'}, ensure_ascii=False))
         finally:
             c.close()
+
+
+MUST_CHANGE_OK = ('/api/password', '/api/logout', '/api/meta')
 
 
 def running_version(port):
@@ -4223,7 +4269,7 @@ def start_https():
         print('HTTPS راه‌اندازی نشد (%s)' % e)
         return
     HTTPS_RUNNING[0] = port
-    HTTPS_CTX[0], HTTPS_CTX[1] = ctx, max(os.path.getmtime(cert), os.path.getmtime(key))
+    HTTPS_CTX[0], HTTPS_CTX[1] = srv, max(os.path.getmtime(cert), os.path.getmtime(key))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
 
     def watch():  # تمدید خودکار گواهی (مثلاً win-acme هر ۶۰ روز)

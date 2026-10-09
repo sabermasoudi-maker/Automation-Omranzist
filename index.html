@@ -196,7 +196,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='4.6.1'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='4.6.2'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -306,7 +306,7 @@ async function boot(){
    ۱. مطمئن شوید app.py جدید در همان پوشه‌ای است که index.html جدید را گذاشتید.<br>
    ۲. روی کامپیوتر سرور فایل <b>4-restart.bat</b> را با «Run as administrator» اجرا کنید (یا کامپیوتر سرور را یک بار ری‌استارت کنید).<br>
    ۳. این صفحه را با Ctrl+F5 دوباره باز کنید.</div></div>`;return}
-  if(M.me.must_change)pwModal(true);
+  if(M.me.must_change){pwModal(true);return}  // پس از تغییر رمز، صفحه دوباره بارگذاری می‌شود
   lastAct=lastPing=Date.now();
   // پس از ورود (یا باز کردن سامانه در زبانه/مرورگر تازه)، صفحه قبلی باز نمی‌شود: اولین کار قابل اقدام، وگرنه «در دست اقدام»
   let started=false;try{started=sessionStorage.getItem('oa_started')==String(M.me.id);sessionStorage.setItem('oa_started',String(M.me.id))}catch(e){}
@@ -354,7 +354,7 @@ function pwModal(force){
   <div class="grid"><div><label>رمز فعلی</label><input type="password" id="pwO"></div><div><label>رمز جدید (حداقل ۶ کاراکتر)</label><input type="password" id="pwN"></div></div>
   <div class="row" style="margin-top:12px"><button class="btn" id="pwS">ذخیره</button>${force?'':'<button class="btn l" id="pwC">انصراف</button>'}</div></div>`;
   document.body.appendChild(d);
-  d.querySelector('#pwS').onclick=()=>run(async()=>{await api('POST','/api/password',{old:val('pwO'),new:val('pwN')});d.remove();M.me.must_change=0;flash('رمز تغییر کرد')});
+  d.querySelector('#pwS').onclick=()=>run(async()=>{await api('POST','/api/password',{old:val('pwO'),new:val('pwN')});d.remove();M.me.must_change=0;flash('رمز تغییر کرد');if(force)location.reload()});
   if(!force)d.querySelector('#pwC').onclick=()=>d.remove()}
 
 // ---------------------------------------------------------------- اجزای مشترک
