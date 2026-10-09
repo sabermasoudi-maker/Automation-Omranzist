@@ -5,7 +5,7 @@
 اجرا:  python app.py      سپس در مرورگر:  http://<IP سرور>:8080
 """
 import os, sys, json, sqlite3, hashlib, secrets, re, shutil, threading, csv, io, time, ssl, base64
-import mimetypes, urllib.parse, datetime
+import urllib.parse, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http import cookies
 
@@ -1024,6 +1024,8 @@ def api_login(h, c, u, b, q):
         if pw_ok(b.get('password') or '', r):  # پیام «بسته شده» فقط با رمز درست (وجود حساب با رمز غلط لو نمی‌رود)
             raise ApiError(LOCKED_MSG, 423)
         login_failed(keys)
+        log(c, 'user', r['id'], None, 'ورود ناموفق', '%s از %s (حساب بسته)' % (un[:50], h.client_address[0]))
+        c.commit()
         raise ApiError('نام کاربری یا رمز عبور نادرست است', 401)
     if not r or not pw_ok(b.get('password') or '', r):
         login_failed(keys)
@@ -1044,8 +1046,7 @@ def api_login(h, c, u, b, q):
     c.execute('UPDATE users SET failed_logins=0 WHERE id=?', (r['id'],))
     tok = secrets.token_hex(24)
     c.execute('INSERT INTO sessions(token,user_id,created_at,last_seen) VALUES(?,?,?,?)', (tok, r['id'], now(), now()))
-    h.set_cookie = 'sid=%s; Path=/; HttpOnly; SameSite=Lax%s' % (
-        tok, '; Secure' if isinstance(getattr(h, 'server', None), HTTPSServer) else '')  # کوکی جلسه؛ با بستن مرورگر یا بی‌فعالیتی از بین می‌رود
+    h.set_cookie = 'sid=%s; Path=/; HttpOnly; SameSite=Lax' % tok  # کوکی جلسه؛ با بستن مرورگر یا بی‌فعالیتی از بین می‌رود
     return {'ok': True}
 
 
@@ -1773,7 +1774,8 @@ def api_request_pay(h, c, u, b, q, rid):
             amt = int(str(b.get('paid_amount') or R['amount']).replace(',', '').replace('٬', ''))
         except ValueError:
             raise ApiError('مبلغ نامعتبر')
-        need(amt > 0 and (not R['amount'] or amt <= R['amount']), 'مبلغ پرداخت باید بیشتر از صفر و حداکثر برابر مبلغ تأییدشده (%s ریال) باشد'
+        need(amt > 0, 'مبلغ پرداخت را وارد کنید', 400)
+        need(not R['amount'] or amt <= R['amount'], 'مبلغ پرداخت نمی‌تواند بیشتر از مبلغ تأییدشده (%s ریال) باشد'
              % format(R['amount'], ','), 400)
         sep = (b.get('sepidar_no') or '').strip()
         pd = need_jdate(b.get('paid_at') or jtoday(), 'تاریخ پرداخت', max_=jtoday(),
@@ -2020,6 +2022,12 @@ def pur_fields(c, u, b, pid_fixed=None, req_date=None):
     need(items, 'حداقل یک ردیف کالا با شرح و مقدار وارد کنید', 400)
     return dict(project_id=pid, unit=unit, warehouse=(b.get('warehouse') or '').strip(), category=cat, urgency=urg,
                 need_date=nd, purpose=(b.get('purpose') or '').strip(), requester_id=u['id']), items
+
+
+def edit_locked(c, P):
+    """ویرایش اقلام آن‌ها را حذف و دوباره درج می‌کند و داده خرید و وصول از بین می‌رود؛ پس از خرید برای همه بسته است."""
+    return bool(has_closed_receipt(c, P['id']) or pending_receipts(c, P['id']) or c.execute(
+        "SELECT 1 FROM purchase_items WHERE purchase_id=? AND COALESCE(bought_status,'')!=''", (P['id'],)).fetchone())
 
 
 def save_items(c, pid, items):
@@ -2362,7 +2370,7 @@ def api_purchase_get(h, c, u, b, q, pid):
     return {'docs': docs_check(c, P) if bought and not site else None, 'receipt': bool(bought), 'warehouse_name': wh.get('full_name', ''),
             'site_path': site_path(c, P), 'is_admin': u['role'] == 'admin',
             'doc': P, 'items': items, 'flow': flow, 'versions': vers, 'attachments': att, 'referrals': refs,
-            'actions': acts, 'can_edit': can_edit(u, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in acts else [],
+            'actions': acts, 'can_edit': can_edit(u, P) and not edit_locked(c, P), 'can_cancel': can_cancel(c, u, P), 'handover_to': handover_target(c, u, P), 'return_targets': return_targets(c, u, P) if 'return' in acts else [],
             'can_attach': can_attach_pur(c, u, P), 'mgmt_notes': mgmt, 'in_group': P['stage'] in GROUP_STAGES,
             'buy_status': BUY_STATUS, 'site_view': site, 'receipts': receipts, 'disc_lines': dlines, 'dec_label': DEC_LABEL,
             'sheet_final': bool(P['grn_no'] and P['recv_at'] and P['wh_at']), 'jtoday': jtoday(),
@@ -2383,7 +2391,9 @@ def site_view(c, u, P):
 purchase_site_view = site_view  # نام سند CR-PUR-02
 
 
-INLINE_TYPES = ('image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp', 'application/pdf')
+# نوع فایل از روی پسوند و جدول ثابت (mimetypes در ویندوز از رجیستری می‌خواند و ممکن است image/pjpeg بدهد)
+INLINE_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                '.webp': 'image/webp', '.bmp': 'image/bmp', '.pdf': 'application/pdf'}
 
 
 def file_payload(c, u, aid, q):
@@ -2398,10 +2408,9 @@ def file_payload(c, u, aid, q):
         need(not purchase_site_view(c, u, D), 'این پیوست فقط برای دفتر مرکزی است')
     with open(os.path.join(FILES, a['path']), 'rb') as f:
         data = f.read()
-    ct = mimetypes.guess_type(a['name'])[0] or 'application/octet-stream'
-    safe = ct in INLINE_TYPES  # فقط تصویر و PDF در مرورگر باز می‌شود؛ بقیه (HTML، SVG و…) فقط دانلود (جلوگیری از XSS)
-    disp = 'inline' if ('dl' not in q and safe) else 'attachment'
-    return data, (ct if safe else 'application/octet-stream'), {
+    ct = INLINE_TYPES.get(os.path.splitext(a['name'])[1].lower())  # فقط تصویر و PDF در مرورگر باز می‌شود؛
+    disp = 'inline' if ('dl' not in q and ct) else 'attachment'  # بقیه (HTML، SVG و…) فقط دانلود (جلوگیری از XSS)
+    return data, ct or 'application/octet-stream', {
         'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(a['name'])),
         'X-Content-Type-Options': 'nosniff'}
 
@@ -2993,9 +3002,7 @@ def api_purchase_edit(h, c, u, b, q, pid):
     P = get_doc(c, u, 'purchase', int(pid))
     need(can_edit(u, P), 'ویرایش فقط وقتی ممکن است که درخواست در کارتابل شما باشد، و فقط تا مرحله مدیر پروژه')
     # ویرایش اقلام را حذف و دوباره درج می‌کند و مقدارهای وصول را از بین می‌برد؛ حتی برای مدیر سیستم بسته است
-    need(not has_closed_receipt(c, P['id']) and not pending_receipts(c, P['id']) and not c.execute(
-        "SELECT 1 FROM purchase_items WHERE purchase_id=? AND COALESCE(bought_status,'')!=''", (P['id'],)).fetchone(),
-         'درخواستی که خرید یا اعلام وصول دارد قابل ویرایش نیست')
+    need(not edit_locked(c, P), 'درخواستی که خرید یا اعلام وصول دارد قابل ویرایش نیست')
     f, items = pur_fields(c, u, b, pid_fixed=P['project_id'], req_date=P['req_date'])
     write_fields(c, P['id'], f, items)
     note = (b.get('note') or '').strip()
@@ -3247,6 +3254,11 @@ def api_admin_user(h, c, u, b, q):
             c.execute('DELETE FROM project_members WHERE user_id=?', (int(b['id']),))
             c.execute('DELETE FROM project_team WHERE user_id=?', (int(b['id']),))
             c.execute('UPDATE projects SET manager_id=NULL WHERE manager_id=?', (int(b['id']),))
+            c.execute("UPDATE referrals SET status='closed', done_at=?, reply='مدیر سیستم در گردش کار نقشی ندارد' "
+                      "WHERE to_id=? AND status IN ('new','seen','doing')", (now(), int(b['id'])))
+            for k in HQ_SETTING_USERS:
+                if (settings(c).get(k) or '') == str(int(b['id'])):
+                    c.execute("UPDATE settings SET value='' WHERE key=?", (k,))
     else:
         hh, s = hash_pw('1234')
         try:
@@ -3355,7 +3367,7 @@ def api_admin_settings(h, c, u, b, q):
             need(str(b[k]).isdigit(), 'عدد نامعتبر در تنظیمات', 400)
             need(k != 'notify_interval' or int(b[k]) >= 15, 'فاصله بررسی اعلان حداقل ۱۵ ثانیه است', 400)
     if 'ceo_threshold' in b:  # مبلغ با ارقام فارسی یا جداکننده هم پذیرفته و به عدد ساده تبدیل می‌شود
-        b['ceo_threshold'] = re.sub(r'[,٬\s]', '', str(b['ceo_threshold'])).translate(FA2EN)
+        b['ceo_threshold'] = re.sub(r'[,٬\s]', '', str(b['ceo_threshold'])).translate(FA2EN) or '0'
         need(b['ceo_threshold'].isdigit(), 'سقف تأیید مدیرعامل باید عدد باشد', 400)
     for k in HQ_SETTING_USERS:
         if b.get(k):
@@ -3577,13 +3589,18 @@ def api_admin_https_upload(h, c, u, b, q, which):
     with open(tmp, 'wb') as f:
         f.write(raw)
     pair = (tmp, key) if which == 'cert' else (cert, tmp)
+    bad = None
     if os.path.exists(pair[0]) and os.path.exists(pair[1]):
         try:
             ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(*pair)
         except (ssl.SSLError, OSError) as e:
-            os.remove(tmp)
-            raise ApiError('گواهی و کلید با هم نمی‌خوانند یا نامعتبرند: %s' % e)
+            bad = e
+    # فایل ناجور هم ذخیره می‌شود تا گواهی و کلید تازه یکی‌یکی بارگذاری شوند؛ HTTPS در حال کار تا جور شدن جفت
+    # با گواهی قبلی ادامه می‌دهد (https_reload فقط جفت درست را به کار می‌برد)
     os.replace(tmp, dest)
+    if bad:
+        raise ApiError('ذخیره شد، ولی گواهی و کلید هنوز با هم نمی‌خوانند (%s)؛ اگر جفت تازه است، فایل دیگر را هم '
+                       'بارگذاری کنید. تا آن موقع HTTPS با گواهی قبلی کار می‌کند.' % bad)
     log(c, 'admin', 0, u['id'], 'بارگذاری ' + ('گواهی' if which == 'cert' else 'کلید') + ' HTTPS')
     https_reload()
     return {'ok': True, 'status': https_status(c)}
