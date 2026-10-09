@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.6'
+VERSION = '4.6.1'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -4183,6 +4183,32 @@ def main():
     srv.serve_forever()
 
 
+class HTTPSServer(ThreadingHTTPServer):
+    """سرور HTTPS که دست‌دهی امنیتی (TLS) هر اتصال را در رشته جداگانه همان اتصال و با مهلت زمانی انجام می‌دهد.
+    پیش از نسخه ۴.۶.۱ دست‌دهی در رشته اصلی سرور انجام می‌شد؛ یک اتصالِ نیمه‌کاره (مثلاً گوشی‌ای که وسط اتصال
+    شبکه‌اش قطع شده، یا ربات اسکن پورت از اینترنت) کل HTTPS را تا راه‌اندازی مجدد قفل می‌کرد، در حالی که پورت HTTP کار می‌کرد."""
+    HANDSHAKE_TIMEOUT = 20  # ثانیه
+
+    def __init__(self, addr, handler, ctx):
+        super().__init__(addr, handler)
+        self.ctx = ctx
+
+    def finish_request(self, request, client_address):
+        request.settimeout(self.HANDSHAKE_TIMEOUT)
+        try:
+            conn = self.ctx.wrap_socket(request, server_side=True)
+        except (OSError, ssl.SSLError):  # دست‌دهی ناقص، کند یا نامعتبر: فقط همین اتصال بسته می‌شود
+            return
+        try:
+            conn.settimeout(120)  # اتصالی که دو دقیقه بی‌حرکت بماند بسته می‌شود
+            self.RequestHandlerClass(conn, client_address, self)
+        finally:
+            try:
+                conn.close()
+            except OSError:
+                pass
+
+
 def start_https():
     """اگر مدیر سیستم گواهی HTTPS بارگذاری کرده باشد، سامانه روی پورت HTTPS هم اجرا می‌شود (برای اعلان روی گوشی)."""
     cert, key = https_files()
@@ -4192,8 +4218,7 @@ def start_https():
     try:
         ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
         ctx.load_cert_chain(cert, key)
-        srv = ThreadingHTTPServer(('0.0.0.0', port), H)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        srv = HTTPSServer(('0.0.0.0', port), H, ctx)
     except (OSError, ssl.SSLError) as e:
         print('HTTPS راه‌اندازی نشد (%s)' % e)
         return
