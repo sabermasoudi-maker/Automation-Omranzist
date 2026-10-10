@@ -743,3 +743,52 @@ class TSiteInvoiceLater(Base):
         self.assertEqual(self.get(pid)['doc']['inv_missing'], 0)
         self.assertEqual(self.call('GET', '/api/cartable', 'mk-poshtibani')['pur_noinv'], [])
         self.assertEqual(self.call('GET', '/api/counts', 'mk-poshtibani')['n'], n0 - 1)
+
+
+class TPersonal(Base):
+    def up(self, un, name='a.jpg', data=b'img'):
+        h = H({'X-Filename': urllib.parse.quote(name)}, data)
+        return self.call('POST', '/api/personal/upload', un, h=h)
+
+    def test_personal_folder(self):
+        """۴.۷: پوشه من — صاحب پوشه همه کار؛ هیات مدیره فقط می‌بیند؛ مدیر سیستم حذف و بازگردانی می‌کند؛ سقف حجم."""
+        r = self.up('mk-zali')
+        self.call('POST', '/api/personal/note', 'mk-zali', {'title': 'پیش‌نویس', 'body': 'متن نامه'})
+        d = self.call('GET', '/api/personal', 'mk-zali')
+        self.assertEqual(([i['kind'] for i in d['items']], d['used']), (['note', 'file'], 3 + len('متن نامه'.encode())))
+        zid = self.u('mk-zali')['id']
+        with self.assertRaises(app.ApiError):  # همکار دیگر نمی‌بیند
+            self.call('GET', '/api/personal', 'mk-anbar', q={'user_id': str(zid)})
+        with self.assertRaises(app.ApiError):
+            app.personal_payload(self.c, self.u('mk-anbar'), r['id'], {})
+        self.assertEqual(app.personal_payload(self.c, self.u('ceo'), r['id'], {})[0], b'img')  # هیات مدیره می‌بیند
+        b = self.call('GET', '/api/personal', 'ceo', q={'user_id': str(zid)})
+        self.assertEqual((len(b['items']), b['can_delete']), (2, False))
+        with self.assertRaises(app.ApiError):  # هیات مدیره حذف نمی‌کند
+            self.call('POST', '/api/personal/%d/delete' % r['id'], 'ceo')
+        self.call('POST', '/api/personal/%d/delete' % r['id'], 'admin')
+        a = self.call('GET', '/api/personal', 'admin', q={'user_id': str(zid)})
+        self.assertEqual((len(a['items']), len(a['trash'])), (1, 1))
+        self.call('POST', '/api/personal/%d/restore' % r['id'], 'admin')
+        self.assertEqual(len(self.call('GET', '/api/personal', 'mk-zali')['items']), 2)
+        # سقف حجم
+        self.c.execute("UPDATE settings SET value='1' WHERE key='personal_quota_mb'"); self.c.commit()
+        with self.assertRaises(app.ApiError):
+            self.up('mk-zali', 'big.pdf', b'x' * (1024 * 1024))
+
+    def test_attach_to_purchase(self):
+        r = self.call('POST', '/api/purchases', 'mk-zali', {
+            'project_id': 2, 'unit': 'exec', 'category': 'general', 'warehouse': 'انبار', 'purpose': 'آزمون',
+            'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'}]})
+        pid = r['id']
+        f = self.up('mk-zali', 'spec.pdf', b'PDF')
+        t = self.call('GET', '/api/personal/targets', 'mk-zali')
+        self.assertIn(pid, [x['id'] for x in t['items'] if x['doc_type'] == 'purchase'])
+        self.call('POST', '/api/personal/%d/attach' % f['id'], 'mk-zali', {'doc_type': 'purchase', 'doc_id': pid, 'kind': 'مشخصات فنی'})
+        self.assertEqual([(a['name'], a['kind']) for a in self.get(pid)['attachments']], [('spec.pdf', 'مشخصات فنی')])
+        self.assertEqual(self.call('GET', '/api/personal', 'mk-zali')['items'], [])
+        f2 = self.up('mk-zali', 'x.pdf', b'PDF')
+        self.act('mk-zali', pid, 'submit')  # دیگر در کارتابل او نیست
+        with self.assertRaises(app.ApiError):
+            self.call('POST', '/api/personal/%d/attach' % f2['id'], 'mk-zali', {'doc_type': 'purchase', 'doc_id': pid})
+        self.assertEqual(len(self.call('GET', '/api/personal', 'mk-zali')['items']), 1)  # فایل در پوشه می‌ماند

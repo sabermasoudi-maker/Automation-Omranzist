@@ -196,7 +196,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='4.6.4'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='4.7'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -330,7 +330,7 @@ function drawNav(cur){
   h+=M.site_only?'<div class="grp">مکاتبات</div>'+a('letters','نامه‌های من','sub')+a('letter-new','نامه داخلی جدید','sub'):'<div class="grp">دفتر مرکزی</div>'+HQ.filter(g=>g[0]!='hq-reports'||M.can_report).map(g=>`<a href="#/${g[2]}" class="sub ${cur==g[0]?'on':''}">${g[1]}</a>`).join('');
   h+='<div class="grp">پروژه‌ها</div>'+navProjects().map(p=>a('project/'+p.id,esc(p.name),'sub')).join('')+(isTop()?'<a class="sub act" onclick="projModal(p=>location=\'#/project/\'+p.id)">+ تعریف پروژه جدید</a>':'');
   h+=a('cartable','کارتابل من','main','<span class="badge" id="cnt" style="display:none"></span>')+'<hr>';
-  h+=a('purchase-new','درخواست کالا')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
+  h+=a('purchase-new','درخواست کالا')+a('personal','پوشه من')+(isTop()?a('admin','مدیریت سامانه'):'')+a('help','راهنما');
   $('#nav').innerHTML=h}
 function toggleNav(on){document.body.classList.toggle('navopen',on===undefined?!document.body.classList.contains('navopen'):!!on)}
 function subBar(p){const g=HQ_OF[p];if(!g)return'';return `<div class="crumb">دفتر مرکزی › ${g[1]}</div><div class="tabs noprint">${g[3].map(t=>`<a href="#/${t[0]}" class="${t[0]==p?'on':''}">${t[1]}</a>`).join('')}</div>`}
@@ -343,7 +343,7 @@ async function route(){
   const V={search:()=>searchPage(id),'letter-print':()=>letterPrint(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),todo,letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
     'hq-support':()=>hqStage('','درخواست‌های کالا منتظر استعلام قیمت یا خرید (پشتیبانی دفتر مرکزی)',0,'status=open&support=hq'),'hq-finance':hqFinance,'hq-noinv':()=>hqStage('','فاکتور رسمی و ارزش افزوده دریافت‌نشده (پس از کنترل مدارک)',0,'no_official=1'),'hq-sinv':()=>hqStage('','خرید کارگاه انجام شده ولی فاکتور یا پیش‌فاکتور خرید بارگذاری نشده (مدرک ناقص)',0,'no_invoice=1'),'hq-office':()=>hqStage('','',1),
     'report-purchases':()=>purchasesPage(),'report-requests':requestsList,'report-letters':lettersList,
-    purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
+    purchases:()=>purchasesPage(),personal:()=>personalPage(id),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
   const SITE_OK=['letters','letter-new','letter','letter-edit','letter-print'];
   if(M.site_only&&((HQ_OF[p]&&!SITE_OK.includes(p))||['reports','admin'].includes(p))){location.hash='#/cartable';return}
   if(REPORT_PAGES.includes(p)&&!M.can_report){location.hash='#/cartable';return}
@@ -493,7 +493,8 @@ function recipForm(){ // هر نامه یک مخاطب اصلی (برای اقد
    <div class="full"><label>رونوشت بیرونی (هر خط یکی؛ فقط زیر نامه چاپ می‌شود)</label><textarea id="rcT" style="min-height:44px" placeholder="مثلاً: مشاور محترم طرح جهت استحضار"></textarea></div></div>
    <div class="mut">اگر امضاکننده تعیین شده باشد، نامه پس از امضا به مخاطب اصلی و رونوشت‌ها فرستاده می‌شود.</div>`}
 const recipVals=()=>({main_to_id:val('rcM'),action:val('rcA'),due:toIso(val('rcD')),instruction:val('rcI'),cc_ids:picked('rcC'),cc_text:val('rcT')});
-function letterForm(){
+function letterForm(){const nd=window._noteDraft;window._noteDraft=null; // ۴.۷: ساخت نامه از یادداشت «پوشه من»
+  setTimeout(()=>{if(nd){if($('#lSub'))$('#lSub').value=nd.title||'';if($('#lBody'))$('#lBody').value=nd.body||''}},0);
   $('#pg').innerHTML=`<h1>ثبت نامه</h1><div class="card"><h2>مشخصات نامه</h2>${letterFormHtml()}</div>
   <div class="card"><h2>اسکن نامه و پیوست‌ها</h2><input type="file" id="lFiles" multiple accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff,.doc,.docx,.xls,.xlsx,.zip"><div class="mut">اسکن را ترجیحاً PDF بگیرید. چند فایل را می‌توانید با هم انتخاب کنید.</div></div>
   <div class="card"><h2>گیرندگان</h2>${recipForm()}</div>
@@ -975,6 +976,45 @@ function rcptBtns(){const v=Object.values(RS.rows),disc=v.some(r=>r.st&&r.st!='o
     b.textContent=a=='recv_ok'?(disc?'اعلام مغایرت به انباردار':b.dataset.t):disc?b.dataset.t.replace('ثبت انبار','ثبت انبار (با مغایرت)'):b.dataset.t;
     b.classList.toggle('bad',disc);b.classList.toggle('ok',!disc)})}
 function markRefresh(){for(const id in RS.rows)rowRefresh(id)}
+
+// ---------------------------------------------------------------- پوشه من (نسخه ۴.۷)
+// بایگانی شخصی هر کاربر: فایل‌ها (عکس و مدارک) و یادداشت‌ها. هیات مدیره فقط می‌بیند؛ مدیر سیستم می‌بیند و حذف می‌کند.
+const mb=n=>fa((n/1048576).toFixed(n<10485760?1:0));
+async function personalPage(uid){const d=await api('GET','/api/personal'+(uid?'?user_id='+uid:''));PV.d=d;const mine=d.mine,adm=M.me.role=='admin';
+  const files=d.items.filter(i=>i.kind=='file'),notes=d.items.filter(i=>i.kind=='note');const pct=Math.min(100,Math.round(d.used*100/d.quota));
+  let h=`<h1>${mine?'پوشه من':'پوشه شخصی — '+esc(d.owner.full_name)}</h1>`;
+  if(isTop())h+=`<div class="card noprint"><details ${mine?'':'open'}><summary style="cursor:pointer;font-weight:bold">پوشه کاربران (${adm?'مشاهده و حذف':'فقط مشاهده'})</summary><table style="margin-top:8px"><tr><th>کاربر</th><th>تعداد</th><th>حجم</th><th></th></tr>${d.users.map(x=>`<tr${x.id==d.owner.id?' style="background:#eef5fb"':''}><td>${esc(x.full_name)} <span class="mut">${esc(x.username)}</span>${x.active?'':' <span class="tag">غیرفعال</span>'}</td><td>${fa(x.n)}</td><td>${mb(x.used)} مگابایت</td><td><a href="#/personal/${x.id==M.me.id?'':x.id}">${x.id==M.me.id?'پوشه خودم':'مشاهده'}</a></td></tr>`).join('')}</table></details></div>`;
+  h+=`<div class="card"><div class="mut" style="margin-bottom:6px">${mine?'جای عکس، مدارک و یادداشت‌های کاری شما (مثلاً پیش از پیوست به درخواست کالا یا نوشتن نامه). <b>این پوشه برای مدیر سیستم و هیات مدیره قابل مشاهده است.</b> مدرکی که به درخواست یا نامه مربوط است را با «پیوست به درخواست / نامه» منتقل کنید؛ فایلی که در این پوشه بماند در گردش رسمی دیده نمی‌شود.':(adm?'شما مدیر سیستم هستید: می‌توانید فایل‌ها و یادداشت‌ها را ببینید و حذف کنید (تا '+fa(d.keep_days)+' روز قابل بازگردانی است).':'شما فقط می‌توانید فایل‌ها و یادداشت‌ها را ببینید.')}</div>
+   <div><b>فضای استفاده‌شده:</b> ${mb(d.used)} از ${mb(d.quota)} مگابایت</div><div style="background:#e6ebf0;border-radius:6px;height:8px;margin-top:4px"><div style="width:${pct}%;height:8px;border-radius:6px;background:${pct>90?'var(--bad)':'var(--pri)'}"></div></div></div>`;
+  if(mine)h+=`<div class="card noprint"><h2>افزودن فایل</h2><div class="row"><input type="file" id="pfF" multiple style="flex:2"><label class="btn l" style="cursor:pointer">📷 عکس با دوربین<input type="file" id="pfC" accept="image/*" capture="environment" style="display:none" onchange="pfUpload('pfC')"></label></div>
+    <div class="row" style="margin-top:6px"><div style="flex:3"><input id="pfN" placeholder="توضیح (اختیاری) — مثلاً «عکس بار سیمان برای MR-0012»"></div><button class="btn" onclick="pfUpload('pfF')">بارگذاری</button></div></div>`;
+  h+=`<div class="card"><h2>فایل‌ها (${fa(files.length)})</h2>${files.length?`<table class="mtab"><tr><th>فایل</th><th>توضیح</th><th>حجم</th><th>تاریخ</th><th class="noprint"></th></tr>${files.map(i=>`<tr><td>${/\.(jpe?g|png|gif|webp)$/i.test(i.name)?`<a href="/pfiles/${i.id}" target="_blank"><img src="/pfiles/${i.id}" style="max-height:48px;max-width:80px;vertical-align:middle;border-radius:4px;margin-left:6px"></a>`:''}<a href="/pfiles/${i.id}" target="_blank">${esc(i.name)}</a></td><td data-l="توضیح">${esc(i.note||'')}</td><td data-l="حجم" class="mut">${fa(Math.ceil(i.size/1024))} KB</td><td data-l="تاریخ" class="mut">${jd(i.updated_at||i.created_at,1)}</td>
+    <td class="noprint"><a href="/pfiles/${i.id}?dl=1">دانلود</a>${mine?` | <a style="cursor:pointer" onclick="pfAttach(${i.id})">پیوست به درخواست / نامه</a> | <a style="cursor:pointer" onclick="pfNote(${i.id})">ویرایش توضیح</a>`:''}${d.can_delete?` | <a style="cursor:pointer;color:var(--bad)" onclick="pfDel(${i.id})">حذف</a>`:''}</td></tr>`).join('')}</table>`:'<div class="mut">فایلی ندارد.</div>'}</div>`;
+  h+=`<div class="card"><h2>یادداشت‌ها و پیش‌نویس‌ها (${fa(notes.length)})</h2>${mine?`<div class="noprint" id="pnBox"><input id="pnT" placeholder="عنوان (مثلاً پیش‌نویس نامه به کارفرما)"><textarea id="pnB" style="margin-top:6px;min-height:110px;line-height:1.9" placeholder="متن یادداشت یا پیش‌نویس نامه"></textarea><input type="hidden" id="pnI"><div class="row" style="margin-top:6px"><button class="btn" onclick="pnSave()">ذخیره یادداشت</button><button class="btn l" onclick="pnClear()">یادداشت جدید</button></div></div>`:''}
+   ${notes.map(i=>`<div style="border-top:1px solid #e3e8ee;padding:8px 0"><div class="row" style="justify-content:space-between"><b>${esc(i.title||'بدون عنوان')}</b><span class="mut">${jd(i.updated_at||i.created_at,1)}</span></div><div style="white-space:pre-wrap;margin:4px 0">${esc(i.body)}</div>
+    <div class="noprint">${mine?`<a style="cursor:pointer" onclick="pnEdit(${i.id})">ویرایش</a> | <a style="cursor:pointer" onclick="pnLetter(${i.id})">ساخت نامه از این یادداشت</a>`:''}${d.can_delete?`${mine?' | ':''}<a style="cursor:pointer;color:var(--bad)" onclick="pfDel(${i.id})">حذف</a>`:''}</div></div>`).join('')||(mine?'':'<div class="mut">یادداشتی ندارد.</div>')}</div>`;
+  if(adm&&d.trash.length)h+=`<div class="card noprint"><h2>حذف‌شده‌ها (تا ${fa(d.keep_days)} روز قابل بازگردانی؛ فقط مدیر سیستم)</h2><table><tr><th>فایل / یادداشت</th><th>حذف توسط</th><th>تاریخ حذف</th><th></th></tr>${d.trash.map(i=>`<tr><td>${esc(i.kind=='file'?i.name:(i.title||'یادداشت'))}</td><td>${esc(i.deleted_name||'')}</td><td class="mut">${jd(i.deleted_at,1)}</td><td>${i.kind=='file'?`<a href="/pfiles/${i.id}" target="_blank">مشاهده</a> | `:''}<a style="cursor:pointer" onclick="pfRestore(${i.id})">بازگردانی</a></td></tr>`).join('')}</table></div>`;
+  $('#pg').innerHTML=h}
+const PV={d:null};
+const pfReload=()=>personalPage(PV.d&&!PV.d.mine?PV.d.owner.id:'');
+const pfUpload=inp=>run(async()=>{const f=$('#'+inp);if(!f||!f.files.length)throw new Error('فایلی انتخاب نشده');const note=val('pfN').trim();
+  for(const file of f.files){flash('در حال بارگذاری '+file.name);const r=await api('POST','/api/personal/upload',undefined,{name:file.name,data:file});if(note)await api('POST',`/api/personal/${r.id}/edit`,{note})}
+  flash('بارگذاری شد');await pfReload()});
+const pfDel=id=>run(async()=>{if(!await ask(PV.d.mine?'از پوشه شما حذف می‌شود.':'این قلم از پوشه کاربر حذف می‌شود (تا '+fa(PV.d.keep_days)+' روز قابل بازگردانی است).','بله، حذف شود'))return;await api('POST',`/api/personal/${id}/delete`,{});await pfReload()});
+const pfRestore=id=>run(async()=>{await api('POST',`/api/personal/${id}/restore`,{});flash('بازگردانده شد');await pfReload()});
+const pfNote=id=>run(async()=>{const i=PV.d.items.find(x=>x.id==id);const n=prompt('توضیح فایل',i.note||'');if(n===null)return;await api('POST',`/api/personal/${id}/edit`,{note:n});await pfReload()});
+function pnClear(){$('#pnI').value='';$('#pnT').value='';$('#pnB').value=''}
+function pnEdit(id){const i=PV.d.items.find(x=>x.id==id);$('#pnI').value=id;$('#pnT').value=i.title||'';$('#pnB').value=i.body||'';$('#pnBox').scrollIntoView({behavior:'smooth'})}
+const pnSave=()=>run(async()=>{await api('POST','/api/personal/note',{id:val('pnI')||undefined,title:val('pnT'),body:val('pnB')});flash('یادداشت ذخیره شد');await pfReload()});
+function pnLetter(id){const i=PV.d.items.find(x=>x.id==id);window._noteDraft={title:i.title,body:i.body};location.hash='#/letter-new'}
+const pfAttach=id=>run(async()=>{const i=PV.d.items.find(x=>x.id==id);const t=await api('GET','/api/personal/targets');
+  if(!t.items.length)throw new Error('درخواست یا نامه‌ای که اکنون بتوانید به آن پیوست کنید پیدا نشد');
+  const m=document.createElement('div');m.className='modal';m.innerHTML=`<div class="card"><h2>پیوست «${esc(i.name)}»</h2><label>درخواست کالا یا نامه</label><select id="ptD">${t.items.map((x,k)=>`<option value="${k}">${x.doc_type=='purchase'?'درخواست کالا':'نامه'}: ${esc(fa(x.label))}</option>`).join('')}</select>
+   <label style="margin-top:6px">نوع پیوست (برای درخواست کالا)</label><select id="ptK">${opts(t.kinds.map(k=>[k,k]),'','— انتخاب —')}</select>
+   <div class="mut" style="margin-top:6px">فایل به پیوست‌های همان سند منتقل و از پوشه شما برداشته می‌شود. در درخواست کالا فقط وقتی که درخواست در کارتابل شماست (یا پشتیبانی پس از خرید برای فاکتور) پیوست ممکن است.</div>
+   <div class="row" style="margin-top:8px"><button class="btn" id="ptOk">پیوست</button><button class="btn l" id="ptNo">انصراف</button></div></div>`;document.body.appendChild(m);
+  $('#ptNo').onclick=()=>m.remove();
+  $('#ptOk').onclick=()=>run(async()=>{const x=t.items[+val('ptD')];await api('POST',`/api/personal/${id}/attach`,{doc_type:x.doc_type,doc_id:x.id,kind:val('ptK')});m.remove();flash('پیوست شد');location.hash=`#/${x.doc_type}/${x.id}`})});
 const rcptPhoto=id=>run(async()=>{await uploadFiles('purchase',id,'rcC','عکس وصول');flash('عکس وصول بارگذاری شد');route()});
 // ۴.۶: تصمیم پشتیبانی برای یک قلم
 const purDecide=(pid,lid,dec)=>run(async()=>{const l=purView.d.disc_lines.find(x=>x.id==lid),note=val('dn'+lid).trim();

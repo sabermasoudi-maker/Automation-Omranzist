@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.6.4'
+VERSION = '4.7'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -216,6 +216,9 @@ CREATE TABLE IF NOT EXISTS purchase_payments(id INTEGER PRIMARY KEY, purchase_id
   paid_at TEXT, method TEXT DEFAULT '', cheque_no TEXT DEFAULT '', cheque_date TEXT DEFAULT '', sepidar_no TEXT DEFAULT '',
   note TEXT DEFAULT '', user_id INTEGER, at TEXT);
 CREATE INDEX IF NOT EXISTS ix_pur_pay ON purchase_payments(purchase_id);
+CREATE TABLE IF NOT EXISTS personal_items(id INTEGER PRIMARY KEY, user_id INTEGER, kind TEXT DEFAULT 'file',
+  title TEXT DEFAULT '', note TEXT DEFAULT '', tag TEXT DEFAULT '', body TEXT DEFAULT '', name TEXT DEFAULT '',
+  path TEXT DEFAULT '', size INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, deleted_at TEXT, deleted_by INTEGER);
 CREATE TABLE IF NOT EXISTS doc_serials(project_id INTEGER NOT NULL, dtype TEXT NOT NULL, last INTEGER DEFAULT 0,
   PRIMARY KEY(project_id, dtype));
 CREATE TABLE IF NOT EXISTS purchase_invoices(id INTEGER PRIMARY KEY, purchase_id INTEGER NOT NULL, code TEXT,
@@ -253,7 +256,7 @@ CREATE TABLE IF NOT EXISTS notify_devices(token TEXT PRIMARY KEY, user_id INTEGE
   agent TEXT DEFAULT '');
 """
 
-DEFAULT_SETTINGS = {'company': 'عمران زیست', 'ceo_threshold': '1000000000',
+DEFAULT_SETTINGS = {'company': 'عمران زیست', 'personal_quota_mb': '200', 'ceo_threshold': '1000000000',
                     'ceo_user': '', 'office_approver': '', 'warehouse_user': '', 'default_due_days': '3',
                     'support_manager': '', 'finance_manager': '',
                     'cancel_reasons': DEFAULT_CANCEL_REASONS,
@@ -1588,17 +1591,20 @@ def api_att_delete(h, c, u, b, q, aid):
 
 @route('POST', '/api/attach')
 def api_attach(h, c, u, b, q):
-    dt, did = q.get('doc_type'), int(q.get('doc_id') or 0)
+    return attach_bytes(c, u, q.get('doc_type'), int(q.get('doc_id') or 0),
+                        urllib.parse.unquote(h.headers.get('X-Filename') or 'file'), h.raw_body,
+                        urllib.parse.unquote(h.headers.get('X-Kind') or ''))
+
+
+def attach_bytes(c, u, dt, did, name, raw, kind):
+    """پیوست یک فایل به نامه، درخواست کالا یا درخواست مالی (از بارگذاری مستقیم یا از «پوشه من»)."""
     D = get_doc(c, u, dt, did)
-    kind = urllib.parse.unquote(h.headers.get('X-Kind') or '')
     kind = kind if kind in ATT_KINDS else ''
     if dt == 'purchase':
         need(can_attach_pur(c, u, D), 'پیوست فقط وقتی ممکن است که درخواست در کارتابل شما باشد')
         if not can_attach_turn(c, u, D):  # پشتیبانی پس از خرید: فقط فاکتور یا پیش‌فاکتور
             need(kind in INV_KINDS, 'پس از خرید، پشتیبانی فقط فاکتور یا پیش‌فاکتور پیوست می‌کند', 400)
-    name = urllib.parse.unquote(h.headers.get('X-Filename') or 'file')
     name = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(name))[:150] or 'file'
-    raw = h.raw_body
     need(raw, 'فایل خالی است', 400)
     sub = pur_folder(D) if dt == 'purchase' else datetime.date.today().strftime('%Y-%m')
     os.makedirs(os.path.join(FILES, sub), exist_ok=True)
@@ -1619,6 +1625,169 @@ def api_attach(h, c, u, b, q):
               'VALUES(?,?,?,?,?,?,?,?,?,?,?)', (dt, did, name, rel, len(raw), u['id'], now(), kind, fid, hq_only, rid))
     log(c, dt, did, u['id'], 'پیوست' + (' — ' + kind if kind else ''), name)
     return {'ok': True}
+
+
+# ---------- پوشه من (نسخه ۴.۷): بایگانی شخصی هر کاربر — فایل‌ها و یادداشت‌ها
+# صاحب پوشه همه کار می‌کند؛ هیات مدیره فقط می‌بیند؛ مدیر سیستم می‌بیند و حذف (و بازگردانی تا ۳۰ روز) می‌کند.
+PERSONAL_DIR = 'پوشه شخصی'
+PERSONAL_KEEP_DAYS = 30
+
+
+def personal_quota(c):
+    return int(to_num(settings(c).get('personal_quota_mb')) or 200) * 1024 * 1024
+
+
+def personal_used(c, uid):
+    return c.execute("SELECT COALESCE(SUM(size),0) FROM personal_items WHERE user_id=? AND deleted_at IS NULL", (uid,)).fetchone()[0]
+
+
+def personal_item(c, u, iid, write=False):
+    """یک قلم پوشه شخصی با بررسی دسترسی؛ write: فقط صاحب پوشه."""
+    it = one(c.execute('SELECT * FROM personal_items WHERE id=?', (iid,)))
+    need(it, 'پیدا نشد', 404)
+    if write:
+        need(it['user_id'] == u['id'] and not it['deleted_at'], 'فقط صاحب پوشه می‌تواند این کار را انجام دهد')
+    else:
+        need(it['user_id'] == u['id'] or is_mgr(u), 'به پوشه شخصی دیگران دسترسی ندارید')
+        need(not it['deleted_at'] or u['role'] == 'admin', 'پیدا نشد', 404)
+    return it
+
+
+def personal_cleanup(c):
+    """فایل‌هایی که بیش از ۳۰ روز پیش حذف شده‌اند برای همیشه پاک می‌شوند."""
+    lim = (datetime.datetime.now() - datetime.timedelta(days=PERSONAL_KEEP_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
+    for it in rows(c.execute('SELECT * FROM personal_items WHERE deleted_at IS NOT NULL AND deleted_at<?', (lim,))):
+        if it['path'] and os.path.isfile(os.path.join(FILES, it['path'])):
+            os.remove(os.path.join(FILES, it['path']))
+        c.execute('DELETE FROM personal_items WHERE id=?', (it['id'],))
+
+
+@route('GET', '/api/personal')
+def api_personal(h, c, u, b, q):
+    personal_cleanup(c)
+    uid = int(q.get('user_id') or u['id'])
+    need(uid == u['id'] or is_mgr(u), 'به پوشه شخصی دیگران دسترسی ندارید')
+    owner = one(c.execute('SELECT id, full_name, username FROM users WHERE id=?', (uid,)))
+    need(owner, 'کاربر پیدا نشد', 404)
+    items = rows(c.execute('SELECT * FROM personal_items WHERE user_id=? AND deleted_at IS NULL ORDER BY COALESCE(updated_at,created_at) DESC, id DESC',
+                           (uid,)))
+    trash = rows(c.execute('SELECT p.*, d.full_name deleted_name FROM personal_items p LEFT JOIN users d ON d.id=p.deleted_by '
+                           'WHERE p.user_id=? AND p.deleted_at IS NOT NULL ORDER BY p.deleted_at DESC', (uid,))) \
+        if u['role'] == 'admin' else []
+    users = rows(c.execute("SELECT u.id, u.full_name, u.username, u.active, COALESCE(SUM(CASE WHEN p.deleted_at IS NULL THEN p.size END),0) used, "
+                           "COUNT(CASE WHEN p.deleted_at IS NULL THEN p.id END) n FROM users u LEFT JOIN personal_items p ON p.user_id=u.id "
+                           "WHERE u.deleted=0 GROUP BY u.id ORDER BY n DESC, u.full_name")) if is_mgr(u) else []
+    return {'owner': owner, 'mine': uid == u['id'], 'items': items, 'trash': trash, 'users': users,
+            'used': personal_used(c, uid), 'quota': personal_quota(c), 'can_delete': uid == u['id'] or u['role'] == 'admin',
+            'keep_days': PERSONAL_KEEP_DAYS}
+
+
+@route('POST', '/api/personal/upload')
+def api_personal_upload(h, c, u, b, q):
+    raw = h.raw_body
+    need(raw, 'فایل خالی است', 400)
+    name = re.sub(r'[\\/:*?"<>|]', '_', os.path.basename(urllib.parse.unquote(h.headers.get('X-Filename') or 'file')))[:150] or 'file'
+    q_ = personal_quota(c)
+    need(personal_used(c, u['id']) + len(raw) <= q_, 'فضای پوشه شما (%s مگابایت) پر است؛ چند فایل را حذف کنید یا به درخواست یا نامه منتقل کنید'
+         % fa_num(str(q_ // (1024 * 1024))), 400)
+    sub = os.path.join(PERSONAL_DIR, u['username'])
+    os.makedirs(os.path.join(FILES, sub), exist_ok=True)
+    rel = os.path.join(sub, '%s_%s' % (secrets.token_hex(6), name))
+    with open(os.path.join(FILES, rel), 'wb') as f:
+        f.write(raw)
+    note = urllib.parse.unquote(h.headers.get('X-Note') or '').strip()[:300]
+    iid = c.execute("INSERT INTO personal_items(user_id,kind,title,note,name,path,size,created_at) VALUES(?, 'file', ?, ?, ?, ?, ?, ?)",
+                    (u['id'], name, note, name, rel, len(raw), now())).lastrowid
+    return {'ok': True, 'id': iid}
+
+
+@route('POST', '/api/personal/note')
+def api_personal_note(h, c, u, b, q):
+    title, body = (b.get('title') or '').strip()[:200], (b.get('body') or '').strip()
+    need(title or body, 'عنوان یا متن یادداشت را بنویسید', 400)
+    need(len(body) <= 20000, 'متن یادداشت حداکثر ۲۰٬۰۰۰ نویسه است', 400)
+    tag = (b.get('tag') or '').strip()[:60]
+    if b.get('id'):
+        it = personal_item(c, u, int(b['id']), write=True)
+        need(it['kind'] == 'note', 'یادداشت نیست', 400)
+        c.execute('UPDATE personal_items SET title=?, body=?, tag=?, size=?, updated_at=? WHERE id=?',
+                  (title, body, tag, len(body.encode()), now(), it['id']))
+        return {'ok': True, 'id': it['id']}
+    iid = c.execute("INSERT INTO personal_items(user_id,kind,title,body,tag,size,created_at) VALUES(?, 'note', ?, ?, ?, ?, ?)",
+                    (u['id'], title, body, tag, len(body.encode()), now())).lastrowid
+    return {'ok': True, 'id': iid}
+
+
+@route('POST', r'/api/personal/(\d+)/edit')
+def api_personal_edit(h, c, u, b, q, iid):
+    it = personal_item(c, u, int(iid), write=True)
+    c.execute('UPDATE personal_items SET title=?, note=?, tag=?, updated_at=? WHERE id=?',
+              ((b.get('title') or it['title']).strip()[:200], (b.get('note') or '').strip()[:300],
+               (b.get('tag') or '').strip()[:60], now(), it['id']))
+    return {'ok': True}
+
+
+@route('POST', r'/api/personal/(\d+)/delete')
+def api_personal_delete(h, c, u, b, q, iid):
+    it = one(c.execute('SELECT * FROM personal_items WHERE id=? AND deleted_at IS NULL', (int(iid),)))
+    need(it, 'پیدا نشد', 404)
+    need(it['user_id'] == u['id'] or u['role'] == 'admin', 'فقط صاحب پوشه یا مدیر سیستم می‌تواند حذف کند')
+    c.execute('UPDATE personal_items SET deleted_at=?, deleted_by=? WHERE id=?', (now(), u['id'], it['id']))
+    if it['user_id'] != u['id']:
+        log(c, 'personal', it['id'], u['id'], 'حذف از پوشه شخصی کاربر توسط مدیر سیستم', it['title'] or it['name'])
+    return {'ok': True}
+
+
+@route('POST', r'/api/personal/(\d+)/restore')
+def api_personal_restore(h, c, u, b, q, iid):
+    need_admin(u)
+    it = one(c.execute('SELECT * FROM personal_items WHERE id=? AND deleted_at IS NOT NULL', (int(iid),)))
+    need(it, 'پیدا نشد', 404)
+    c.execute('UPDATE personal_items SET deleted_at=NULL, deleted_by=NULL WHERE id=?', (it['id'],))
+    log(c, 'personal', it['id'], u['id'], 'بازگردانی در پوشه شخصی', it['title'] or it['name'])
+    return {'ok': True}
+
+
+@route('GET', r'/api/personal/targets')
+def api_personal_targets(h, c, u, b, q):
+    """درخواست‌ها و نامه‌هایی که کاربر اکنون می‌تواند به آن‌ها پیوست کند."""
+    w, p = pur_filter(c, u, {})
+    purs = [{'doc_type': 'purchase', 'id': P['id'], 'label': '%s — %s' % (P['number'], P['items_text'] or '')}
+            for P in rows(c.execute(PUR_SEL + "WHERE %s AND x.status IN ('open','returned','closed') ORDER BY x.id DESC LIMIT 150"
+                                    % w, p)) if can_attach_pur(c, u, P)]
+    w, p = letter_filter(u, {})
+    lets = [{'doc_type': 'letter', 'id': L['id'], 'label': '%s — %s' % (L['number'] or 'پیش‌نویس', L['subject'] or '')}
+            for L in rows(c.execute('SELECT l.* FROM letters l WHERE %s ORDER BY l.id DESC LIMIT 60' % w, p))]
+    return {'items': purs + lets, 'kinds': ATT_KINDS}
+
+
+@route('POST', r'/api/personal/(\d+)/attach')
+def api_personal_attach(h, c, u, b, q, iid):
+    """انتقال فایل از پوشه من به پیوست‌های یک درخواست کالا یا نامه (با همان قواعد پیوست)."""
+    it = personal_item(c, u, int(iid), write=True)
+    need(it['kind'] == 'file', 'فقط فایل را می‌توان پیوست کرد', 400)
+    dt = b.get('doc_type')
+    need(dt in ('purchase', 'letter'), 'سند را انتخاب کنید', 400)
+    with open(os.path.join(FILES, it['path']), 'rb') as f:
+        raw = f.read()
+    attach_bytes(c, u, dt, int(b.get('doc_id') or 0), it['name'], raw, b.get('kind') or '')
+    c.execute('DELETE FROM personal_items WHERE id=?', (it['id'],))
+    try:
+        os.remove(os.path.join(FILES, it['path']))
+    except OSError:
+        pass
+    return {'ok': True}
+
+
+def personal_payload(c, u, iid, q):
+    need(u, 'ابتدا وارد شوید', 401)
+    it = personal_item(c, u, iid)
+    need(it['kind'] == 'file', 'فایل نیست', 400)
+    with open(os.path.join(FILES, it['path']), 'rb') as f:
+        data = f.read()
+    ct = mimetypes.guess_type(it['name'])[0] or 'application/octet-stream'
+    disp = 'inline' if ('dl' not in q) else 'attachment'
+    return data, ct, {'Content-Disposition': "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(it['name']))}
 
 
 # ---------- درخواست‌های مالی
@@ -4242,6 +4411,10 @@ class H(BaseHTTPRequestHandler):
             m = re.match(r'^/files/(\d+)$', path)
             if m and method == 'GET':
                 data, ct, hdr = file_payload(c, u, int(m.group(1)), q)
+                return self.send(200, data, ct, hdr)
+            m = re.match(r'^/pfiles/(\d+)$', path)  # ۴.۷: فایل پوشه من
+            if m and method == 'GET':
+                data, ct, hdr = personal_payload(c, u, int(m.group(1)), q)
                 return self.send(200, data, ct, hdr)
             n = int(self.headers.get('Content-Length') or 0)
             need(n <= MAX_UPLOAD, 'حجم فایل بیش از حد مجاز است', 413)
