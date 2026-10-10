@@ -718,3 +718,28 @@ class TSplitHandover(Base):
         its2 = n['items']
         self.act(hq, nid, 'purchased', items=[{'id': its2[0]['id'], 'qty': '5', 'unit': 'کیسه', 'status': 'handover'}])
         self.assertEqual(self.get(nid)['doc']['holder_id'], self.u('mk-poshtibani')['id'])
+
+
+class TSiteInvoiceLater(Base):
+    def test_site_purchase_without_invoice_flagged_until_upload(self):
+        """۴.۶.۴: خرید کارگاه بدون فاکتور ممکن است؛ تا بارگذاری، «مدرک ناقص» در درخواست و کارتابل پشتیبانی نشان داده می‌شود."""
+        r = self.call('POST', '/api/purchases', 'mk-zali', {
+            'project_id': 2, 'unit': 'exec', 'category': 'general', 'warehouse': 'انبار', 'purpose': 'آزمون',
+            'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'}]})
+        pid = r['id']
+        self.act('mk-zali', pid, 'submit'); self.act('mk-sarparast', pid, 'approve')
+        its = self.get(pid)['items']
+        self.act('mk-poshtibani', pid, 'purchased', items=[{'id': its[0]['id'], 'qty': '10', 'unit': 'عدد', 'status': 'bought'}])
+        self.assertEqual((self.get(pid)['doc']['stage'], self.get(pid)['doc']['inv_missing']), ('delivery', 1))
+        cart = self.call('GET', '/api/cartable', 'mk-poshtibani')
+        self.assertEqual([x['id'] for x in cart['pur_noinv']], [pid])
+        n0 = self.call('GET', '/api/counts', 'mk-poshtibani')['n']
+        self.assertEqual([x['id'] for x in self.call('GET', '/api/purchases', 'admin', q={'no_invoice': '1'})], [pid])
+        self.act('mk-anbar', pid, 'wh_ok', items=[{'id': its[0]['id'], 'qty': '10', 'status': 'ok'}])
+        self.act('mk-zali', pid, 'recv_ok', items=[{'id': its[0]['id'], 'qty': '10', 'status': 'ok'}])
+        self.assertEqual(self.get(pid)['doc']['stage'], 'done')
+        self.assertEqual(self.get(pid)['doc']['inv_missing'], 1)  # پس از پایان هم تا بارگذاری می‌ماند
+        self.attach('mk-poshtibani', pid, 'فاکتور', 'inv.pdf')  # بارگذاری پس از عملیات
+        self.assertEqual(self.get(pid)['doc']['inv_missing'], 0)
+        self.assertEqual(self.call('GET', '/api/cartable', 'mk-poshtibani')['pur_noinv'], [])
+        self.assertEqual(self.call('GET', '/api/counts', 'mk-poshtibani')['n'], n0 - 1)

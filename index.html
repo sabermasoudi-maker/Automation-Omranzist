@@ -196,7 +196,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='4.6.3'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='4.6.4'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -317,7 +317,7 @@ async function boot(){
 const isTop=()=>['admin','manager'].includes(M.me.role); // مدیر سیستم و هیات مدیره: بالاترین سطح (مدیریت سامانه)
 const isBoard=()=>M.me.role=='manager'; // گردش کار: هیات مدیره؛ مدیر سیستم در گردش کار نقشی ندارد (نسخه ۳.۹)
 // تب‌های دفتر مرکزی: [کلید، عنوان، مسیر پیش‌فرض، زیرتب‌ها]
-const HQ=[['hq-support','پشتیبانی','hq-support',[['hq-support','منتظر خرید'],['purchases','همه درخواست‌های کالا']]],
+const HQ=[['hq-support','پشتیبانی','hq-support',[['hq-support','منتظر خرید'],['hq-sinv','فاکتور خرید کارگاه بارگذاری‌نشده'],['purchases','همه درخواست‌های کالا']]],
   ['hq-finance','مالی','hq-finance',[['hq-finance','پرداخت و کنترل مدارک خریدها'],['hq-noinv','فاکتورهای رسمی دریافت‌نشده'],['requests','درخواست‌های مالی'],['request-new','درخواست پرداخت / تنخواه جدید']]],
   ['hq-office','اداری','letters',[['letters','نامه‌ها و بایگانی'],['letter-new','ثبت نامه'],['hq-office','بایگانی درخواست‌های کالا (خودکار)']]],
   ['hq-reports','گزارش‌ها','reports',[['reports','خلاصه و عملکرد'],['report-purchases','همه درخواست‌های کالا'],['report-requests','همه درخواست‌های مالی'],['report-letters','همه مکاتبات']]]];
@@ -341,7 +341,7 @@ async function route(){
   if(!M)return;const h=location.hash.replace(/^#\//,'')||'todo';const[p,id,sub]=h.split('/');
   toggleNav(0);try{drawNav(p=='project'?'project/'+id:M.site_only?({letter:'letters','letter-edit':'letters'}[p]||p):(HQ_OF[p]||[p])[0])}catch(e){flash('خطا در منو: '+e.message,1)}refreshCount();
   const V={search:()=>searchPage(id),'letter-print':()=>letterPrint(id),cartable,letters:lettersList,'letter-new':()=>letterForm(),todo,letter:()=>letterView(id),'letter-edit':()=>letterEdit(id),requests:requestsList,'request-new':()=>requestForm(),request:()=>requestView(id),reports,admin,help,
-    'hq-support':()=>hqStage('','درخواست‌های کالا منتظر استعلام قیمت یا خرید (پشتیبانی دفتر مرکزی)',0,'status=open&support=hq'),'hq-finance':hqFinance,'hq-noinv':()=>hqStage('','فاکتور رسمی و ارزش افزوده دریافت‌نشده (پس از کنترل مدارک)',0,'no_official=1'),'hq-office':()=>hqStage('','',1),
+    'hq-support':()=>hqStage('','درخواست‌های کالا منتظر استعلام قیمت یا خرید (پشتیبانی دفتر مرکزی)',0,'status=open&support=hq'),'hq-finance':hqFinance,'hq-noinv':()=>hqStage('','فاکتور رسمی و ارزش افزوده دریافت‌نشده (پس از کنترل مدارک)',0,'no_official=1'),'hq-sinv':()=>hqStage('','خرید کارگاه انجام شده ولی فاکتور یا پیش‌فاکتور خرید بارگذاری نشده (مدرک ناقص)',0,'no_invoice=1'),'hq-office':()=>hqStage('','',1),
     'report-purchases':()=>purchasesPage(),'report-requests':requestsList,'report-letters':lettersList,
     purchases:()=>purchasesPage(),'purchase-new':()=>purchaseForm(id),purchase:()=>purchaseView(id),project:()=>projectPage(id,sub)};
   const SITE_OK=['letters','letter-new','letter','letter-edit','letter-print'];
@@ -398,7 +398,7 @@ const docLink=r=>`#/${r.doc_type}/${r.doc_id}`;
 async function todoItems(){const d=await api('GET','/api/cartable');M.today=d.today;const seen=new Set();
   const it=(href,tag,title,sub,who,at,cls)=>{if(seen.has(href))return null;seen.add(href);return{href,tag,title,sub,who,at,cls}};
   const pur=(r,sub)=>it('#/purchase/'+r.id,'کالا',dn(r.number)+' — '+esc(r.items_text||''),sub||esc(stName(r,r.stage)),esc(r.requester||''),r.req_date?fa(r.req_date):'');
-  const act=[...(d.locked||[]).map(r=>it('#/admin/'+r.id,'حساب',esc(r.full_name)+' ('+esc(r.username)+')','حساب بسته شد (۵ ورود ناموفق) — رمز جدید بگذارید','',jd(r.locked_at,1),'late')),...d.pur_held.map(r=>pur(r)),...d.pur_pay.map(r=>pur(r,r.stage=='finance_settle'?'کنترل مدارک مالی':'منتظر پرداخت مالی')),
+  const act=[...(d.locked||[]).map(r=>it('#/admin/'+r.id,'حساب',esc(r.full_name)+' ('+esc(r.username)+')','حساب بسته شد (۵ ورود ناموفق) — رمز جدید بگذارید','',jd(r.locked_at,1),'late')),...d.pur_held.map(r=>pur(r)),...(d.pur_noinv||[]).map(r=>{const x=pur(r,'مدرک ناقص: فاکتور یا پیش‌فاکتور خرید بارگذاری نشده');if(x)x.cls='late';return x}),...d.pur_pay.map(r=>pur(r,r.stage=='finance_settle'?'کنترل مدارک مالی':'منتظر پرداخت مالی')),
     ...d.approvals.map(r=>it('#/request/'+r.request_id,'مالی',fa(r.number)+' — '+esc(r.title),esc(r.label),esc(r.requester),'')),
     ...d.pay.map(r=>it('#/request/'+r.id,'مالی',fa(r.number)+' — '+esc(r.title),r.status=='approved'?'منتظر پرداخت':'ثبت سند سپیدار',esc(r.payee||''),''))].filter(Boolean);
   const isCc=r=>r.doc_type=='purchase'&&r.action=='جهت اطلاع';
@@ -417,12 +417,14 @@ async function cartable(){
   const d=await api('GET','/api/cartable');M.today=d.today;
   const sec=[['in','نامه‌های من',d.inbox.length],['pur','درخواست‌های کالای من',d.pur_held.length],['ap','درخواست‌های مالی منتظر تأیید',d.approvals.length],['sent','پیگیری نامه‌های ارسالی',d.sent.length],['mine','درخواست‌های ثبت‌شده من',d.mine.length+d.pur_mine.length]];
   if(d.pur_pay.length)sec.splice(2,0,['ppay','مالی: پرداخت و کنترل مدارک خریدها',d.pur_pay.length]);
+  if((d.pur_noinv||[]).length)sec.splice(2,0,['noinv','مدارک ناقص: فاکتور خرید',d.pur_noinv.length]);
   if(M.me.role=='finance'||isBoard())sec.push(['pay','مالی: پرداخت و سند سپیدار',d.pay.length]);
   if(M.me.role=='secretariat'||isBoard())sec.push(['desk','دبیرخانه: نامه‌های بدون ارجاع',d.desk.length]);
   let h=`<h1>کارتابل ${esc(M.me.full_name)}</h1><div class="tabs">${sec.map((s,i)=>`<a data-t="${s[0]}" class="${i?'':'on'}">${s[1]} (${fa(s[2])})</a>`).join('')}</div>`;
   const tbl=(head,body,empty)=>body.length?`<table><tr>${head.map(x=>`<th>${x}</th>`).join('')}</tr>${body.join('')}</table>`:`<div class="card mut">${empty}</div>`;
   h+=`<div data-p="in">${tbl(['سند','از','اقدام','دستور','تاریخ ارجاع','مهلت','وضعیت'],d.inbox.map(r=>`<tr class="cl ${late(r)?'late':''}" onclick="location='${docLink(r)}'"><td>${r.doc_type=='request'?'<span class="tag">مالی</span> ':r.doc_type=='purchase'?'<span class="tag">کالا</span> ':''}${r.priority&&r.priority!='normal'?tag(PRI,r.priority)+' ':''}${esc(fa(r.doc_label))}</td><td>${esc(r.from_name)}</td><td>${esc(r.action)}</td><td class="cmt">${esc(r.instruction)}</td><td class="mut">${jd(r.created_at,1)}</td><td>${jd(r.due_date)}${late(r)?' <span class="tag bad">گذشته</span>':''}</td><td>${tag(REF_ST,r.status)}</td></tr>`),'کاری در کارتابل شما نیست.')}</div>`;
   h+=`<div data-p="ppay" style="display:none">${purTable(d.pur_pay,1)}</div>`;
+  h+=`<div data-p="noinv" style="display:none"><div class="mut" style="margin-bottom:6px">خرید این درخواست‌ها انجام شده ولی فاکتور یا پیش‌فاکتور خرید بارگذاری نشده است؛ آن را در بخش پیوست‌های هر درخواست بارگذاری کنید.</div>${purTable(d.pur_noinv||[],1)}</div>`;
   h+=`<div data-p="pur" style="display:none">${d.pur_held.length?purTable(d.pur_held,1):'<div class="card mut">درخواست کالایی منتظر اقدام شما نیست.</div>'}</div>`;
   h+=`<div data-p="ap" style="display:none">${tbl(['شماره','عنوان','نوع','پروژه','درخواست‌کننده','مبلغ (ریال)','مرحله'],d.approvals.map(r=>`<tr class="cl" onclick="location='#/request/${r.request_id}'"><td>${fa(r.number)}</td><td>${esc(r.title)}</td><td>${esc(r.kind)}</td><td>${esc(r.project||'')}</td><td>${esc(r.requester)}</td><td>${money(r.amount)}</td><td>${esc(r.label)}</td></tr>`),'درخواستی منتظر تأیید شما نیست.')}</div>`;
   h+=`<div data-p="sent" style="display:none">${tbl(['سند','به','اقدام','تاریخ ارجاع','مهلت','وضعیت'],d.sent.map(r=>`<tr class="cl ${late(r)?'late':''}" onclick="location='${docLink(r)}'"><td>${esc(fa(r.doc_label))}</td><td>${esc(r.to_name)}</td><td>${esc(r.action)}</td><td class="mut">${jd(r.created_at,1)}</td><td>${jd(r.due_date)}</td><td>${tag(REF_ST,r.status)}</td></tr>`),'نامه ارسالی باز ندارید.')}</div>`;
@@ -606,7 +608,7 @@ const P_ST={open:'warn',returned:'bad',delivered:'ok',closed:'ok',site_done:'ok'
 // نام مرحله؛ اگر کار پشتیبانی واگذار شده، نام پشتیبانی گیرنده (نسخه ۳.۶)
 const SUP_ST=['site_purchase','hq_quotes','hq_purchase','invoice_fix','disc_review'];
 function stName(P,k){let t=M.p_stages[k]||'';if(P&&P.support_side&&SUP_ST.includes(k))t=P.support_side=='site'?t.replace('پشتیبانی دفتر مرکزی','پشتیبانی کارگاه'):t.replace('پشتیبانی کارگاه','پشتیبانی دفتر مرکزی');return t}
-const pTag=P=>`<span class="tag ${P_ST[P.status]||''}">${esc(P.status=='open'?stName(P,P.stage):M.p_status[P.status])}</span>`+(P.pay_req_at&&!P.pay_done_at&&!['cancelled','rejected'].includes(P.status)?' <span class="tag warn">منتظر پرداخت مالی</span>':'')+(P.docs_at&&!P.official_inv?' <span class="tag bad">فاکتور رسمی دریافت نشده</span>':'');
+const pTag=P=>`<span class="tag ${P_ST[P.status]||''}">${esc(P.status=='open'?stName(P,P.stage):M.p_status[P.status])}</span>`+(P.pay_req_at&&!P.pay_done_at&&!['cancelled','rejected'].includes(P.status)?' <span class="tag warn">منتظر پرداخت مالی</span>':'')+(P.docs_at&&!P.official_inv?' <span class="tag bad">فاکتور رسمی دریافت نشده</span>':'')+(P.inv_missing?' <span class="tag bad">فاکتور خرید بارگذاری نشده</span>':'');
 // فهرست درخواست‌های کالا. در موبایل ترتیب ستون‌ها: شماره، اقلام، وضعیت / مرحله، در دست، تاریخ، درخواست‌کننده (و در صورت نیاز پروژه)
 function purTable(rs,noProj){if(!rs.length)return '<div class="mut">موردی نیست.</div>';
   const mob=matchMedia('(max-width:760px)').matches;
@@ -842,6 +844,7 @@ async function purchaseView(id,editing){
   const defKind=d.support_attach?'فاکتور':{hq_quotes:'پیش‌فاکتور',site_purchase:'فاکتور',hq_purchase:'فاکتور',invoice_fix:'فاکتور',finance_settle:'فاکتور'}[P.stage];
   h+=`<div class="noprint">${attachBlock('purchase',P.id,d.attachments,d.can_attach,defKind,P.chosen_att)}${d.support_attach?'<div class="mut" style="margin:-8px 0 14px">پشتیبانی پس از خرید در همه مراحل (حتی پس از بایگانی) می‌تواند فاکتور یا پیش‌فاکتور پیوست کند.</div>':''}</div>`;
   if(d.can_pay&&!editing)h+=`<div class="card noprint" style="border-color:var(--warn)"><h2>پرداخت — امور مالی</h2><div class="mut" style="margin-bottom:8px">خرید انجام شده و همزمان با اعلام وصول در انبار، برای پرداخت به امور مالی آمده است. پس از پرداخت، آن را ثبت کنید.</div><label>توضیح پرداخت (اختیاری — مثلاً نحوه پرداخت یا شماره سند)</label><input id="payN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purPaid(${P.id})">پرداخت انجام شد</button></div></div>`;
+  if(P.inv_missing&&!editing)h+=`<div class="card noprint" style="border-color:var(--bad)"><h2>مدرک ناقص: فاکتور خرید بارگذاری نشده</h2><div class="mut">خرید انجام شده ولی فاکتور یا پیش‌فاکتور خرید هنوز بارگذاری نشده است. ${d.can_attach?'آن را در بخش «پیوست‌ها» (بالا) با نوع «فاکتور» یا «پیش‌فاکتور» بارگذاری کنید؛':'پشتیبانی باید آن را بارگذاری کند؛'} تا بارگذاری، این درخواست در فهرست «مدارک ناقص» می‌ماند.</div></div>`;
   if(d.can_official&&!editing)h+=`<div class="card noprint" style="border-color:var(--bad)"><h2>فاکتور رسمی و ارزش افزوده دریافت نشده</h2><div class="mut" style="margin-bottom:8px">فاکتور رسمی را در بخش پیوست‌ها بارگذاری کنید و پس از دریافت، ثبت کنید تا از فهرست «فاکتورهای رسمی دریافت‌نشده» خارج شود.</div><label>توضیح (اختیاری)</label><input id="oiN"><div class="row" style="margin-top:8px"><button class="btn ok" onclick="purOfficial(${P.id})">فاکتور رسمی و ارزش افزوده دریافت شد</button></div></div>`;
   if(d.actions.length&&!editing)h+=actionCard(d);
   else if(d.can_edit&&!editing&&!ret&&!d.is_admin)h+=`<div class="noprint" style="margin-bottom:14px"><button class="btn l" onclick="purchaseView(${P.id},1)">ویرایش درخواست</button></div>`;
@@ -870,7 +873,7 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   if(['hq_quotes','hq_purchase'].includes(st))x=mgmtNotes(d)+x;
   if(st=='hq_purchase'||st=='site_purchase'){const buy=rows.filter(i=>+en(i.remaining)>0);
     x=`<table><tr><th>شرح کالا</th><th>مقدار</th><th>مقدار خریداری‌شده</th><th>واحد</th><th>وضعیت</th><th>توضیح (برای ناقص یا نشده الزامی)</th></tr>${buy.map(i=>`<tr${i.disc_note?' style="background:#fdecea"':''}><td>${esc(i.title)}${i.disc_note?`<div style="color:var(--bad);font-size:12px">مغایرت — ${esc(i.disc_note)}</div>`:''}</td><td>${fa(i.remaining)} ${esc(i.unit)}</td><td>${numIn('bq'+i.id,fa(i.bought_qty||i.remaining),90)}</td><td><input id="bu${i.id}" value="${esc(i.bought_unit||i.unit)}" style="max-width:100px"></td><td><select id="bs${i.id}">${opts(Object.entries(d.buy_status).concat(d.handover_to&&!i.bought_status?[['handover','ارجاع به '+d.handover_to.label]]:[]),i.bought_status||'bought')}</select></td><td><input id="bn${i.id}" value="${esc(i.bought_note||'')}"></td></tr>`).join('')}</table>`;
-    hint=(d.handover_to?'برای ارجاع هر قلم به '+esc(d.handover_to.label)+'، در ستون «وضعیت» گزینه «ارجاع به '+esc(d.handover_to.label)+'» را انتخاب کنید؛ آن اقلام با یک درخواست تازه نزد او می‌روند و بقیه همین‌جا خرید می‌شوند. ':'')+(st=='site_purchase'?'فاکتور (یا پیش‌فاکتور) خرید را در بخش پیوست‌ها بارگذاری کنید (الزامی). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود'+(st=='hq_purchase'?'؛ همزمان برای پرداخت به امور مالی ارسال می‌شود.':'.')+' پس از خرید هم می‌توانید فاکتور یا پیش‌فاکتور پیوست کنید.'}
+    hint=(d.handover_to?'برای ارجاع هر قلم به '+esc(d.handover_to.label)+'، در ستون «وضعیت» گزینه «ارجاع به '+esc(d.handover_to.label)+'» را انتخاب کنید؛ آن اقلام با یک درخواست تازه نزد او می‌روند و بقیه همین‌جا خرید می‌شوند. ':'')+(st=='site_purchase'?'فاکتور یا پیش‌فاکتور خرید را در بخش پیوست‌ها بارگذاری کنید؛ اگر هنوز ندارید، بعد از خرید هم می‌توانید بارگذاری کنید (تا آن موقع «مدرک ناقص» نشان داده می‌شود). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود'+(st=='hq_purchase'?'؛ همزمان برای پرداخت به امور مالی ارسال می‌شود.':'.')+' پس از خرید هم می‌توانید فاکتور یا پیش‌فاکتور پیوست کنید.'}
   if(st=='disc_review'&&A.includes('decide')){const ls=(d.disc_lines||[]).filter(l=>!l.sup_dec),dn_=(d.disc_lines||[]).filter(l=>l.sup_dec);
     // ۴.۶: تصمیم برای هر قلم جداگانه؛ با زدن دکمه، همان قلم برای اصلاح برگه به انبار می‌رود
     x=`<table class="mtab"><tr><th>شرح کالا</th><th>نوبت</th><th>مورد انتظار</th><th>تحویل شده</th><th>وضعیت قطعی (توافق انبار و تحویل‌گیرنده)</th><th>توضیح</th><th>تصمیم شما</th></tr>${ls.map(l=>`<tr style="background:#fdecea"><td>${esc(l.title)}</td><td data-l="نوبت">${fa(l.seq)}</td><td data-l="مورد انتظار">${fa(l.exp_qty)} ${esc(l.bought_unit||l.unit)}</td><td data-l="رسیده"><b>${fa(l.recv_qty)}</b></td>

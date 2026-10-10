@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.6.3'
+VERSION = '4.6.4'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -1072,7 +1072,17 @@ def api_meta(h, c, u, b, q):
             'team_roles': TEAM_ROLES, 'superiors': superiors_of(c, u['id']), 'colleagues': colleagues_of(c, u['id'])}
 
 
+# ۴.۶.۴: خرید کارگاه انجام شده ولی فاکتور یا پیش‌فاکتور خرید هنوز بارگذاری نشده (مدرک ناقص)
+SITE_NOINV_SQL = ("(x.status NOT IN ('cancelled','rejected') AND EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id "
+                  "AND f.action='purchased' AND f.stage='site_purchase') AND NOT EXISTS(SELECT 1 FROM attachments a WHERE "
+                  "a.doc_type='purchase' AND a.doc_id=x.id AND a.kind IN ('فاکتور','پیش‌فاکتور') AND a.deleted_at IS NULL "
+                  "AND COALESCE(a.archived,0)=0))")
+# پشتیبانی‌ای که باید فاکتور را بارگذاری کند: خریدار، کسی که کار به او واگذار شده، یا پشتیبانی کارگاه پروژه
+SITE_NOINV_MINE = ("(EXISTS(SELECT 1 FROM purchase_flow f WHERE f.purchase_id=x.id AND f.action='purchased' AND f.user_id=?) "
+                   "OR x.support_by=? OR (COALESCE(x.support_side,'')!='hq' AND EXISTS(SELECT 1 FROM project_members m "
+                   "WHERE m.project_id=x.project_id AND m.role_key='support' AND m.user_id=?)))")
 PUR_SEL = ("SELECT x.*, pr.name project, pr.code project_code, ru.full_name requester, hu.full_name holder, "
+           "CASE WHEN " + SITE_NOINV_SQL + " THEN 1 ELSE 0 END inv_missing, "
            "(SELECT group_concat(title, '، ') FROM purchase_items WHERE purchase_id=x.id) items_text FROM purchases x "
            "LEFT JOIN projects pr ON pr.id=x.project_id LEFT JOIN users ru ON ru.id=x.requester_id "
            "LEFT JOIN users hu ON hu.id=x.holder_id ")
@@ -1121,10 +1131,12 @@ def api_cartable(h, c, u, b, q):
     pur_pay = rows(c.execute(PUR_SEL + "WHERE " + PUR_PAY_SQL + " ORDER BY x.id")) if is_finance(c, u) else []
     pur_mine = rows(c.execute(PUR_SEL + "WHERE x.requester_id=? AND x.status IN ('open','returned') ORDER BY x.id DESC",
                               (u['id'],)))
+    pur_noinv = rows(c.execute(PUR_SEL + "WHERE " + SITE_NOINV_SQL + " AND " + SITE_NOINV_MINE + " ORDER BY x.id",
+                               (u['id'],) * 3))
     locked = rows(c.execute('SELECT id, username, full_name, locked_at FROM users WHERE locked_at IS NOT NULL AND deleted=0 '
                             'ORDER BY locked_at')) if u['role'] == 'admin' else []
     return {'locked': locked, 'inbox': inbox, 'sent': sent, 'approvals': approvals, 'mine': mine, 'pay': pay, 'desk': desk,
-            'pur_held': pur_held, 'pur_mine': pur_mine, 'pur_pay': pur_pay, 'today': today()}
+            'pur_held': pur_held, 'pur_mine': pur_mine, 'pur_pay': pur_pay, 'pur_noinv': pur_noinv, 'today': today()}
 
 
 @route('GET', '/api/counts')
@@ -1140,6 +1152,8 @@ def cart_count(c, u):
     if u['role'] in ('finance',):
         n += c.execute("SELECT COUNT(*) FROM requests WHERE status='approved'").fetchone()[0]
     n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + PUR_HELD_SQL, held_args(u)).fetchone()[0]
+    n += c.execute("SELECT COUNT(*) FROM purchases x WHERE " + SITE_NOINV_SQL + " AND " + SITE_NOINV_MINE + " AND NOT "
+                   + PUR_HELD_SQL, (u['id'],) * 3 + held_args(u)).fetchone()[0]  # ۴.۶.۴: فاکتور خرید کارگاه بارگذاری نشده
     if u['role'] == 'admin':  # حساب‌های بسته‌شده پس از ورود ناموفق، منتظر رمز جدید مدیر سیستم
         n += c.execute('SELECT COUNT(*) FROM users WHERE locked_at IS NOT NULL AND deleted=0').fetchone()[0]
     if u['role'] == 'finance' or str(u['id']) == settings(c).get('finance_manager'):
@@ -2113,6 +2127,8 @@ def pur_filter(c, u, q):
         w.append(PUR_PAYWAIT_SQL)
     if q.get('no_official'):
         w.append(PUR_NOINV_SQL)
+    if q.get('no_invoice'):
+        w.append(SITE_NOINV_SQL)
     for k in ('unit', 'stage', 'status', 'category', 'urgency'):
         if q.get(k):
             vals = q[k].split(',')
@@ -2865,8 +2881,9 @@ def api_purchase_act(h, c, u, b, q, pid):
             c.execute('UPDATE purchase_items SET bought_qty=?, bought_unit=?, bought_status=?, bought_note=? WHERE id=?',
                       (fmt_num(bq) if stt != 'none' else '0', (x.get('unit') or it['unit'] or '').strip(), stt,
                        (x.get('note') or '').strip(), it['id']))
-        if P['stage'] == 'site_purchase':
-            need(invoice_doc(c, P), 'فاکتور (یا پیش‌فاکتور) خرید را پیوست کنید', 400)
+        if P['stage'] == 'site_purchase':  # ۴.۶.۴: فاکتور الزامی نیست؛ تا بارگذاری، «مدرک ناقص» نشان داده می‌شود
+            if not invoice_doc(c, P):
+                notes.append('فاکتور یا پیش‌فاکتور خرید بارگذاری نشده (مدرک ناقص؛ پس از خرید قابل بارگذاری است)')
         elif not P['pay_req_at']:  # خرید دفتر مرکزی: همزمان با اعلام وصول، به امور مالی برای پرداخت
             c.execute('UPDATE purchases SET pay_req_at=? WHERE id=?', (now(), P['id']))
             notes.append('همزمان برای پرداخت به امور مالی ارسال شد')
