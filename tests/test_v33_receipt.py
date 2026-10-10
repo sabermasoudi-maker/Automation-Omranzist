@@ -685,3 +685,36 @@ class TSiteDone(Base):
         lst = {x['id']: x for x in self.call('GET', '/api/purchases', 'mk-sarparast', q={'project_id': '2'})}
         self.assertEqual(lst[pid]['status'], 'site_done')
         self.assertEqual(self.get(pid, 'admin')['doc']['status'], 'open')  # برای دفتر مرکزی در جریان است
+
+
+class TSplitHandover(Base):
+    def test_split_items_to_other_support(self):
+        """۴.۶.۳: قلمی با وضعیت «ارجاع به پشتیبانی دفتر مرکزی» با درخواست تازه نزد پشتیبانی دیگر می‌رود."""
+        r = self.call('POST', '/api/purchases', 'mk-zali', {
+            'project_id': 2, 'unit': 'exec', 'category': 'general', 'warehouse': 'انبار', 'purpose': 'آزمون',
+            'need_date': '1410/01/01', 'items': [{'title': 'پیچ', 'qty': '10', 'unit': 'عدد'},
+                                                  {'title': 'سیمان', 'qty': '5', 'unit': 'کیسه'}]})
+        pid = r['id']
+        self.act('mk-zali', pid, 'submit'); self.act('mk-sarparast', pid, 'approve')
+        self.attach('mk-poshtibani', pid, 'فاکتور', 'inv.pdf')
+        d = self.get(pid, 'mk-poshtibani')
+        self.assertEqual(d['handover_to']['label'], 'پشتیبانی دفتر مرکزی')
+        its = d['items']
+        self.act('mk-poshtibani', pid, 'purchased', items=[
+            {'id': its[0]['id'], 'qty': '10', 'unit': 'عدد', 'status': 'bought'},
+            {'id': its[1]['id'], 'qty': '5', 'unit': 'کیسه', 'status': 'handover'}])
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], [i['title'] for i in d['items']]), ('delivery', ['پیچ']))
+        nid = max(x['id'] for x in self.call('GET', '/api/purchases', 'admin'))
+        n = self.get(nid)
+        self.assertEqual((n['doc']['stage'], n['doc']['holder_id'], n['doc']['support_side']),
+                         ('site_purchase', d['handover_to']['id'] if d.get('handover_to') else n['doc']['holder_id'], 'hq'))
+        self.assertEqual([(i['title'], i['row_no']) for i in n['items']], [('سیمان', 1)])
+        self.assertTrue(any(f['action'] == 'split' for f in n['flow']) and any(f['action'] == 'split' for f in d['flow']))
+        self.assertTrue(n['attachments'])
+        hq = app.one(self.c.execute('SELECT username FROM users WHERE id=?', (n['doc']['holder_id'],)))['username']
+        self.assertEqual(self.get(nid, hq)['actions'], ['purchased'])
+        # ارجاع همه اقلام = واگذاری کل درخواست
+        its2 = n['items']
+        self.act(hq, nid, 'purchased', items=[{'id': its2[0]['id'], 'qty': '5', 'unit': 'کیسه', 'status': 'handover'}])
+        self.assertEqual(self.get(nid)['doc']['holder_id'], self.u('mk-poshtibani')['id'])

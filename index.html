@@ -196,7 +196,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='4.6.2'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='4.6.3'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -544,7 +544,7 @@ async function letterPrint(id){
    <div id="lhOv" class="card noprint tag bad" style="display:none">متن نامه از یک صفحه بیشتر است و انتهای آن روی سربرگ جا نمی‌شود؛ متن را کوتاه‌تر کنید یا اندازه قلم سربرگ را کوچک‌تر کنید.</div>
    <div class="lhwrap">${lhPage(S)}</div>`;
   if(lhOverflow())$('#lhOv').style.display='block'}
-function printLetter(num){const t=document.title;document.title='نامه '+num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
+function printLetter(num){const t=document.title;document.title='نامه '+num.replace(/\//g,'-');setTimeout(()=>{print();document.title=t},300)}
 const arch=(id,force)=>run(async()=>{if(!await ask('نامه بایگانی می‌شود.'))return;await api('POST',`/api/letters/${id}/archive`,{archive_code:val('arcC'),force:!!force});flash('بایگانی شد');route()});
 
 // ---------------------------------------------------------------- درخواست‌های مالی
@@ -816,7 +816,7 @@ function verDiff(a,b){ // تفاوت اقلام دو نسخه
   for(const f in hd)if((a[f]||'')!=(b[f]||''))out.push(`<span class="tag">${hd[f]} تغییر کرد</span>`);
   return out.join(' ')||'<span class="mut">بدون تغییر در اقلام</span>'}
 const hrs=(a,b)=>{const h=(new Date(b.replace(' ','T'))-new Date(a.replace(' ','T')))/36e5;return h<1?fa(Math.round(h*60))+' دقیقه':h<48?fa(h.toFixed(1))+' ساعت':fa((h/24).toFixed(1))+' روز'};
-const SIDE_ACT=['attach','delatt','payment','archive_code','edit','pay_done','grn_edit','official_inv']; // رویدادهای جانبی گردش
+const SIDE_ACT=['attach','delatt','payment','archive_code','edit','pay_done','grn_edit','official_inv','split']; // رویدادهای جانبی گردش
 const numIn=(id,v,w)=>`<input id="${id}" value="${esc(v??'')}" class="num" style="max-width:${w||110}px">`;
 async function purchaseView(id,editing){
   const d=await api('GET','/api/purchases/'+id);const P=d.doc;const fl=d.flow.filter(f=>!SIDE_ACT.includes(f.action));
@@ -869,8 +869,8 @@ function actionCard(d){const P=d.doc,st=P.stage,A=d.actions;let x='',hint='';
   if(st=='pm_approve')hint='این درخواست در کارتابل مدیر پروژه و همه اعضای هیات مدیره است و تأیید یک نفر کافی است. اگر منبع خرید و قیمت از قبل معلوم است، «دستور خرید مستقیم» را بزنید (نوشتن منبع و قیمت در «توضیح» اختیاری است)؛ درخواست بدون استعلام و تأیید قیمت مستقیم به خرید پشتیبانی می‌رود. می‌توانید پیش‌فاکتور را هم در بخش پیوست‌ها بگذارید. نظر شما برای مدیر پشتیبانی به رنگ قرمز نمایش داده می‌شود.';
   if(['hq_quotes','hq_purchase'].includes(st))x=mgmtNotes(d)+x;
   if(st=='hq_purchase'||st=='site_purchase'){const buy=rows.filter(i=>+en(i.remaining)>0);
-    x=`<table><tr><th>شرح کالا</th><th>مقدار</th><th>مقدار خریداری‌شده</th><th>واحد</th><th>وضعیت</th><th>توضیح (برای ناقص یا نشده الزامی)</th></tr>${buy.map(i=>`<tr${i.disc_note?' style="background:#fdecea"':''}><td>${esc(i.title)}${i.disc_note?`<div style="color:var(--bad);font-size:12px">مغایرت — ${esc(i.disc_note)}</div>`:''}</td><td>${fa(i.remaining)} ${esc(i.unit)}</td><td>${numIn('bq'+i.id,fa(i.bought_qty||i.remaining),90)}</td><td><input id="bu${i.id}" value="${esc(i.bought_unit||i.unit)}" style="max-width:100px"></td><td><select id="bs${i.id}">${opts(Object.entries(d.buy_status),i.bought_status||'bought')}</select></td><td><input id="bn${i.id}" value="${esc(i.bought_note||'')}"></td></tr>`).join('')}</table>`;
-    hint=(st=='site_purchase'?'فاکتور (یا پیش‌فاکتور) خرید را در بخش پیوست‌ها بارگذاری کنید (الزامی). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود'+(st=='hq_purchase'?'؛ همزمان برای پرداخت به امور مالی ارسال می‌شود.':'.')+' پس از خرید هم می‌توانید فاکتور یا پیش‌فاکتور پیوست کنید.'}
+    x=`<table><tr><th>شرح کالا</th><th>مقدار</th><th>مقدار خریداری‌شده</th><th>واحد</th><th>وضعیت</th><th>توضیح (برای ناقص یا نشده الزامی)</th></tr>${buy.map(i=>`<tr${i.disc_note?' style="background:#fdecea"':''}><td>${esc(i.title)}${i.disc_note?`<div style="color:var(--bad);font-size:12px">مغایرت — ${esc(i.disc_note)}</div>`:''}</td><td>${fa(i.remaining)} ${esc(i.unit)}</td><td>${numIn('bq'+i.id,fa(i.bought_qty||i.remaining),90)}</td><td><input id="bu${i.id}" value="${esc(i.bought_unit||i.unit)}" style="max-width:100px"></td><td><select id="bs${i.id}">${opts(Object.entries(d.buy_status).concat(d.handover_to&&!i.bought_status?[['handover','ارجاع به '+d.handover_to.label]]:[]),i.bought_status||'bought')}</select></td><td><input id="bn${i.id}" value="${esc(i.bought_note||'')}"></td></tr>`).join('')}</table>`;
+    hint=(d.handover_to?'برای ارجاع هر قلم به '+esc(d.handover_to.label)+'، در ستون «وضعیت» گزینه «ارجاع به '+esc(d.handover_to.label)+'» را انتخاب کنید؛ آن اقلام با یک درخواست تازه نزد او می‌روند و بقیه همین‌جا خرید می‌شوند. ':'')+(st=='site_purchase'?'فاکتور (یا پیش‌فاکتور) خرید را در بخش پیوست‌ها بارگذاری کنید (الزامی). ':'')+'پس از «خرید انجام شد»، فرم به «اعلام وصول کالا» تبدیل می‌شود و برای تأیید تحویل‌گیرنده و انباردار می‌رود'+(st=='hq_purchase'?'؛ همزمان برای پرداخت به امور مالی ارسال می‌شود.':'.')+' پس از خرید هم می‌توانید فاکتور یا پیش‌فاکتور پیوست کنید.'}
   if(st=='disc_review'&&A.includes('decide')){const ls=(d.disc_lines||[]).filter(l=>!l.sup_dec),dn_=(d.disc_lines||[]).filter(l=>l.sup_dec);
     // ۴.۶: تصمیم برای هر قلم جداگانه؛ با زدن دکمه، همان قلم برای اصلاح برگه به انبار می‌رود
     x=`<table class="mtab"><tr><th>شرح کالا</th><th>نوبت</th><th>مورد انتظار</th><th>تحویل شده</th><th>وضعیت قطعی (توافق انبار و تحویل‌گیرنده)</th><th>توضیح</th><th>تصمیم شما</th></tr>${ls.map(l=>`<tr style="background:#fdecea"><td>${esc(l.title)}</td><td data-l="نوبت">${fa(l.seq)}</td><td data-l="مورد انتظار">${fa(l.exp_qty)} ${esc(l.bought_unit||l.unit)}</td><td data-l="رسیده"><b>${fa(l.recv_qty)}</b></td>
@@ -926,7 +926,7 @@ function docsCard(d){const m=d.docs,P=d.doc;const row=(t,ok,v)=>`<tr><td>${t}</t
    ${row('فاکتور',!!m.invoice,m.invoice=='پیش‌فاکتور'?'<span class="tag warn">پیش‌فاکتور به‌جای فاکتور</span> (تا بارگذاری فاکتور اصلی)':m.invoice?'فاکتور اصلی':'در بخش پیوست‌ها با نوع «فاکتور» بارگذاری شود')}</table>
    <div class="mut" style="margin-top:6px">فقط وجود این سه مدرک بررسی می‌شود؛ مقدار، مبلغ و شماره فاکتور کنترل نمی‌شود.</div></div>`}
 function mgmtNotes(d){return (d.mgmt_notes||[]).length?`<div class="mgmt"><b>نظر مدیر پروژه / هیات مدیره:</b>${d.mgmt_notes.map(f=>`<div>• ${esc(f.user_name)} (${esc(M.p_stages[f.stage]||'')} — ${jd(f.at,1)}): ${esc(f.note)}</div>`).join('')}</div>`:''}
-function printPur(num){const t=document.title;document.title=num.replace(/\//g,'-');flash('در پنجره چاپ، مقصد را «Save as PDF» انتخاب کنید');setTimeout(()=>{print();document.title=t},300)}
+function printPur(num){const t=document.title;document.title=num.replace(/\//g,'-');setTimeout(()=>{print();document.title=t},300)}
 // وضعیت هر ردیف اعلام وصول: ok تأیید | short کسری | extra اضافی | returned مرجوعی | partial تحویل بخشی
 const LINE_ST={ok:'تأیید',extra:'اضافی',short:'کسری',partial:'تحویل بخشی',wrong:'اشتباه ارسال شده',returned:'مرجوعی'},DISC_ST=['extra','short','wrong'];
 const ST_IN=['ok','extra','short','partial','wrong']; // «مرجوعی» فقط برای نمایش ردیف‌های نسخه ۴.۴
@@ -986,6 +986,9 @@ const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action
   if(a=='docs_ok'&&b.official_inv==='')throw new Error('مشخص کنید فاکتور رسمی (ارزش افزوده) دریافت شده یا نه');
   if(a=='stock')b.items=its.map(i=>({id:i.id,stock:en(val('stk'+i.id))}));
   if(a=='purchased')b.items=its.filter(i=>$('#bs'+i.id)).map(i=>({id:i.id,qty:en(val('bq'+i.id)),unit:val('bu'+i.id),status:val('bs'+i.id),note:val('bn'+i.id)}));
+  const hv=a=='purchased'?b.items.filter(i=>i.status=='handover'):[]; // ۴.۶.۳: ارجاع اقلام به پشتیبانی دیگر
+  if(hv.length&&!await ask(hv.length==b.items.length?'همه اقلام به '+d.handover_to.label+' ('+d.handover_to.name+') ارجاع می‌شود.':fa(hv.length)+' قلم ('+hv.map(i=>its.find(x=>x.id==i.id).title).join('، ')+') جدا شده و با یک درخواست تازه به '+d.handover_to.label+' ('+d.handover_to.name+') ارجاع می‌شود؛ بقیه اقلام با «خرید انجام شد» ثبت می‌شوند.'))return;
+  if(hv.length)b._hv=1;
   if(a=='followup'&&!b.note.trim())throw new Error('برای ارجاع به پشتیبانی، علت پیگیری را در «توضیح» بنویسید');
   if(['recv_ok','wh_ok','wh_redo'].includes(a)){ // ۴.۶.۲: وضعیت هر قلم با کلیک کاربر؛ در ثبت انبار، قلم بدون وضعیت نزد انبار می‌ماند
     const mine=its.filter(i=>$('#rq'+i.id)&&RS.rows[i.id]);
@@ -998,8 +1001,8 @@ const purAct=(id,a)=>run(async()=>{const d=purView.d,its=d.items;const b={action
     b._left=mine.length-b.items.length}
   const lbl=((PUR_ACT[d.doc.stage]||[]).find(x=>x[0]==a)||[])[1]||a;
   const anyDisc=(b.items||[]).some(i=>DISC_ST.includes(i.status)),got=(b.items||[]).reduce((t,i)=>t+(i.status=='returned'?0:+i.qty||0),0);
-  if(!await ask(a=='recv_ok'?(anyDisc?'مغایرت شما با تحویل انبار برای اصلاح به انباردار برمی‌گردد.':'کالای تحویلی انبار را تأیید می‌کنید؛ این نوبت در برگه اعلام وصول ثبت می‌شود.'):['wh_ok','wh_redo'].includes(a)?(anyDisc?'نوبت همراه با مغایرت نسبت به سفارش به تحویل‌گیرنده تحویل می‌شود.':'نوبت به تحویل‌گیرنده تحویل می‌شود.')+(b._left?' '+fa(b._left)+' قلم بدون وضعیت نزد شما می‌ماند.':''):'«'+lbl+'»'))return;
-  delete b._left;
+  if(!b._hv&&!await ask(a=='recv_ok'?(anyDisc?'مغایرت شما با تحویل انبار برای اصلاح به انباردار برمی‌گردد.':'کالای تحویلی انبار را تأیید می‌کنید؛ این نوبت در برگه اعلام وصول ثبت می‌شود.'):['wh_ok','wh_redo'].includes(a)?(anyDisc?'نوبت همراه با مغایرت نسبت به سفارش به تحویل‌گیرنده تحویل می‌شود.':'نوبت به تحویل‌گیرنده تحویل می‌شود.')+(b._left?' '+fa(b._left)+' قلم بدون وضعیت نزد شما می‌ماند.':''):'«'+lbl+'»'))return;
+  delete b._left;delete b._hv;
   await api('POST',`/api/purchases/${id}/act`,b);refreshCount();if(a=='submit'){flash('ثبت شد');route()}else await goNext('purchase',id)});
 // پس از اقدام روی یک درخواست، درخواست بعدیِ منتظر همین کاربر خودکار باز می‌شود (بدون رفتن به کارتابل)
 // ترتیب همان «در دست اقدام» است: درخواست‌های قابل اقدام، سپس نامه‌ها، سپس رونوشت‌ها

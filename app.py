@@ -28,7 +28,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.6.2'
+VERSION = '4.6.3'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -151,7 +151,7 @@ CANCEL_STAGES = EDIT_STAGES
 CATEGORIES = [('main', 'خرید از دفتر مرکزی'), ('general', 'خرید در کارگاه')]  # عنوان‌ها از نسخه ۳.۰
 URGENCIES = [('normal', 'عادی'), ('emergency', 'اضطراری')]
 # رویدادهای جانبی گردش که درخواست را جابه‌جا نمی‌کنند (پیوست، ویرایش، پرداخت، اصلاح اعلام وصول، فاکتور رسمی)
-SIDE_ACTIONS = ('attach', 'edit', 'delatt', 'pay_done', 'grn_edit', 'official_inv', 'receipt_partial', 'receipt_full')
+SIDE_ACTIONS = ('attach', 'edit', 'delatt', 'pay_done', 'grn_edit', 'official_inv', 'receipt_partial', 'receipt_full', 'split')
 INV_KINDS = ('فاکتور', 'پیش‌فاکتور')
 ATT_KINDS = ['پیش‌فاکتور', 'فاکتور', 'عکس وصول', 'مشخصات فنی', 'نقشه / متره', 'رسید', 'صورت‌جلسه', 'عکس', 'سایر']
 DEFAULT_CANCEL_REASONS = 'نیاز نیست\nبودجه تأمین نیست\nتکراری است\nزمان‌بندی اجازه نمی‌دهد\nسایر'
@@ -2706,6 +2706,46 @@ def delivery_holder(c, P):
     return wh or P['requester_id']
 
 
+def split_to_support(c, u, P, hand, t, note=''):
+    """۴.۶.۳: اقلام ارجاعی به پشتیبانی دیگر در یک درخواست کالای تازه (همان مرحله، با سابقه گردش و پیوست‌ها)."""
+    src = one(c.execute('SELECT * FROM purchases WHERE id=?', (P['id'],)))
+    y = jyear()
+    new = {k: v for k, v in src.items() if k != 'id'}
+    for k in ('recv_by', 'recv_at', 'wh_by', 'wh_at', 'pay_req_at', 'pay_done_at', 'pay_done_by', 'docs_at', 'docs_by',
+              'official_inv', 'vat_docs', 'closed_at', 'disc_ok_by', 'disc_ok_at', 'settled_at', 'settled_by'):
+        if k in new:
+            new[k] = None
+    new.update(year=y, seq=c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM purchases WHERE year=?', (y,)).fetchone()[0],
+               number=next_code(c, P['project_id'], 'MR'), holder_id=t['id'], support_by=t['id'],
+               support_side='site' if t['label'] == 'پشتیبانی کارگاه' else 'hq', version=1, created_at=now(),
+               po_no=next_code(c, P['project_id'], 'PO') if src.get('po_no') else '', grn_no='', status='open')
+    ks = list(new)
+    nid = c.execute('INSERT INTO purchases(%s) VALUES(%s)' % (','.join(ks), ','.join('?' * len(ks))),
+                    tuple(new[k] for k in ks)).lastrowid
+    ids = [it['id'] for it in hand]
+    c.execute('UPDATE purchase_items SET purchase_id=? WHERE id IN (%s)' % ','.join('?' * len(ids)), (nid, *ids))
+    for pid_ in (P['id'], nid):  # شماره ردیف‌ها از نو
+        for k, (iid,) in enumerate(c.execute('SELECT id FROM purchase_items WHERE purchase_id=? ORDER BY row_no', (pid_,)).fetchall()):
+            c.execute('UPDATE purchase_items SET row_no=? WHERE id=?', (k + 1, iid))
+    acols = [r[1] for r in c.execute('PRAGMA table_info(attachments)') if r[1] not in ('id', 'doc_id')]
+    amap = {}
+    for a_ in rows(c.execute("SELECT * FROM attachments WHERE doc_type='purchase' AND doc_id=? AND deleted_at IS NULL", (P['id'],))):
+        amap[a_['id']] = c.execute('INSERT INTO attachments(doc_id,%s) VALUES(?,%s)' % (','.join(acols), ','.join('?' * len(acols))),
+                                   (nid, *[a_[k] for k in acols])).lastrowid
+    if src.get('chosen_att') in amap:
+        c.execute('UPDATE purchases SET chosen_att=? WHERE id=?', (amap[src['chosen_att']], nid))
+    fcols = [r[1] for r in c.execute('PRAGMA table_info(purchase_flow)') if r[1] not in ('id', 'purchase_id')]
+    c.execute('INSERT INTO purchase_flow(purchase_id,%s) SELECT ?,%s FROM purchase_flow WHERE purchase_id=? ORDER BY id'
+              % (','.join(fcols), ','.join(fcols)), (nid, P['id']))
+    titles = '، '.join(it['title'] for it in hand)
+    save_version(c, nid, u, 'انشعاب از %s' % src['number'])
+    pflow(c, nid, u, P['stage'], 'split', 'انشعاب از %s — اقلام ارجاعی به %s (%s): %s' % (src['number'], t['name'], t['label'], titles), note)
+    c.execute('UPDATE purchases SET version=version+1 WHERE id=?', (P['id'],))
+    save_version(c, P['id'], u, 'اقلام %s به درخواست %s منتقل شد' % (titles, new['number']))
+    pflow(c, P['id'], u, P['stage'], 'split', 'ارجاع اقلام %s به %s (%s) — درخواست %s' % (titles, t['name'], t['label'], new['number']), note)
+    return new['number']
+
+
 def after_delivery(c, P):
     """پس از اعلام وصول: خرید کارگاه (عمومی و مصرفی) پایان و بایگانی خودکار؛ خرید دفتر مرکزی به کنترل مدارک مالی."""
     return 'done' if site_path(c, P) else 'finance_settle'
@@ -2791,6 +2831,22 @@ def api_purchase_act(h, c, u, b, q, pid):
         need(c.execute("SELECT 1 FROM attachments WHERE doc_type='purchase' AND doc_id=? AND kind='پیش‌فاکتور' "
                        'AND deleted_at IS NULL', (P['id'],)).fetchone(), 'حداقل یک پیش‌فاکتور پیوست کنید', 400)
     elif a == 'purchased':  # اعلام نهایی پشتیبانی: مقدار، واحد و وضعیت خرید هر قلم
+        # ۴.۶.۳: اقلامی که وضعیتشان «ارجاع به پشتیبانی دفتر مرکزی / کارگاه» است جدا می‌شوند و با یک درخواست تازه
+        # (همان مرحله) نزد پشتیبانی دیگر می‌روند؛ بقیه اقلام همین‌جا خرید می‌شوند
+        hand = [it for it in its if remaining(it) > 0 and (posted.get(it['id']) or {}).get('status') == 'handover']
+        if hand:
+            t = handover_target(c, u, P)
+            need(t, 'ارجاع به پشتیبانی دیگر برای این درخواست ممکن نیست', 400)
+            for it in hand:
+                need(not it['bought_status'], '«%s» قبلاً بخشی خریداری شده و قابل ارجاع جداگانه نیست' % it['title'], 400)
+            if len(hand) == len([it for it in its if remaining(it) > 0]):  # همه اقلام: واگذاری کل درخواست
+                c.execute('UPDATE purchases SET holder_id=?, support_by=?, support_side=? WHERE id=?',
+                          (t['id'], t['id'], 'site' if t['label'] == 'پشتیبانی کارگاه' else 'hq', P['id']))
+                pflow(c, P['id'], u, P['stage'], 'handover', 'ارجاع همه اقلام به %s (%s)' % (t['name'], t['label']), note)
+                return {'ok': True}
+            num = split_to_support(c, u, P, hand, t, note)
+            notes.append('اقلام %s به %s ارجاع شد — درخواست %s' % ('، '.join(it['title'] for it in hand), t['label'], num))
+            its = [it for it in its if it not in hand]
         for it in its:
             if remaining(it) <= 0:
                 continue
