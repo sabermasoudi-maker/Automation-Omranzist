@@ -196,7 +196,7 @@ nav hr{border:none;border-top:1px solid var(--line);margin:8px 0}
 <div id="msg"></div>
 <script>
 // ---------------------------------------------------------------- ابزارها
-const PAGE_VERSION='4.7'; // باید با VERSION در app.py یکی باشد
+const PAGE_VERSION='4.7.1'; // باید با VERSION در app.py یکی باشد
 const $=s=>document.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fa=s=>String(s??'').replace(/\d/g,d=>'۰۱۲۳۴۵۶۷۸۹'[d]);
@@ -1099,7 +1099,8 @@ async function admin(){
    <div><label>مدیر پشتیبانی دفتر مرکزی (خرید)</label><select id="sSup">${uo(S.support_manager)}</select></div>
    <div><label>مدیر مالی دفتر مرکزی (پرداخت)</label><select id="sFin">${uo(S.finance_manager)}</select></div>
    <div><label>علت‌های لغو درخواست کالا (هر خط یک علت)</label><textarea id="sCx" style="min-height:110px">${esc(S.cancel_reasons||'')}</textarea></div>
-   <div><label>مهلت پیش‌فرض ارجاع (روز)</label><input id="sDd" value="${esc(S.default_due_days)}"></div></div>
+   <div><label>مهلت پیش‌فرض ارجاع (روز)</label><input id="sDd" value="${esc(S.default_due_days)}"></div>
+   <div><label>سقف حجم «پوشه من» برای هر کاربر (مگابایت)</label><input id="sPq" class="num" value="${esc(fa(S.personal_quota_mb||'200'))}"></div></div>
    <button class="btn" style="margin-top:8px" onclick="saveSet()">ذخیره تنظیمات</button></div>
   <div class="card"><h2>امنیت، اعلان‌ها و HTTPS</h2><div class="grid">
    <div><label>خروج خودکار پس از چند دقیقه بی‌فعالیتی (۰ = خاموش)</label><input id="sIdle" class="num" value="${esc(fa(S.idle_minutes??'5'))}"></div>
@@ -1109,22 +1110,34 @@ async function admin(){
    <button class="btn" style="margin-top:8px" onclick="saveSec()">ذخیره</button>
    <div class="mut" style="margin-top:10px;line-height:2.1">
     • <b>اعلان روی گوشی:</b> هر کاربر در گوشی خود روی 🔔 بالای صفحه می‌زند و اجازه اعلان می‌دهد. مرورگرها فقط روی اتصال امن (HTTPS) اعلان می‌دهند؛ بنابراین گواهی HTTPS لازم است.<br>
-    • <b>گواهی HTTPS:</b> فایل گواهی (cert.pem) و کلید (key.pem) را اینجا بارگذاری کنید؛ پس از اجرای 4-restart.bat، سامانه روی پورت HTTPS هم باز می‌شود. گواهی باید برای نام یا IP سرور صادر شده و روی گوشی‌ها معتبر باشد (مثلاً با ابزار mkcert ساخته و گواهی ریشه‌اش روی گوشی‌ها نصب شود، یا از دامنه و گواهی واقعی استفاده شود).<br>
+    • <b>گواهی HTTPS:</b> فایل گواهی (cert.pem) و کلید (key.pem) را اینجا بارگذاری کنید؛ بلافاصله و بدون راه‌اندازی مجدد، سامانه روی پورت HTTPS هم باز می‌شود (پورت HTTPS باید در فایروال باز باشد؛ 2-install-autostart-firewall.bat آن را باز می‌کند). گواهی باید برای نام یا IP سرور صادر شده و روی گوشی‌ها معتبر باشد (مثلاً با ابزار mkcert ساخته و گواهی ریشه‌اش روی گوشی‌ها نصب شود، یا از دامنه و گواهی واقعی استفاده شود).<br>
     • پس از خروج خودکار هم، تا وقتی صفحه سامانه در گوشی باز است (یا به صفحه اصلی اضافه شده)، فقط «تعداد کارهای جدید» اعلام می‌شود؛ جزئیات بدون ورود دیده نمی‌شود.<br>
     • اعلان وقتی مرورگر گوشی کاملاً بسته است، به سرویس پیام اینترنتی (Push) نیاز دارد که در این نسخه (بدون اینترنت) نیست.</div>
    <h2 style="margin-top:12px">گواهی HTTPS</h2><div class="row">
     <span class="tag ${d.https.cert?'ok':''}">گواهی: ${d.https.cert?'دارد':'ندارد'}</span><span class="tag ${d.https.key?'ok':''}">کلید: ${d.https.key?'دارد':'ندارد'}</span>
-    <span class="tag ${d.https.running?'ok':'warn'}">${d.https.running?'HTTPS فعال روی پورت '+fa(d.https.running):'HTTPS اکنون خاموش است'}</span></div>
+    <span class="tag ${d.https.running?'ok':'warn'}">${d.https.running?'HTTPS فعال روی پورت '+fa(d.https.running):'HTTPS اکنون خاموش است'}</span>
+    ${d.https.check&&d.https.check.at?`<span class="tag ${d.https.check.ok?'ok':'bad'}">آزمون خودکار: ${d.https.check.ok?'سالم':'ناسالم'} — ${jd(d.https.check.at,1)}</span>`:''}
+    ${d.https.until?`<span class="tag">اعتبار گواهی تا ${esc(d.https.until)}${d.https.names?' — '+esc(d.https.names.join('، ')):''}</span>`:''}</div>
+   ${d.https.error?`<div class="tag bad" style="margin-top:6px;white-space:normal">${esc(d.https.error)}</div>`:''}
    ${d.is_admin?`<div class="row" style="margin-top:8px"><div><label>گواهی (cert.pem)</label><input type="file" id="hC" accept=".pem,.crt,.cer"></div><button class="btn l sm" onclick="httpsUp('cert','hC')">بارگذاری گواهی</button>
     <div><label>کلید (key.pem)</label><input type="file" id="hK" accept=".pem,.key"></div><button class="btn l sm" onclick="httpsUp('key','hK')">بارگذاری کلید</button>
     ${d.https.cert||d.https.key?'<button class="btn bad sm" onclick="httpsDel()">حذف گواهی و کلید</button>':''}<button class="btn l sm" onclick="ntRevoke()">لغو اعلان همه دستگاه‌ها</button></div>`:'<div class="mut">بارگذاری گواهی فقط با مدیر سیستم است.</div>'}</div>
+  ${d.is_admin?'<div id="srvAdmin"></div>':''}
   <div id="lhAdmin"><div class="card mut">در حال بارگذاری سربرگ‌ها و امضاها…</div></div>
   ${d.is_admin?`<div class="card" style="border-color:var(--bad)"><h2>پاک کردن سوابق گردش اسناد</h2>
    <div class="mut" style="margin-bottom:8px">همه <b>مکاتبات</b> (${fa(d.workflow_counts.letters)} نامه) و همه <b>درخواست‌های کالا</b> (${fa(d.workflow_counts.purchases)} درخواست) با گردش، اقلام، پیوست‌ها، ارجاع‌ها و اعلام وصول‌هایشان پاک می‌شوند و شماره‌ها از نو شروع می‌شود. <b>کاربران، رمزها، پروژه‌ها و ارکان، سمت‌ها، تنظیمات، سربرگ‌ها، کلیشه‌های امضا و درخواست‌های مالی دست نمی‌خورند.</b> پیش از پاک کردن، نسخه کامل پایگاه داده و فایل‌های پیوست در پوشه «پشتیبان» (<bdi dir="ltr">data\\backups\\purge-تاریخ</bdi>) نگه داشته می‌شود. این کار برگشت‌پذیر نیست مگر با همان پشتیبان.</div>
    <div class="grid"><div><label>رمز عبور شما</label><input type="password" id="pgPw" autocomplete="off"></div><div><label>برای تأیید، کلمه «حذف» را بنویسید</label><input id="pgOk" autocomplete="off"></div></div>
    <div class="row" style="margin-top:10px"><button class="btn bad" onclick="purgeWf()" ${d.workflow_counts.letters+d.workflow_counts.purchases?'':'disabled'}>پاک کردن همه مکاتبات و درخواست‌های کالا</button>${d.workflow_counts.letters+d.workflow_counts.purchases?'':'<span class="mut">سندی برای پاک کردن نیست.</span>'}</div></div>`:''}
   <div class="card"><h2>پشتیبان‌گیری</h2><div class="mut">نسخه پشتیبان پایگاه داده هر روز خودکار در پوشه data\\backups ساخته می‌شود (۶۰ روز آخر نگه داشته می‌شود). آخرین‌ها: ${d.backups.map(esc).join('، ')||'—'}<br>برای نسخه بیرونی (شامل اسکن‌ها) فایل backup.bat را هفتگی اجرا کنید.</div></div>`;
-  lhAdmin()}
+  lhAdmin();if(d.is_admin)srvAdmin()}
+// ۴.۷.۱: وضعیت سرور و گزارش کار (data\logs\server.log) — فقط مدیر سیستم
+async function srvAdmin(){const r=await api('GET','/api/admin/server');const H=r.health||{};
+  const st=k=>!r.servers[k]?'<span class="tag">خاموش</span>':H[k]&&H[k].at?`<span class="tag ${H[k].ok?'ok':'bad'}">${H[k].ok?'سالم':'ناسالم'} — ${fa(H[k].ms)} میلی‌ثانیه — ${jd(H[k].at,1)}</span>${H[k].ok?'':' <span class="mut">'+esc(H[k].error)+'</span>'}`:'<span class="tag">در انتظار اولین آزمون</span>';
+  $('#srvAdmin').innerHTML=`<div class="card"><h2>وضعیت سرور</h2><div class="kv"><span>نسخه</span><b>${esc(r.version)} (پایتون ${esc(r.python)}${r.background?'، اجرای پس‌زمینه':''})</b><span>شروع به کار</span><b>${r.started?jd(r.started,1):'—'}</b>
+    <span>HTTP (پورت ${fa((r.servers.http||{}).port||'')})</span><b>${st('http')}</b><span>HTTPS${r.servers.https?' (پورت '+fa(r.servers.https.port)+')':''}</span><b>${st('https')}</b><span>رشته‌های فعال</span><b>${fa(r.threads)}</b></div>
+    <div class="mut" style="margin-top:6px">نگهبان داخلی هر ۳۰ ثانیه هر دو سرور را آزمایش می‌کند و اگر سه بار پشت‌سرهم پاسخ ندهند، خودکار دوباره راه‌اندازی می‌کند. همه پیام‌ها و خطاها در <span class="num">data\\logs\\server.log</span> ثبت می‌شود.</div>
+    <details style="margin-top:8px"><summary style="cursor:pointer;font-weight:bold">گزارش کار سرور (۳۰۰ خط آخر)</summary><pre style="direction:ltr;text-align:left;white-space:pre-wrap;font-size:11.5px;max-height:420px;overflow:auto;background:#f6f8fa;padding:8px;border-radius:6px">${esc(r.log||'—')}</pre>
+    <button class="btn l sm" onclick="srvAdmin()">تازه‌سازی</button></details></div>`}
 // ---------- مدیریت: سربرگ‌ها و کلیشه‌های امضا
 let LHA=null;
 async function lhAdmin(){
@@ -1170,12 +1183,12 @@ const purgeWf=()=>run(async()=>{if(!await ask('همه مکاتبات و درخو
 const roleEdit=(k,t,s,u)=>{$('#roK').value=k;$('#roT').value=t;$('#roS').value=s;$('#roU').value=u;$('#roT').focus()};
 const roleSave=()=>run(async()=>{await api('POST','/api/admin/roles',{key:val('roK'),title:val('roT'),superior:val('roS'),unit:val('roU')});flash('سمت ذخیره شد');M=await api('GET','/api/meta');route()});
 const roleDel=k=>run(async()=>{if(!await ask('این سمت حذف شود؟'))return;await api('POST','/api/admin/roles',{delete:k});flash('حذف شد');M=await api('GET','/api/meta');route()});
-const saveSet=()=>run(async()=>{await api('POST','/api/admin/settings',{company:val('sCo'),ceo_threshold:en(val('sTh')).replace(/[^\d]/g,''),ceo_user:val('sCeo'),office_approver:val('sOff'),warehouse_user:val('sWh'),support_manager:val('sSup'),finance_manager:val('sFin'),cancel_reasons:val('sCx'),default_due_days:en(val('sDd'))});flash('ذخیره شد');await reloadMeta()});
-const saveSec=()=>run(async()=>{await api('POST','/api/admin/settings',{idle_minutes:en(val('sIdle')).trim()||'0',notify_enabled:$('#sNt').checked?'1':'0',notify_interval:en(val('sNi')).trim(),https_port:en(val('sHp')).trim()});flash('ذخیره شد');await reloadMeta();notifyStart()});
+const saveSet=()=>run(async()=>{await api('POST','/api/admin/settings',{company:val('sCo'),ceo_threshold:en(val('sTh')).replace(/[^\d]/g,''),ceo_user:val('sCeo'),office_approver:val('sOff'),warehouse_user:val('sWh'),support_manager:val('sSup'),finance_manager:val('sFin'),cancel_reasons:val('sCx'),default_due_days:en(val('sDd')),personal_quota_mb:en(val('sPq')).trim()||'200'});flash('ذخیره شد');await reloadMeta()});
+const saveSec=()=>run(async()=>{const r=await api('POST','/api/admin/settings',{idle_minutes:en(val('sIdle')).trim()||'0',notify_enabled:$('#sNt').checked?'1':'0',notify_interval:en(val('sNi')).trim(),https_port:en(val('sHp')).trim()});flash(r.msg||'ذخیره شد');await reloadMeta();notifyStart();if(r.msg)admin()});
 const delUser=(id,name)=>run(async()=>{if(!await ask('کاربر «'+name+'» حذف می‌شود و از همه سمت‌ها برداشته می‌شود.','بله، حذف شود'))return;const r=await api('POST',`/api/admin/users/${id}/delete`,{});flash(r.kept_history?'حساب بسته و از فهرست‌ها حذف شد؛ نامش در سوابق می‌ماند':'کاربر حذف شد');await reloadMeta();admin()});
 const delProj=(id,name)=>run(async()=>{if(!await ask('پروژه «'+name+'» حذف می‌شود.','بله، حذف شود'))return;const r=await api('POST',`/api/admin/projects/${id}/delete`,{});flash(r.kept_history?'پروژه از فهرست‌ها حذف شد؛ اسنادش در بایگانی می‌ماند':'پروژه حذف شد');await reloadMeta();admin()});
 const ntRevoke=uid=>run(async()=>{if(!await ask(uid?'اعلان همه دستگاه‌های این کاربر لغو می‌شود.':'اعلان همه دستگاه‌های همه کاربران لغو می‌شود.'))return;await api('POST','/api/admin/notify/revoke',{user_id:uid||''});flash('لغو شد');admin()});
-const httpsUp=(w,inp)=>run(async()=>{await upImg('/api/admin/https/'+w,inp);flash('بارگذاری شد؛ برای فعال شدن، 4-restart.bat را اجرا کنید');admin()});
+const httpsUp=(w,inp)=>run(async()=>{const f=$('#'+inp);if(!f||!f.files.length)throw new Error('ابتدا فایل را انتخاب کنید');const r=await api('POST','/api/admin/https/'+w,undefined,{name:f.files[0].name,data:f.files[0]});flash(r.msg||'بارگذاری شد');admin()});
 const httpsDel=()=>run(async()=>{if(!await ask('گواهی و کلید HTTPS حذف می‌شود.'))return;await api('POST','/api/admin/https/delete',{});admin()});
 
 // ---------------------------------------------------------------- راهنما

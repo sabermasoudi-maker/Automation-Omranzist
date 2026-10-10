@@ -792,3 +792,56 @@ class TPersonal(Base):
         with self.assertRaises(app.ApiError):
             self.call('POST', '/api/personal/%d/attach' % f2['id'], 'mk-zali', {'doc_type': 'purchase', 'doc_id': pid})
         self.assertEqual(len(self.call('GET', '/api/personal', 'mk-zali')['items']), 1)  # فایل در پوشه می‌ماند
+
+
+class TServerRobust(Base):
+    """۴.۷.۱: یک اتصال نیمه‌کاره نباید HTTPS را برای همه از کار بیندازد؛ اتصال بی‌کار مهلت دارد؛ گزارش کار در فایل."""
+    def test_idle_tls_connection_does_not_block_others(self):
+        import socket, ssl, subprocess, threading, urllib.request, time
+        cert, key = os.path.join(self.tmp, 'c.pem'), os.path.join(self.tmp, 'k.pem')
+        try:
+            subprocess.run(['openssl', 'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', key, '-out', cert,
+                            '-days', '2', '-subj', '/CN=localhost'], check=True, capture_output=True, timeout=60)
+        except Exception:
+            self.skipTest('openssl در دسترس نیست')
+        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        ctx.load_cert_chain(cert, key)
+        srv = app.TlsSrv(('127.0.0.1', 0), app.H)
+        srv.ctx = ctx
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        port = srv.server_address[1]
+        idle = [socket.create_connection(('127.0.0.1', port)) for _ in range(5)]  # بدون دست‌دهی TLS
+        try:
+            cl = ssl.create_default_context(); cl.check_hostname = False; cl.verify_mode = ssl.CERT_NONE
+            t0 = time.time()
+            r = urllib.request.urlopen('https://127.0.0.1:%d/api/ping' % port, context=cl, timeout=5)
+            self.assertEqual((r.status, r.read()), (200, b'ok'))
+            self.assertLess(time.time() - t0, 3)
+        finally:
+            for s in idle:
+                s.close()
+            srv.shutdown(); srv.server_close()
+
+    def test_timeouts_and_settings(self):
+        self.assertEqual(app.H.timeout, 60)
+        self.assertEqual(app.TlsSrv.HANDSHAKE_TIMEOUT, 15)
+        self.assertGreaterEqual(app.Srv.request_queue_size, 64)
+        self.call('POST', '/api/admin/settings', 'admin', {'personal_quota_mb': '300'})
+        self.assertEqual(app.personal_quota(self.c), 300 * 1024 * 1024)
+        for bad in ({'personal_quota_mb': '0'}, {'https_port': str(app.PORT)}, {'https_port': '70000'}):
+            with self.assertRaises(app.ApiError, msg=str(bad)):
+                self.call('POST', '/api/admin/settings', 'admin', bad)
+
+    def test_log_file(self):
+        p = os.path.join(self.tmp, 'logs', 'server.log')
+        os.makedirs(os.path.dirname(p))
+        lf = app.LogFile(p)
+        lf.MAX = 200
+        for i in range(30):
+            lf.write('خط آزمایشی %d\n' % i)
+        lf.write('بدون پایان خط')
+        with open(p, encoding='utf-8') as f:
+            last = f.read().splitlines()
+        self.assertTrue(last and last[-1].endswith('خط آزمایشی 29'))
+        self.assertRegex(last[-1], r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d  ')
+        self.assertTrue(os.path.exists(p + '.1'))  # چرخش فایل

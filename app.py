@@ -4,7 +4,7 @@
 فقط با پایتون ۳.۹ به بالا اجرا می‌شود و به هیچ کتابخانه بیرونی یا اینترنت نیاز ندارد.
 اجرا:  python app.py      سپس در مرورگر:  http://<IP سرور>:8080
 """
-import os, sys, json, sqlite3, hashlib, secrets, re, shutil, threading, csv, io, time, ssl, base64
+import os, sys, json, sqlite3, hashlib, secrets, re, shutil, threading, csv, io, time, ssl, base64, socket, traceback
 import mimetypes, urllib.parse, datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http import cookies
@@ -16,6 +16,8 @@ BACK = os.path.join(DATA, 'backups')
 DB = os.path.join(DATA, 'oa.db')
 PORT_FILE = os.path.join(BASE, 'port.txt')
 HTTPS_DIR = os.path.join(DATA, 'https')  # گواهی HTTPS (cert.pem و key.pem) که مدیر سیستم بارگذاری می‌کند
+LOG_DIR = os.path.join(DATA, 'logs')  # ۴.۷.۱: گزارش کار سرور (در اجرای پس‌زمینه با pythonw پنجره‌ای نیست)
+HTTPS_PORT_FILE = os.path.join(BASE, 'https_port.txt')  # برای باز کردن پورت HTTPS در فایروال توسط نصب‌کننده
 
 
 def read_port():
@@ -28,7 +30,7 @@ def read_port():
 PORT = read_port()
 CANDIDATE_PORTS = [8080, 8090, 8888, 9090, 5080, 7080, 18080]
 MAX_UPLOAD = 60 * 1024 * 1024
-VERSION = '4.7'
+VERSION = '4.7.1'
 
 FA2EN = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 AR2FA = str.maketrans('يكة', 'یکه')  # ی و ک عربی (صفحه‌کلید عربی) در جستجو
@@ -3639,10 +3641,16 @@ def api_admin_roles(h, c, u, b, q):
 @route('POST', '/api/admin/settings')
 def api_admin_settings(h, c, u, b, q):
     need(is_mgr(u))
-    for k in ('idle_minutes', 'notify_interval', 'https_port'):
+    for k in ('idle_minutes', 'notify_interval', 'https_port', 'personal_quota_mb'):
         if k in b:
             need(str(b[k]).isdigit(), 'عدد نامعتبر در تنظیمات', 400)
             need(k != 'notify_interval' or int(b[k]) >= 15, 'فاصله بررسی اعلان حداقل ۱۵ ثانیه است', 400)
+    if 'personal_quota_mb' in b:  # ۴.۷.۱: سقف حجم «پوشه من» هر کاربر
+        need(1 <= int(b['personal_quota_mb']) <= 100000, 'سقف حجم پوشه من باید بین ۱ و ۱۰۰٬۰۰۰ مگابایت باشد', 400)
+    if 'https_port' in b:
+        hp = int(b['https_port'])
+        need(1 <= hp <= 65535 and hp != PORT, 'پورت HTTPS باید عددی بین ۱ و ۶۵۵۳۵ و غیر از پورت اصلی (%d) باشد' % PORT, 400)
+    hp_changed = 'https_port' in b and str(b['https_port']) != str(settings(c).get('https_port') or '8443')
     for k in HQ_SETTING_USERS:
         if b.get(k):
             need_not_admin(c, b[k], HQ_ROLES.get(k) or 'سمت گردش کار')
@@ -3650,6 +3658,8 @@ def api_admin_settings(h, c, u, b, q):
         if k in b:
             c.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', (k, str(b[k]).replace(',', '')
                       if k == 'ceo_threshold' else str(b[k])))
+    if hp_changed and HTTPS_CTX[0]:  # HTTPS روی پورت جدید، بدون راه‌اندازی مجدد
+        return {'ok': True, 'msg': https_apply(int(b['https_port']))}
     return {'ok': True}
 
 
@@ -3811,7 +3821,8 @@ def https_files():
 def https_status(c):
     cert, key = https_files()
     info = {'cert': os.path.exists(cert), 'key': os.path.exists(key), 'port': int(settings(c).get('https_port') or 8443),
-            'running': HTTPS_RUNNING[0], 'file': os.path.basename(cert) if os.path.exists(cert) else ''}
+            'running': HTTPS_RUNNING[0], 'file': os.path.basename(cert) if os.path.exists(cert) else '',
+            'error': HTTPS_ERR[0], 'check': HEALTH.get('https', {})}
     if info['cert']:  # تاریخ انقضا و نام دامنه گواهی (برای نمایش در مدیریت سامانه)
         try:
             d = ssl._ssl._test_decode_cert(cert)
@@ -3824,6 +3835,7 @@ def https_status(c):
 
 
 HTTPS_RUNNING = [0]  # پورت HTTPS در حال اجرا (۰ = خاموش)
+HTTPS_ERR = ['']  # آخرین خطای راه‌اندازی HTTPS (برای نمایش در مدیریت سامانه)
 HTTPS_CTX = [None, 0]  # [زمینه SSL در حال اجرا، زمان آخرین بارگذاری گواهی]
 
 
@@ -3835,12 +3847,11 @@ def https_reload():
     cert, key = https_files()
     try:
         mt = max(os.path.getmtime(cert), os.path.getmtime(key))
-        if mt > HTTPS_CTX[1]:
-            ctx.load_cert_chain(cert, key)
-            HTTPS_CTX[1] = mt
-            print('گواهی HTTPS دوباره بارگذاری شد')
-    except (OSError, ssl.SSLError) as e:
+    except OSError as e:
         print('بارگذاری دوباره گواهی HTTPS ناموفق بود:', e)
+        return
+    if mt > HTTPS_CTX[1]:
+        print('گواهی HTTPS تمدید شده است؛ ' + https_apply())
 
 
 @route('POST', r'/api/admin/https/(cert|key)')
@@ -3850,17 +3861,22 @@ def api_admin_https_upload(h, c, u, b, q, which):
     raw = h.raw_body
     need(raw and b'-----BEGIN' in raw, 'فایل باید PEM باشد (با «-----BEGIN» شروع شود)', 400)
     os.makedirs(HTTPS_DIR, exist_ok=True)
-    cert, key = https_files()
+    # ۴.۷.۱: همیشه در cert.pem و key.pem (قبلاً اگر فایل win-acme بود، روی همان نوشته می‌شد)
+    cert, key = os.path.join(HTTPS_DIR, 'cert.pem'), os.path.join(HTTPS_DIR, 'key.pem')
     with open(cert if which == 'cert' else key, 'wb') as f:
         f.write(raw)
+    log(c, 'admin', 0, u['id'], 'بارگذاری ' + ('گواهی' if which == 'cert' else 'کلید') + ' HTTPS')
+    msg = ''
     if os.path.exists(cert) and os.path.exists(key):
         try:
             ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(cert, key)
         except (ssl.SSLError, OSError) as e:
-            raise ApiError('گواهی و کلید با هم نمی‌خوانند یا نامعتبرند: %s' % e)
-    log(c, 'admin', 0, u['id'], 'بارگذاری ' + ('گواهی' if which == 'cert' else 'کلید') + ' HTTPS')
-    https_reload()
-    return {'ok': True, 'status': https_status(c)}
+            msg = 'گواهی و کلید با هم نمی‌خوانند یا نامعتبرند (%s)؛ اگر فقط یکی را بارگذاری کرده‌اید، دیگری را هم بارگذاری کنید' % e
+        else:
+            msg = https_apply()  # بدون راه‌اندازی مجدد، HTTPS روشن یا گواهی جدید به کار گرفته می‌شود
+    else:
+        msg = 'برای روشن شدن HTTPS، %s را هم بارگذاری کنید' % ('کلید (key.pem)' if which == 'cert' else 'گواهی (cert.pem)')
+    return {'ok': True, 'status': https_status(c), 'msg': msg}
 
 
 @route('POST', '/api/admin/https/delete')
@@ -3869,6 +3885,7 @@ def api_admin_https_delete(h, c, u, b, q):
     for p in https_files():
         if os.path.exists(p):
             os.remove(p)
+    https_apply()  # ۴.۷.۱: HTTPS خاموش می‌شود
     return {'ok': True}
 
 
@@ -4324,6 +4341,8 @@ self.addEventListener('notificationclick', e => {
 # ------------------------------------------------------------------ سرور HTTP
 class H(BaseHTTPRequestHandler):
     server_version = 'OmranZistOA/' + VERSION
+    # ۴.۷.۱: هر اتصال حداکثر ۶۰ ثانیه بی‌کار می‌ماند؛ قبلاً اتصال قطع‌شده (مثلاً گوشی بی‌آنتن) رشته سرور را برای همیشه نگه می‌داشت
+    timeout = 60
 
     def log_message(self, fmt, *a):
         pass
@@ -4391,6 +4410,8 @@ class H(BaseHTTPRequestHandler):
                 with open(lp, 'rb') as f:
                     return self.send(200, f.read(), 'image/png')
             return self.send(404, b'', 'image/png')
+        if path == '/api/ping':  # ۴.۷.۱: بررسی سلامت سرور توسط نگهبان (بدون پایگاه داده)
+            return self.send(200, b'ok', 'text/plain')
         if method == 'GET' and path == '/sw.js':  # سرویس‌ورکر اعلان‌ها (باید از ریشه سایت بیاید)
             return self.send(200, SW_JS, 'text/javascript; charset=utf-8', {'Service-Worker-Allowed': '/'})
         if method == 'GET' and path == '/icon.png':
@@ -4453,8 +4474,8 @@ def running_version(port):
     """اگر همین سامانه از قبل روی پورت اجرا شده باشد، نام نسخه‌اش را برمی‌گرداند."""
     import http.client
     try:
-        cn = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
-        cn.request('GET', '/api/counts')
+        cn = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        cn.request('GET', '/api/ping')
         sv = cn.getresponse().getheader('Server') or ''
         cn.close()
         return sv.split()[0] if sv.startswith('OmranZistOA') else ''
@@ -4462,12 +4483,274 @@ def running_version(port):
         return ''
 
 
-def main():
+# ---------- ۴.۷.۱: گزارش کار سرور در data\logs\server.log
+# در اجرای پس‌زمینه (pythonw، زمان‌بند ویندوز) پنجره‌ای نیست و پیام‌ها و خطاها گم می‌شدند؛ اکنون در فایل ثبت می‌شوند.
+class LogFile:
+    """جایگزین stdout/stderr: هر خط با زمان در فایل گزارش (با چرخش ۲ مگابایتی) و در صورت وجود، در پنجره."""
+    MAX = 2 * 1024 * 1024
+
+    def __init__(self, path, echo=None):
+        self.path, self.echo, self.buf, self.lock = path, echo, '', threading.Lock()
+
+    def write(self, txt):
+        if self.echo is not None:
+            try:
+                self.echo.write(txt)
+                self.echo.flush()
+            except Exception:
+                pass
+        with self.lock:
+            self.buf += txt
+            if '\n' not in self.buf:
+                return len(txt)
+            *lines, self.buf = self.buf.split('\n')
+            try:
+                if os.path.exists(self.path) and os.path.getsize(self.path) > self.MAX:
+                    for i in (2, 1):
+                        if os.path.exists('%s.%d' % (self.path, i)):
+                            os.replace('%s.%d' % (self.path, i), '%s.%d' % (self.path, i + 1))
+                    os.replace(self.path, self.path + '.1')
+                with open(self.path, 'a', encoding='utf-8') as f:
+                    ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    for ln in lines:
+                        if ln.strip():
+                            f.write('%s  %s\n' % (ts, ln))
+            except Exception:
+                pass
+        return len(txt)
+
+    def flush(self):
+        pass
+
+
+def log_setup():
+    os.makedirs(LOG_DIR, exist_ok=True)
+    path = os.path.join(LOG_DIR, 'server.log')
+    out, err = sys.stdout, sys.stderr  # در pythonw هر دو None هستند
+    sys.stdout = LogFile(path, out)
+    sys.stderr = LogFile(path, err)
+
+
+def disable_quickedit():
+    """در پنجره cmd ویندوز، کلیک روی پنجره (QuickEdit) چاپ پیام را متوقف و برنامه را معلق می‌کند؛ خاموشش می‌کنیم."""
+    if os.name != 'nt':
+        return
     try:
-        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.GetStdHandle(-10)
+        mode = ctypes.c_uint32()
+        if k.GetConsoleMode(h, ctypes.byref(mode)):
+            k.SetConsoleMode(h, (mode.value & ~0x0040) | 0x0080)  # بدون ENABLE_QUICK_EDIT_MODE
     except Exception:
         pass
-    print('سامانه اتوماسیون عمران زیست — نسخه %s (با انتخاب خودکار پورت)' % VERSION)
+
+
+# ---------- ۴.۷.۱: سرورهای HTTP و HTTPS مقاوم و نگهبان سلامت
+NET_ERRORS = (ConnectionError, TimeoutError, socket.timeout, ssl.SSLError, BrokenPipeError)
+
+
+class Srv(ThreadingHTTPServer):
+    """سرور چندرشته‌ای با صف اتصال بزرگ‌تر (۶۴ به‌جای ۵) برای هجوم هم‌زمان گوشی‌ها.
+    اجرای دوباره روی همان پورت را بررسی running_version در شروع برنامه جلوگیری می‌کند."""
+    daemon_threads = True
+    request_queue_size = 64
+
+    def server_bind(self):
+        import socketserver
+        socketserver.TCPServer.server_bind(self)  # بدون جستجوی کند نام رایانه (getfqdn) در HTTPServer
+        self.server_name, self.server_port = 'localhost', self.server_address[1]
+
+    def handle_error(self, request, client_address):
+        e = sys.exc_info()[1]
+        if isinstance(e, NET_ERRORS) or (isinstance(e, OSError) and getattr(e, 'errno', None) in (10053, 10054, 32, 104)):
+            return  # قطع اتصال یا تمام شدن مهلت از سوی کاربر؛ عادی است
+        print('خطا در رسیدگی به اتصال %s: %r' % (client_address[0] if client_address else '', e))
+        traceback.print_exc()
+
+
+class TlsSrv(Srv):
+    """HTTPS: پذیرش اتصال ساده و دست‌دهی TLS در رشته همان اتصال با مهلت ۱۵ ثانیه.
+    قبلاً دست‌دهی در حلقه پذیرش انجام می‌شد: یک اتصال نیمه‌کاره (گوشی‌ای که وسط کار آنتن نداشت، یا مرورگری که اتصال
+    از پیش باز می‌کند) کل HTTPS را برای همه کاربران تا راه‌اندازی مجدد از کار می‌انداخت."""
+    ctx = None
+    HANDSHAKE_TIMEOUT = 15
+
+    def process_request_thread(self, request, client_address):
+        try:
+            request.settimeout(self.HANDSHAKE_TIMEOUT)
+            request = self.ctx.wrap_socket(request, server_side=True)
+        except Exception:
+            self.shutdown_request(request)
+            return
+        super().process_request_thread(request, client_address)
+
+
+SERVERS = {}  # نوع ('http' یا 'https') ← {'srv', 'port', 'thread', 'started'}
+SRV_LOCK = threading.RLock()
+HEALTH = {}  # نتیجه آخرین بررسی سلامت هر سرور (برای مدیریت سامانه)
+STARTED_AT = [None]
+
+
+def serve(kind, port, ctx=None):
+    """راه‌اندازی یک سرور در رشته جداگانه؛ خطای bind به فراخواننده می‌رسد."""
+    srv = (TlsSrv if kind == 'https' else Srv)(('0.0.0.0', port), H)
+    if ctx:
+        srv.ctx = ctx
+    t = threading.Thread(target=srv.serve_forever, kwargs={'poll_interval': 0.5}, daemon=True, name='srv-' + kind)
+    t.start()
+    with SRV_LOCK:
+        SERVERS[kind] = {'srv': srv, 'port': port, 'thread': t, 'started': time.time()}
+    return srv
+
+
+def stop(kind):
+    with SRV_LOCK:
+        s_ = SERVERS.pop(kind, None)
+    if not s_:
+        return
+    t = threading.Thread(target=s_['srv'].shutdown, daemon=True)  # اگر حلقه گیر کرده باشد، منتظرش نمی‌مانیم
+    t.start()
+    t.join(5)
+    try:
+        s_['srv'].server_close()
+    except Exception:
+        pass
+
+
+def https_apply(port=None):
+    """روشن کردن یا راه‌اندازی دوباره HTTPS با گواهی و پورت فعلی (هنگام شروع، بارگذاری گواهی یا تغییر پورت)."""
+    with SRV_LOCK:
+        cert, key = https_files()
+        if not (os.path.exists(cert) and os.path.exists(key)):
+            stop('https')
+            HTTPS_RUNNING[0], HTTPS_CTX[0], HTTPS_ERR[0] = 0, None, ''
+            return 'گواهی و کلید HTTPS بارگذاری نشده است'
+        if not port:
+            c = db()
+            port = int(settings(c).get('https_port') or 8443)
+            c.close()
+        try:
+            ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            ctx.load_cert_chain(cert, key)
+        except (OSError, ssl.SSLError) as e:
+            HTTPS_ERR[0] = 'گواهی یا کلید نامعتبر است: %s' % e
+            print('HTTPS: ' + HTTPS_ERR[0])
+            return HTTPS_ERR[0]
+        cur = SERVERS.get('https')
+        if cur and cur['port'] == port and cur['thread'].is_alive():  # همان پورت: فقط گواهی جدید
+            cur['srv'].ctx = ctx
+            HTTPS_CTX[0], HTTPS_CTX[1], HTTPS_ERR[0] = ctx, max(os.path.getmtime(cert), os.path.getmtime(key)), ''
+            print('HTTPS: گواهی جدید به کار گرفته شد')
+            return 'گواهی جدید روی HTTPS (پورت %s) به کار گرفته شد' % fa_num(str(port))
+        stop('https')
+        HTTPS_RUNNING[0] = 0
+        for i in range(5):
+            try:
+                serve('https', port, ctx)
+                break
+            except OSError as e:
+                HTTPS_ERR[0] = 'پورت %d برای HTTPS قابل استفاده نیست (%s)؛ پورت دیگری در تنظیمات انتخاب کنید' % (port, e.strerror or e)
+                time.sleep(1)
+        else:
+            print('HTTPS: ' + HTTPS_ERR[0])
+            return HTTPS_ERR[0]
+        HTTPS_RUNNING[0], HTTPS_ERR[0] = port, ''
+        HTTPS_CTX[0], HTTPS_CTX[1] = ctx, max(os.path.getmtime(cert), os.path.getmtime(key))
+        try:
+            with open(HTTPS_PORT_FILE, 'w') as f:
+                f.write(str(port))
+        except OSError:
+            pass
+        print('HTTPS روی پورت %d فعال است  —  آدرس برای گوشی: https://<نام یا IP این کامپیوتر>:%d' % (port, port))
+        return 'HTTPS روی پورت %s روشن شد' % fa_num(str(port))
+
+
+def self_check(kind, port):
+    """درخواست آزمایشی به خود سرور (همان مسیری که کاربر می‌رود)؛ خطا یا عدم پاسخ در ۱۰ ثانیه = ناسالم."""
+    import http.client
+    t0 = time.time()
+    try:
+        if kind == 'https':
+            ctx = ssl.create_default_context()
+            ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+            cn = http.client.HTTPSConnection('127.0.0.1', port, timeout=10, context=ctx)
+        else:
+            cn = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+        cn.request('GET', '/api/ping')
+        ok = cn.getresponse().status == 200
+        cn.close()
+        err = '' if ok else 'پاسخ نامعتبر'
+    except Exception as e:
+        ok, err = False, '%s: %s' % (type(e).__name__, e)
+    HEALTH[kind] = {'ok': ok, 'at': now(), 'ms': int((time.time() - t0) * 1000), 'error': err}
+    return ok
+
+
+def watchdog():
+    """نگهبان: هر ۳۰ ثانیه هر دو سرور را آزمایش می‌کند؛ پس از ۳ خطای پشت‌سرهم همان سرور دوباره راه‌اندازی می‌شود.
+    اگر سرور اصلی (HTTP) هم راه نیفتد، برنامه با خطا بسته می‌شود تا زمان‌بند ویندوز آن را دوباره اجرا کند."""
+    fails, beat = {'http': 0, 'https': 0}, 0
+    while True:
+        time.sleep(30)
+        beat += 1
+        for kind in ('http', 'https'):
+            with SRV_LOCK:
+                s_ = SERVERS.get(kind)
+            if not s_:
+                continue
+            alive = s_['thread'].is_alive()
+            if alive and self_check(kind, s_['port']):
+                fails[kind] = 0
+                continue
+            fails[kind] += 1
+            print('نگهبان: سرور %s روی پورت %d پاسخ نداد (%d از ۳) — %s' % (
+                kind.upper(), s_['port'], fails[kind], 'رشته متوقف شده' if not alive else HEALTH.get(kind, {}).get('error', '')))
+            if fails[kind] < 3:
+                continue
+            fails[kind] = 0
+            print('نگهبان: راه‌اندازی دوباره سرور %s' % kind.upper())
+            if kind == 'https':
+                stop('https')
+                https_apply()
+                continue
+            stop('http')
+            for i in range(10):
+                try:
+                    serve('http', s_['port'])
+                    break
+                except OSError as e:
+                    print('نگهبان: پورت %d آزاد نشد (%s)' % (s_['port'], e))
+                    time.sleep(3)
+            else:
+                print('نگهبان: سرور HTTP راه نیفتاد؛ برنامه بسته می‌شود تا زمان‌بند ویندوز دوباره اجرایش کند')
+                os._exit(3)
+        if beat % 120 == 0:  # هر ساعت یک خط وضعیت
+            print('وضعیت: %d رشته فعال، HTTP %s، HTTPS %s' % (
+                threading.active_count(), 'سالم' if HEALTH.get('http', {}).get('ok') else '؟',
+                ('سالم' if HEALTH.get('https', {}).get('ok') else 'ناسالم') if SERVERS.get('https') else 'خاموش'))
+
+
+@route('GET', '/api/admin/server')
+def api_admin_server(h, c, u, b, q):
+    """وضعیت سرور و آخرین خطوط گزارش کار (فقط مدیر سیستم)."""
+    need_admin(u)
+    lines = []
+    try:
+        with open(os.path.join(LOG_DIR, 'server.log'), encoding='utf-8', errors='replace') as f:
+            lines = f.readlines()[-300:]
+    except OSError:
+        pass
+    return {'version': VERSION, 'started': STARTED_AT[0], 'threads': threading.active_count(), 'health': HEALTH,
+            'servers': {k: {'port': v['port'], 'alive': v['thread'].is_alive()} for k, v in list(SERVERS.items())},
+            'https': https_status(c), 'log': ''.join(lines), 'python': sys.version.split()[0],
+            'background': os.path.basename(sys.executable).lower().startswith('pythonw')}
+
+
+def main():
+    log_setup()
+    disable_quickedit()
+    print('سامانه اتوماسیون عمران زیست — نسخه %s (پایتون %s)' % (VERSION, sys.version.split()[0]))
     init_db()
     if '--reset-admin' in sys.argv:
         c = db(); hh, ss = hash_pw('1234')
@@ -4480,50 +4763,49 @@ def main():
         print('برای اجرای نسخه جدید، اول آن را متوقف کنید: فایل 4-restart.bat را با Run as administrator اجرا کنید.')
         return
     threading.Thread(target=backup_loop, daemon=True).start()
-    srv, port = None, None
-    for p in [PORT] + [x for x in CANDIDATE_PORTS if x != PORT]:
-        try:
-            srv = ThreadingHTTPServer(('0.0.0.0', p), H); port = p; break
-        except OSError as e:
-            print('پورت %d قابل استفاده نیست (%s)؛ پورت بعدی امتحان می‌شود...' % (p, e.strerror or e))
-    if not srv:
-        print('هیچ‌کدام از پورت‌های %s آزاد نبود. یک عدد پورت آزاد را در فایل port.txt بنویسید.' % CANDIDATE_PORTS)
-        return
-    if port != PORT or not os.path.exists(PORT_FILE):
+    port = None
+    if os.path.exists(PORT_FILE):
+        # پورت ثابت است (کاربران همین نشانی را دارند): اگر برنامه قبلی هنوز در حال بسته شدن است، صبر می‌کنیم
+        for i in range(20):
+            try:
+                serve('http', PORT); port = PORT; break
+            except OSError as e:
+                print('پورت %d هنوز آزاد نیست (%s)؛ دوباره امتحان می‌شود...' % (PORT, e.strerror or e))
+                time.sleep(3)
+        if not port:
+            print('پورت %d آزاد نشد. اگر برنامه دیگری از این پورت استفاده می‌کند، عدد پورت را در port.txt عوض کنید.' % PORT)
+            sys.exit(2)
+    else:  # اجرای اول: اولین پورت آزاد
+        for p in [PORT] + [x for x in CANDIDATE_PORTS if x != PORT]:
+            try:
+                serve('http', p); port = p; break
+            except OSError as e:
+                print('پورت %d قابل استفاده نیست (%s)؛ پورت بعدی امتحان می‌شود...' % (p, e.strerror or e))
+        if not port:
+            print('هیچ‌کدام از پورت‌های %s آزاد نبود. یک عدد پورت آزاد را در فایل port.txt بنویسید.' % CANDIDATE_PORTS)
+            sys.exit(2)
         with open(PORT_FILE, 'w') as f:
             f.write(str(port))
+    STARTED_AT[0] = now()
     print('سامانه اتوماسیون اداری عمران زیست — نسخه %s' % VERSION)
     print('در حال اجرا روی پورت %d  —  آدرس در مرورگر: http://<IP این کامپیوتر>:%d' % (port, port))
     print('این پورت در فایل port.txt ذخیره شد و دفعات بعد هم همین استفاده می‌شود.')
-    start_https()
-    print('برای توقف، این پنجره را ببندید.')
-    srv.serve_forever()
+    https_apply()
 
-
-def start_https():
-    """اگر مدیر سیستم گواهی HTTPS بارگذاری کرده باشد، سامانه روی پورت HTTPS هم اجرا می‌شود (برای اعلان روی گوشی)."""
-    cert, key = https_files()
-    if not (os.path.exists(cert) and os.path.exists(key)):
-        return
-    c = db(); port = int(settings(c).get('https_port') or 8443); c.close()
-    try:
-        ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-        ctx.load_cert_chain(cert, key)
-        srv = ThreadingHTTPServer(('0.0.0.0', port), H)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-    except (OSError, ssl.SSLError) as e:
-        print('HTTPS راه‌اندازی نشد (%s)' % e)
-        return
-    HTTPS_RUNNING[0] = port
-    HTTPS_CTX[0], HTTPS_CTX[1] = ctx, max(os.path.getmtime(cert), os.path.getmtime(key))
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-
-    def watch():  # تمدید خودکار گواهی (مثلاً win-acme هر ۶۰ روز)
+    def cert_watch():  # تمدید خودکار گواهی (مثلاً win-acme هر ۶۰ روز)
         while True:
             time.sleep(600)
-            https_reload()
-    threading.Thread(target=watch, daemon=True).start()
-    print('HTTPS هم روی پورت %d فعال است  —  آدرس برای گوشی: https://<نام یا IP این کامپیوتر>:%d' % (port, port))
+            try:
+                if HTTPS_CTX[0]:
+                    https_reload()
+            except Exception as e:
+                print('بررسی تمدید گواهی ناموفق بود:', e)
+    threading.Thread(target=cert_watch, daemon=True).start()
+    print('برای توقف، این پنجره را ببندید.')
+    try:
+        watchdog()
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == '__main__':
