@@ -170,15 +170,53 @@ class T06to10Receipt(Base):
             self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 11, 5, s1='ok'))
         self.assertEqual(e.exception.code, 400)
 
-    def test_07e_receiver_resolves_warehouse_shortage(self):
+    def test_07e_receiver_disputes_until_agreement(self):
+        """۴.۶.۲: انبار ۹ عدد (کسری) تحویل می‌دهد، تحویل‌گیرنده ۸ عدد می‌شمرد؛ نوبت به انبار برمی‌گردد تا به عدد واحد برسند."""
         pid = self.to_delivery()
-        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 8, 5, s1='short', n1='کم بود'))
-        d = self.get(pid, 'mk-zali'); self.assertEqual(d['receipts'][0]['lines'][0]['wh_status'], 'short')
-        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='ok'))  # کالا را کامل تحویل گرفت
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 9, 5, s1='short', s2='ok'))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 8, 5, s1='short', s2='ok', n1='۸ عدد گرفتم'))
         d = self.get(pid)
-        self.assertEqual((d['doc']['stage'], d['receipts'][0]['status']), ('done', 'closed'))
-        self.assertEqual([(l['wh_qty'], l['wh_status'], l['recv_qty'], l['recv_status']) for l in d['receipts'][0]['lines']],
-                         [('8', 'short', '10', 'ok'), ('5', 'ok', '5', 'ok')])
+        self.assertEqual((d['doc']['stage'], d['receipts'][0]['status'], d['doc']['holder_id']),
+                         ('delivery', 'disputed', self.u('mk-anbar')['id']))
+        self.assertEqual(self.get(pid, 'mk-anbar')['actions'], ['wh_redo'])
+        self.assertEqual(self.get(pid, 'mk-zali')['actions'], [])
+        self.act('mk-anbar', pid, 'wh_redo', items=self.lines(pid, 8, 5, s1='short', s2='ok'))  # عدد تحویل‌گیرنده درست است
+        self.assertEqual(self.get(pid)['receipts'][0]['status'], 'pending')
+        with self.assertRaises(app.ApiError):  # «تأیید» با عددی غیر از تحویل انبار
+            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 9, 5, s1='ok', s2='ok'))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 8, 5, s1='ok', s2='ok'))
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], d['receipts'][0]['status']), ('disc_review', 'closed'))
+        self.assertEqual([i['accepted'] for i in d['items']], ['8', '5'])
+        ln = d['disc_lines'][0]
+        self.assertEqual((ln['recv_status'], ln['recv_qty'], list(ln['options'])), ('short', '8', list(app.DECISIONS['short'])))
+
+    def test_07e2_receiver_quality_complaint(self):
+        """تحویل‌گیرنده کیفیت را نامطابق می‌داند؛ انباردار آن را «اشتباه ارسال شده» ثبت می‌کند و به پشتیبانی می‌رود."""
+        pid = self.to_delivery()
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 10, 5, s1='ok', s2='ok'))
+        with self.assertRaises(app.ApiError):  # نامطابق بدون توضیح
+            self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='ok', s2='wrong'))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='ok', s2='wrong', n2='سیمان خیس است'))
+        self.act('mk-anbar', pid, 'wh_redo', items=self.lines(pid, 10, 5, s1='ok', s2='wrong', n2='سیمان خیس'))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 10, 5, s1='ok', s2='ok'))
+        d = self.get(pid)
+        self.assertEqual((d['doc']['stage'], [i['accepted'] for i in d['items']]), ('disc_review', ['10', '0']))
+
+    def test_07e3_partial_back_to_warehouse_and_unmarked_rows_stay(self):
+        """۶۰ از ۱۰۰ (تحویل بخشی) تأیید می‌شود و کار برای ۴۰ باقی‌مانده نزد انباردار می‌ماند؛ ردیف بدون وضعیت نمی‌رود."""
+        pid = self.to_delivery()
+        its = self.get(pid)['items']
+        self.act('mk-anbar', pid, 'wh_ok', items=[dict(id=its[0]['id'], qty='6', status='partial')])  # سیمان علامت نخورده
+        R = self.receipts(pid)[0]
+        self.assertEqual([l['title'] for l in R['lines']], ['پیچ'])
+        self.act('mk-zali', pid, 'recv_ok', items=[dict(id=its[0]['id'], qty='6', status='ok')])
+        d = self.get(pid, 'mk-anbar')
+        self.assertEqual((d['doc']['stage'], d['doc']['holder_id'], d['sheet_final']), ('delivery', self.u('mk-anbar')['id'], False))
+        self.assertEqual([i['remaining_wh'] for i in d['items']], ['4', '5'])
+        self.act('mk-anbar', pid, 'wh_ok', items=self.lines(pid, 4, 5, s1='ok', s2='ok'))
+        self.act('mk-zali', pid, 'recv_ok', items=self.lines(pid, 4, 5, s1='ok', s2='ok'))
+        self.assertEqual(self.get(pid)['doc']['stage'], 'done')
 
     def disc_to_support(self, st, q, n2=5, s2=None):
         pid = self.to_delivery()
